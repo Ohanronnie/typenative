@@ -376,9 +376,6 @@ pub struct HirTemplateId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum BuiltinValue {
-    StringFromStatic,
-    StringFromUtf8,
-    StringToAsciiUppercase,
     UsizeParseAscii,
 }
 
@@ -563,5 +560,43 @@ impl Program {
         self.definitions
             .iter()
             .find(|definition| definition.declaration == declaration)
+    }
+
+    pub fn intrinsic_type_declaration(&self, ty: &Type) -> Option<DeclarationId> {
+        let key = intrinsic_type_key(ty)?;
+        self.definitions.iter().find_map(|definition| {
+            let declaration = self.graph.declaration(definition.declaration)?;
+            declaration
+                .attributes
+                .iter()
+                .any(|attribute| {
+                    attribute.name == "Intrinsic" && attribute.arguments.as_slice() == [key]
+                })
+                .then_some(definition.declaration)
+        })
+    }
+
+    pub fn intrinsic_type_for_declaration(&self, declaration: DeclarationId) -> Option<Type> {
+        let declaration = self.graph.declaration(declaration)?;
+        declaration.attributes.iter().find_map(|attribute| {
+            (attribute.name == "Intrinsic")
+                .then(|| attribute.arguments.first())
+                .flatten()
+                .and_then(|key| intrinsic_type_from_key(key))
+        })
+    }
+}
+
+fn intrinsic_type_key(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::String => Some("string"),
+        _ => None,
+    }
+}
+
+fn intrinsic_type_from_key(key: &str) -> Option<Type> {
+    match key {
+        "string" => Some(Type::String),
+        _ => None,
     }
 }

@@ -536,12 +536,13 @@ impl Parser<'_, '_> {
         }
         if self.nth(offset) == Some(TokenKind::Constructor) {
             self.excluded_construct("constructor");
-        } else if self.nth(offset) == Some(TokenKind::Identifier)
-            && matches!(
-                self.nth(offset + 1),
-                Some(TokenKind::LeftParen | TokenKind::Less)
-            )
-        {
+        } else if matches!(
+            self.nth(offset),
+            Some(TokenKind::Identifier | TokenKind::From)
+        ) && matches!(
+            self.nth(offset + 1),
+            Some(TokenKind::LeftParen | TokenKind::Less)
+        ) {
             self.method(false);
         } else {
             self.field_declaration(false);
@@ -622,7 +623,9 @@ impl Parser<'_, '_> {
         }
         self.eat(TokenKind::Unsafe);
         self.eat(TokenKind::Async);
-        self.expect(TokenKind::Identifier);
+        if !self.eat(TokenKind::Identifier) {
+            self.expect(TokenKind::From);
+        }
         self.generic_parameters();
         self.parameter_list();
         self.expect(TokenKind::Colon);

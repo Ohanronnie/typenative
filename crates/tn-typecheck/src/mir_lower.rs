@@ -2744,44 +2744,14 @@ impl OwnershipMirLowerer<'_> {
         }
         let generic_bounds = self.generic_call_bounds(start, open);
         let callee_end = generic_bounds.map_or(open, |(less, _)| less);
-        if let Some(tn_hir::ResolvedValue::Builtin(tn_hir::BuiltinValue::StringFromStatic)) = self
-            .hir_expression_range(start, callee_end)
-            .and_then(|expression| expression.resolution)
-        {
-            let expression = self.hir_expression_range(start, callee_end)?;
-            let Type::Function(signature) = expression.ty.clone() else {
-                return None;
-            };
-            let (arguments, _) =
-                self.lower_call_arguments(self.argument_ranges(open + 1, end - 1), &signature)?;
-            let result_type = signature.result.as_ref().clone();
-            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
-            self.statement(
-                StatementKind::StorageLive(destination),
-                self.span(self.tokens[start]),
-            );
-            self.statement(
-                StatementKind::Assign(
-                    Place::local(destination),
-                    Box::new(Rvalue::RawOperation {
-                        operation: "string_from_static".into(),
-                        operands: arguments,
-                        ty: result_type.clone(),
-                    }),
-                ),
-                self.span(self.tokens[start]),
-            );
-            return Some((Operand::Move(Place::local(destination)), result_type));
-        }
         if let Some(builtin) = self
             .hir_expression_range(start, callee_end)
             .and_then(|expression| match expression.resolution {
                 Some(tn_hir::ResolvedValue::Builtin(builtin)) => Some(builtin),
                 _ => None,
             })
-            && !matches!(builtin, tn_hir::BuiltinValue::StringFromStatic)
         {
-            return self.lower_standard_builtin(start, open, end, callee_end, builtin);
+            return self.lower_standard_builtin(start, open, end, builtin);
         }
         let direct_member = self
             .find_top_level(start, callee_end, TokenKind::Dot)
@@ -3063,6 +3033,26 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
+        if self.is_intrinsic_operation(start, callee_end, "slice_from_raw_parts") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "slice_from_raw_parts".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
         if self.is_intrinsic_call(start, callee_end, "storeRaw") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
@@ -3154,29 +3144,15 @@ impl OwnershipMirLowerer<'_> {
         start: usize,
         open: usize,
         end: usize,
-        callee_end: usize,
         builtin: tn_hir::BuiltinValue,
     ) -> Option<(Operand, Type)> {
         let name = match builtin {
-            tn_hir::BuiltinValue::StringFromUtf8 => "fromUtf8",
-            tn_hir::BuiltinValue::StringToAsciiUppercase => "toAsciiUppercase",
             tn_hir::BuiltinValue::UsizeParseAscii => "parseAscii",
-            tn_hir::BuiltinValue::StringFromStatic => return None,
         };
         let (declaration, signature) = self.standard_function(name)?;
-        let arguments = if matches!(builtin, tn_hir::BuiltinValue::StringToAsciiUppercase) {
-            let dot = self.find_top_level(start, callee_end, TokenKind::Dot)?;
-            let (receiver, receiver_type) = self.lower_expression_range(start, dot, None)?;
-            vec![self.reborrow_argument(
-                receiver,
-                &receiver_type,
-                signature.parameters.first(),
-                start,
-            )]
-        } else {
-            self.lower_call_arguments(self.argument_ranges(open + 1, end - 1), &signature)?
-                .0
-        };
+        let arguments = self
+            .lower_call_arguments(self.argument_ranges(open + 1, end - 1), &signature)?
+            .0;
         let function = Operand::Constant(tn_mir::Constant::Function(
             declaration,
             Type::Function(signature.clone()),
@@ -3320,6 +3296,23 @@ impl OwnershipMirLowerer<'_> {
                         .attributes
                         .iter()
                         .any(|attribute| attribute.name == "Intrinsic")
+            })
+    }
+
+    fn is_intrinsic_operation(&self, start: usize, end: usize, operation: &str) -> bool {
+        let Some(ResolvedValue::Declaration(declaration)) = self
+            .hir_expression_range(start, end)
+            .and_then(|expression| expression.resolution)
+        else {
+            return false;
+        };
+        self.program
+            .graph
+            .declaration(declaration)
+            .is_some_and(|declaration| {
+                declaration.attributes.iter().any(|attribute| {
+                    attribute.name == "Intrinsic" && attribute.arguments.as_slice() == [operation]
+                })
             })
     }
 
@@ -3577,7 +3570,13 @@ impl OwnershipMirLowerer<'_> {
 
     fn lower_index(&mut self, start: usize, open: usize, end: usize) -> Option<(Operand, Type)> {
         let (collection, collection_type) = self.lower_expression_range(start, open, None)?;
-        let collection = operand_place(collection)?;
+        let mut collection = operand_place(collection)?;
+        let access_type = if let Type::Reference { referent, .. } = &collection_type {
+            collection.projection.push(tn_mir::Projection::Dereference);
+            referent.as_ref()
+        } else {
+            &collection_type
+        };
         let index_type = Type::Primitive(PrimitiveType::Usize);
         let index = self
             .lower_expression_range(open + 1, end - 1, Some(&index_type))?
@@ -3585,8 +3584,8 @@ impl OwnershipMirLowerer<'_> {
         let ty = self
             .hir_expression_range(start, end)
             .map(|expression| expression.ty.clone())
-            .or(match collection_type {
-                Type::Array(element, _) | Type::Slice(element) => Some(*element),
+            .or(match access_type {
+                Type::Array(element, _) | Type::Slice(element) => Some(element.as_ref().clone()),
                 _ => None,
             })?;
         let temporary = self.temporary(ty.clone(), self.span(self.tokens[open]));
@@ -3742,6 +3741,16 @@ impl OwnershipMirLowerer<'_> {
                     }
                 }
                 Type::Nominal(_, _) => {
+                    let (implementation, receiver) = self.direct_method(member)?;
+                    Rvalue::DirectMethod {
+                        object: owner,
+                        implementation,
+                        member,
+                        receiver,
+                        ty: member_type.clone(),
+                    }
+                }
+                ty if self.program.intrinsic_type_declaration(ty).is_some() => {
                     let (implementation, receiver) = self.direct_method(member)?;
                     Rvalue::DirectMethod {
                         object: owner,

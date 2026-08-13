@@ -11,6 +11,28 @@ fn write(path: &Path, source: &str) {
 }
 
 #[test]
+fn loads_the_intrinsic_string_prelude_without_an_import() {
+    let directory = tempfile::tempdir().expect("temporary HIR program");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    write(&root.join("main.tn"), "function main(): void {}\n");
+    write(
+        &standard_library.join("string.tn"),
+        "@Intrinsic(\"string\")struct OwnedString {}\n",
+    );
+    let graph = load_module_graph(root, &root.join("main.tn"), &standard_library)
+        .expect("module graph with string prelude");
+    assert!(
+        graph
+            .modules
+            .iter()
+            .any(|module| module.path.ends_with("std/string.tn"))
+    );
+    let program = lower_program(graph).expect("lowered string prelude");
+    assert!(program.intrinsic_type_declaration(&Type::String).is_some());
+}
+
+#[test]
 fn lowers_resolved_nominal_generic_and_compound_signatures() {
     let directory = tempfile::tempdir().expect("temporary HIR program");
     let root = directory.path();

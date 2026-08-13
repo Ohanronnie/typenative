@@ -38,6 +38,8 @@ used by allocation, strings, sockets, mutexes, promises, and task groups are
 declared in TypeNative standard-library modules and are not hidden compiler
 operations. The remaining project-owned C inventory and its retirement
 criteria are recorded in [`gate10-native-inventory.md`](gate10-native-inventory.md).
+Source-visible compiler hooks and internal operation tags are inventoried in
+[`compiler-magic-audit.md`](compiler-magic-audit.md).
 
 The compiler recognizes lowercase `string`, unsized `str`, and borrowed
 `&str` as language layout and ownership categories. It does not recognize an
@@ -45,6 +47,20 @@ uppercase `String` declaration. Literal-to-owned conversion is type-directed,
 retained in typed HIR, and lowered to an explicit MIR operation. String methods
 resolve through the canonical standard-library surface; reviewed native calls
 remain private implementation details of `std/string`.
+
+`std/string.tn` declares a private `@Intrinsic("string")` nominal definition.
+That attribute binds the predeclared owned representation to ordinary declared
+members; method names are not selected by the compiler. Static and instance
+calls therefore carry normal member identities through HIR and lower as direct
+methods in MIR. The binding is accepted only from the bundled string module,
+and user declarations cannot claim it. The module graph loads that declaration
+as a prelude without importing any private implementation names.
+
+Borrowed slices use a fat reference layout containing a data pointer and
+length. Dereferencing `&[T]` operates on that value directly rather than on a
+temporary descriptor. `string.bytes()` constructs this view with the private
+`slice_from_raw_parts` primitive, ties the source-level borrow to the string
+receiver, and exposes no procedural string helper.
 
 This boundary documents compiler-independent preparation only. The protected
 `compiler-tn/**` implementation and self-hosting orchestration are not used as

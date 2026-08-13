@@ -1038,6 +1038,17 @@ Current evidence:
   `string_from_static` MIR operation for annotated locals, arguments, and
   returns; `validation/string/main.tn` exercises the conversion and strict
   UTF-8 equality in native debug and optimized products;
+- the bundled `@Intrinsic("string")` declaration is loaded as a prelude and
+  binds the predeclared owned representation to ordinary standard-library
+  members; `from`, `fromUtf8`, `toAsciiUppercase`, `clone`, `asStr`, and
+  `bytes` resolve as declared member identities rather than compiler-known
+  method names;
+- `&[T]` uses a fat borrowed-slice representation in LLVM, and
+  `string.bytes()` exercises checked indexing without a temporary descriptor;
+  focused syntax, prelude, HIR, MIR, intrinsic-fraud rejection, and native
+  debug/optimized tests pass;
+- legacy procedural functions in `std/string` are private implementation
+  details and cannot be imported as the canonical user API;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions

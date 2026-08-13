@@ -1864,7 +1864,6 @@ char *tn_string_to_ascii_upper(const uint8_t *text) {
     result[index] = (char)(value >= 'a' && value <= 'z' ? value - ('a' - 'A') : value);
   }
   result[length] = '\0';
-  tn_runtime_free((void *)text);
   return result;
 }
 

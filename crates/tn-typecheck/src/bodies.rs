@@ -126,15 +126,19 @@ pub fn check_bodies_with_ownership(
                 }
             }
             DefinitionData::Struct { methods, .. } => {
-                let self_type = Type::Nominal(
-                    definition.declaration,
-                    definition
-                        .generics
-                        .iter()
-                        .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
-                        .map(|parameter| Type::Generic(parameter.name.clone()))
-                        .collect(),
-                );
+                let self_type = program
+                    .intrinsic_type_for_declaration(definition.declaration)
+                    .unwrap_or_else(|| {
+                        Type::Nominal(
+                            definition.declaration,
+                            definition
+                                .generics
+                                .iter()
+                                .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
+                                .map(|parameter| Type::Generic(parameter.name.clone()))
+                                .collect(),
+                        )
+                    });
                 for method in methods {
                     check_one(
                         program,
@@ -792,10 +796,7 @@ impl BodyChecker<'_> {
                     .as_ref()
                     .unwrap_or(&left.ty)
                     .clone();
-                let element = match active {
-                    Type::Array(element, _) | Type::Slice(element) => *element,
-                    _ => Type::Error,
-                };
+                let element = indexed_element_type(&active);
                 if left.optional_chain_value.is_some() {
                     left.ty = optional_type(element.clone());
                     left.optional_chain_value = Some(element);
@@ -2277,33 +2278,11 @@ impl BodyChecker<'_> {
             ty => (ty, None),
         };
         let builtin = match (receiver.type_qualifier, base, name) {
-            (true, Type::String, "from") => Some((
-                tn_hir::BuiltinValue::StringFromStatic,
-                vec![Type::Reference {
-                    mutable: false,
-                    lifetime: "static".into(),
-                    referent: Box::new(Type::Str),
-                }],
-                Type::String,
-                Vec::new(),
-            )),
-            (true, Type::String, "fromUtf8") => Some((
-                tn_hir::BuiltinValue::StringFromUtf8,
-                vec![self.standard_type("Bytes")],
-                Type::String,
-                self.standard_effect("Utf8Error"),
-            )),
             (true, Type::Primitive(PrimitiveType::Usize), "parseAscii") => Some((
                 tn_hir::BuiltinValue::UsizeParseAscii,
                 vec![self.standard_type("Bytes")],
                 Type::Primitive(PrimitiveType::Usize),
                 self.standard_effect("ParseIntegerError"),
-            )),
-            (false, Type::String, "toAsciiUppercase") => Some((
-                tn_hir::BuiltinValue::StringToAsciiUppercase,
-                Vec::new(),
-                Type::String,
-                Vec::new(),
             )),
             _ => None,
         };
@@ -2322,7 +2301,8 @@ impl BodyChecker<'_> {
             expression.resolution = Some(ResolvedValue::Builtin(builtin));
             return expression;
         }
-        let Some(id) = nominal_id(base) else {
+        let Some(id) = nominal_id(base).or_else(|| self.program.intrinsic_type_declaration(base))
+        else {
             self.error(
                 "TYPE_UNKNOWN_MEMBER",
                 format!("type {:?} has no member `{name}`", receiver.ty),
@@ -3445,6 +3425,14 @@ fn value_type(ty: Type) -> ExpressionType {
         captures: Vec::new(),
         resolution: None,
         type_qualifier: false,
+    }
+}
+
+fn indexed_element_type(ty: &Type) -> Type {
+    match ty {
+        Type::Array(element, _) | Type::Slice(element) => element.as_ref().clone(),
+        Type::Reference { referent, .. } => indexed_element_type(referent),
+        _ => Type::Error,
     }
 }
 

@@ -23,6 +23,10 @@ pub fn load_module_graph(
     let entry = normalize_existing(entry)?;
     let standard_library = normalize_existing(standard_library)?;
     let mut pending = VecDeque::from([entry.clone()]);
+    let string_prelude = standard_library.join("string.tn");
+    if string_prelude.is_file() {
+        pending.push_back(normalize_existing(&string_prelude)?);
+    }
     let mut discovered = BTreeSet::new();
     let mut raw_modules = BTreeMap::new();
     let mut diagnostics = Vec::new();

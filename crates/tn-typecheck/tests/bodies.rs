@@ -18,6 +18,76 @@ fn conditions(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn checked_with_workspace_standard_library(
+    source: &str,
+) -> (tn_hir::Program, tn_typecheck::BodyCheckResult) {
+    let directory = tempfile::tempdir().expect("temporary semantic fixture");
+    let path = directory.path().join("main.tn");
+    std::fs::write(&path, source).expect("write semantic fixture");
+    let standard_library = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
+    let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+        .expect("load fixture graph with workspace standard library");
+    let program = tn_hir::lower_program(graph).expect("lower fixture declarations");
+    let checked = tn_typecheck::check_bodies(&program);
+    (program, checked)
+}
+
+#[test]
+fn resolves_canonical_string_operations_as_declared_members() {
+    let (program, checked) = checked_with_workspace_standard_library(
+        r#"
+import { fromStatic } from "std/bytes";
+import { Utf8Error } from "std/string";
+function canonical(value: string): bool throws Utf8Error {
+  const made = string.from("value");
+  const decoded = try string.fromUtf8(fromStatic("value"));
+  const upper = value.toAsciiUppercase();
+  const copy = value.clone();
+  const view: &str = value.asStr();
+  const raw: &[u8] = value.bytes();
+  return made === copy || decoded === upper || upper === view || raw[0usize] === 0u8;
+}
+"#,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let declaration = program
+        .intrinsic_type_declaration(&tn_hir::Type::String)
+        .expect("declared string intrinsic");
+    let tn_hir::DefinitionData::Struct { methods, .. } = &program
+        .definition(declaration)
+        .expect("string definition")
+        .data
+    else {
+        panic!("string intrinsic must be a struct declaration");
+    };
+    let expected = methods
+        .iter()
+        .filter(|method| {
+            [
+                "from",
+                "fromUtf8",
+                "toAsciiUppercase",
+                "clone",
+                "asStr",
+                "bytes",
+            ]
+            .contains(&method.name.as_str())
+        })
+        .map(|method| method.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let resolved = checked
+        .bodies
+        .iter()
+        .flat_map(|body| &body.expressions)
+        .filter_map(|expression| match expression.resolution {
+            Some(tn_hir::ResolvedValue::Member(member)) => Some(member),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(expected.len(), 6);
+    assert!(expected.is_subset(&resolved));
+}
+
 #[test]
 fn infers_literals_bidirectionally_without_numeric_widening_or_truthiness() {
     let diagnostics = conditions(

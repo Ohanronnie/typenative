@@ -1,6 +1,16 @@
 use std::path::Path;
 
 #[test]
+fn from_is_a_contextual_method_name() {
+    let source = br"struct TextFactory {
+  public static from(value: & str): string { return value; }
+}
+";
+    let parsed = tn_syntax::parse("contextual-method.tn", source);
+    assert!(parsed.is_success(), "{:#?}", parsed.diagnostics());
+}
+
+#[test]
 fn valid_fixture_corpus_parses_losslessly() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/syntax/valid");
     let mut files = std::fs::read_dir(&root)

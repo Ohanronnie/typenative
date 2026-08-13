@@ -194,6 +194,8 @@ convergence pass.
 ### Deliverables
 
 - `string`, UTF-8 validation, scalar iteration, and checked slicing.
+- A reviewed compiler-magic ledger in which fundamental hooks are justified and
+  ordinary library operations use declared resolution.
 - `Bytes`, `BytesMut`, and binary cursor APIs.
 - `Array<T>`, fixed arrays, borrowed slices, `Queue<T>`, `Deque<T>`, and `Heap<T>`.
 - `Map<K, V>` and `Set<T>` with explicit `Equal` and `Hash` capability

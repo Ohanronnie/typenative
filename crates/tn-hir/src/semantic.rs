@@ -300,7 +300,11 @@ fn lower_function(
     if !method {
         cursor.eat(TokenKind::Function);
     }
-    cursor.name(diagnostics)?;
+    if method && cursor.eat(TokenKind::From) {
+        // `from` is a contextual method name even though it is reserved in imports.
+    } else {
+        cursor.name(diagnostics)?;
+    }
     let generics = if method {
         parse_generic_parameters(cursor, resolver, diagnostics)
     } else {
@@ -1135,7 +1139,7 @@ fn parse_method(
     let is_unsafe = cursor.eat(TokenKind::Unsafe);
     let is_async = cursor.eat(TokenKind::Async);
     cursor.eat(TokenKind::Function);
-    if cursor.kind() != Some(TokenKind::Identifier) {
+    if !matches!(cursor.kind(), Some(TokenKind::Identifier | TokenKind::From)) {
         cursor.index = start;
         return None;
     }

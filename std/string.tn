@@ -12,6 +12,46 @@ extern "C" {
 export struct Utf8Error {
   public offset: usize;
 }
+@Intrinsic function borrowShared<T>(pointer: * const T): & T {
+  unsafe {
+    return & * pointer;
+  }
+}
+@Intrinsic("slice_from_raw_parts")function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
+  unsafe {
+    return & *(pointer as * const[T]);
+  }
+}
+@Intrinsic("string")struct OwnedString {
+  public static from(text: & str): string {
+    return fromStatic(text);
+  }
+  public static fromUtf8(value: Bytes): string throws Utf8Error {
+    return try fromUtf8(value);
+  }
+  public toAsciiUppercase(): string {
+    unsafe {
+      return tn_string_to_ascii_upper(this as * const u8);
+    }
+  }
+  public clone(): string {
+    unsafe {
+      const pointer = this as * const u8;
+      return tn_string_from_bytes(pointer, strlen(pointer));
+    }
+  }
+  public asStr(): & str {
+    unsafe {
+      return borrowShared<str>(this as * const str);
+    }
+  }
+  public bytes(): &[u8] {
+    unsafe {
+      const pointer = this as * const u8;
+      return sliceFromRawParts<u8>(pointer, strlen(pointer));
+    }
+  }
+}
 extern "C" {
   function tn_utf8_decode(bytes: * const u8, length: usize, offset: usize, codepoint: * mut u32, next: * mut usize): i32;
   function tn_utf8_slice_copy(bytes: * const u8, length: usize, start: usize, end: usize, destination: * mut u8, capacity: usize, written: * mut usize): i32;
@@ -22,7 +62,7 @@ export struct Chars {
   public length: usize;
   public offset: usize;
 }
-export function bytes(text: & str): Bytes {
+function bytes(text: & str): Bytes {
   unsafe {
     return {
       pointer: text as * const u8, length: strlen(text as * const u8),
@@ -37,12 +77,12 @@ function fromUtf8(value: Bytes): string throws Utf8Error {
     return tn_string_from_bytes(value.pointer, value.length);
   }
 }
-export function length(value: string): usize {
+function length(value: string): usize {
   unsafe {
     return strlen(value as * const u8);
   }
 }
-export function emptyOwned(): string {
+function emptyOwned(): string {
   unsafe {
     return tn_string_from_bytes("" as * const u8, 0usize);
   }
@@ -73,25 +113,25 @@ function parseAscii(value: Bytes): usize throws ParseIntegerError {
   }
   return parsed;
 }
-export function isValidUtf8(text: & static str): bool {
+function isValidUtf8(text: & static str): bool {
   unsafe {
     return tn_utf8_validate(text as * const u8, strlen(text as * const u8)) !== 0;
   }
 }
-function fromStatic(text: & static str): string {
+function fromStatic(text: & str): string {
   unsafe {
     const length = strlen(text as * const u8);
     return tn_string_from_bytes(text as * const u8, length);
   }
 }
-export function chars(text: & static str): Chars {
+function chars(text: & static str): Chars {
   unsafe {
     return {
       pointer: text as * const u8, length: strlen(text as * const u8), offset: 0usize
     };
   }
 }
-export function next(chars: & mut Chars, codepoint: * mut u32): bool {
+function next(chars: & mut Chars, codepoint: * mut u32): bool {
   let nextOffset: usize = chars.offset;
   const output = & mut nextOffset;
   unsafe {
@@ -108,7 +148,7 @@ function utf8Error(offset: usize): Utf8Error {
     offset: offset
   };
 }
-export function sliceOwned(text: & static str, start: usize, end: usize): string throws Utf8Error {
+function sliceOwned(text: & static str, start: usize, end: usize): string throws Utf8Error {
   unsafe {
     const length = strlen(text as * const u8);
     if (start > end || end > length || end - start === 18446744073709551615usize) {

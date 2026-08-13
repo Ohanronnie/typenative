@@ -2024,6 +2024,9 @@ impl<'ctx> Generator<'ctx> {
                     "unknown values must be narrowed before code generation".into(),
                 ));
             }
+            Type::Reference { referent, .. } if matches!(referent.as_ref(), Type::Slice(_)) => {
+                self.basic_type(referent)?
+            }
             Type::Reference { .. }
             | Type::RawPointer { .. }
             | Type::String
@@ -2450,13 +2453,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             | StatementKind::Retag(_) => {}
             StatementKind::Borrow {
                 destination, place, ..
-            } => {
-                let destination = self.locals[usize::try_from(destination.0).map_err(|_| {
-                    CodegenError::Unsupported("borrow destination index overflow".into())
-                })?];
-                self.builder
-                    .build_store(destination, self.place_pointer(place)?)?;
-            }
+            } => self.lower_borrow_statement(*destination, place)?,
             StatementKind::SetDiscriminant(place, discriminant) => {
                 let ty = self.place_type(place)?;
                 let place = self.place_pointer(place)?;
@@ -2512,6 +2509,31 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     )?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn lower_borrow_statement(
+        &self,
+        destination: tn_mir::LocalId,
+        place: &Place,
+    ) -> Result<(), CodegenError> {
+        let destination_type = self.local_type(destination.0)?;
+        let destination = self.locals[usize::try_from(destination.0)
+            .map_err(|_| CodegenError::Unsupported("borrow destination index overflow".into()))?];
+        if matches!(
+            destination_type,
+            Type::Reference { referent, .. } if matches!(referent.as_ref(), Type::Slice(_))
+        ) {
+            let value = self.builder.build_load(
+                self.generator.basic_type(&self.place_type(place)?)?,
+                self.place_pointer(place)?,
+                "slice.borrow",
+            )?;
+            self.builder.build_store(destination, value)?;
+        } else {
+            self.builder
+                .build_store(destination, self.place_pointer(place)?)?;
         }
         Ok(())
     }
@@ -3211,6 +3233,39 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ty,
+            } if operation == "slice_from_raw_parts" => {
+                let pointer = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "slice_from_raw_parts operation lacks a pointer".into(),
+                        )
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let length = operands
+                    .get(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "slice_from_raw_parts operation lacks a length".into(),
+                        )
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?;
+                let structure = self.generator.basic_type(ty)?.into_struct_type();
+                let value = self
+                    .builder
+                    .build_insert_value(structure.const_zero(), pointer, 0, "slice.pointer")?
+                    .into_struct_value();
+                Ok(self
+                    .builder
+                    .build_insert_value(value, length, 1, "slice.length")?
+                    .into_struct_value()
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
             } if operation == "arc_clone" => {
                 let source_operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("arc_clone operation lacks a receiver".into())
@@ -3838,8 +3893,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn is_pointer_representation(&self, ty: &Type) -> bool {
         matches!(
             ty,
-            Type::Reference { .. }
-                | Type::RawPointer { .. }
+            Type::Reference { referent, .. }
+                if !matches!(referent.as_ref(), Type::Slice(_))
+        ) || matches!(
+            ty,
+            Type::RawPointer { .. }
                 | Type::String
                 | Type::Str
                 | Type::Promise { .. }
@@ -4494,6 +4552,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             mutable: true,
                             pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
                         },
+                        Type::String => Generator::receiver_pointer_type(),
                         Type::Nominal(declaration, arguments)
                             if !self
                                 .generator
@@ -4608,11 +4667,15 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 "interface.data",
             )?);
         }
-        if let Type::Nominal(declaration, arguments) = receiver_type
-            && !self
-                .generator
-                .is_class_type(&Type::Nominal(declaration, arguments))
-        {
+        let indirect_value_receiver = matches!(receiver_type, Type::String)
+            || matches!(
+                &receiver_type,
+                Type::Nominal(declaration, arguments)
+                    if !self
+                        .generator
+                        .is_class_type(&Type::Nominal(*declaration, arguments.clone()))
+            );
+        if indirect_value_receiver {
             let place = operand_place(receiver).ok_or_else(|| {
                 CodegenError::Unsupported("value receiver must be addressable".into())
             })?;
@@ -4853,7 +4916,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn lower_operand(&self, operand: &Operand) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => {
-                let ty = self.generator.basic_type(&self.place_type(place)?)?;
+                let place_type = self.place_type(place)?;
+                if place_type == Type::Str
+                    && matches!(place.projection.last(), Some(Projection::Dereference))
+                {
+                    return Ok(self.place_pointer(place)?.into());
+                }
+                let ty = self.generator.basic_type(&place_type)?;
                 Ok(self
                     .builder
                     .build_load(ty, self.place_pointer(place)?, "load")?)
@@ -5310,14 +5379,16 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             )));
                         }
                     };
-                    pointer = self
-                        .builder
-                        .build_load(
-                            self.generator.context.ptr_type(AddressSpace::default()),
-                            pointer,
-                            "dereference.address",
-                        )?
-                        .into_pointer_value();
+                    if !matches!(referent_type, Type::Slice(_)) {
+                        pointer = self
+                            .builder
+                            .build_load(
+                                self.generator.context.ptr_type(AddressSpace::default()),
+                                pointer,
+                                "dereference.address",
+                            )?
+                            .into_pointer_value();
+                    }
                     ty = referent_type;
                 }
                 Projection::Index(index) => {

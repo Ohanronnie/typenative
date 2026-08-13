@@ -72,6 +72,81 @@ fn source_program(source: &str) -> tn_hir::Program {
     tn_hir::lower_program(graph).expect("lower ownership source fixture")
 }
 
+fn source_program_with_workspace_standard_library(source: &str) -> tn_hir::Program {
+    let directory = tempfile::tempdir().expect("temporary ownership source fixture");
+    let path = directory.path().join("main.tn");
+    std::fs::write(&path, source).expect("write ownership source fixture");
+    let standard_library = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
+    let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+        .expect("load ownership source graph with workspace standard library");
+    tn_hir::lower_program(graph).expect("lower ownership source fixture")
+}
+
+#[test]
+fn lowers_intrinsic_string_instance_calls_as_direct_methods() {
+    let program = source_program_with_workspace_standard_library(
+        r"
+function main(value: string): u8 {
+  const upper = value.toAsciiUppercase();
+  const copy = value.clone();
+  const view: &str = value.asStr();
+  const raw: &[u8] = value.bytes();
+  return raw[0usize];
+}
+",
+    );
+    let declaration = program
+        .intrinsic_type_declaration(&Type::String)
+        .expect("declared string intrinsic");
+    let tn_hir::DefinitionData::Struct { methods, .. } = &program
+        .definition(declaration)
+        .expect("string definition")
+        .data
+    else {
+        panic!("string intrinsic must be a struct declaration");
+    };
+    let expected = methods
+        .iter()
+        .filter(|method| {
+            ["toAsciiUppercase", "clone", "asStr", "bytes"].contains(&method.name.as_str())
+        })
+        .map(|method| method.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let bodies = lower_mir(&program);
+    let body = bodies
+        .iter()
+        .find(|body| {
+            program
+                .graph
+                .declaration(body.declaration)
+                .and_then(|declaration| declaration.name.as_deref())
+                == Some("main")
+        })
+        .expect("main MIR");
+    let lowered = body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match &statement.kind {
+            StatementKind::Assign(_, value) => match value.as_ref() {
+                Rvalue::DirectMethod { member, .. } => Some(*member),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(expected.len(), 4);
+    assert!(expected.is_subset(&lowered));
+}
+
+#[test]
+fn rejects_user_defined_intrinsic_type_bindings() {
+    assert_eq!(
+        source_conditions("@Intrinsic(\"string\") struct FakeString {}"),
+        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+    );
+}
+
 fn lower_mir(program: &tn_hir::Program) -> Vec<Body> {
     let checked = tn_typecheck::check_bodies(program);
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);

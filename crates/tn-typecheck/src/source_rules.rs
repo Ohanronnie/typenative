@@ -243,10 +243,18 @@ fn check_declaration_attributes(
                     definition.data,
                     DefinitionData::Struct { .. } | DefinitionData::Enum { .. }
                 ),
-                "Intrinsic" => matches!(
-                    definition.data,
-                    DefinitionData::Function(_) | DefinitionData::Extern { .. }
-                ),
+                "Intrinsic" => match &definition.data {
+                    DefinitionData::Function(_) | DefinitionData::Extern { .. } => {
+                        attribute.arguments.is_empty()
+                            || (attribute.arguments.as_slice() == ["slice_from_raw_parts"]
+                                && module.path.to_string_lossy().ends_with("std/string.tn"))
+                    }
+                    DefinitionData::Struct { .. } => {
+                        attribute.arguments.as_slice() == ["string"]
+                            && module.path.to_string_lossy().ends_with("std/string.tn")
+                    }
+                    _ => false,
+                },
                 "Inline" => matches!(definition.data, DefinitionData::Function(_)),
                 _ => true,
             };

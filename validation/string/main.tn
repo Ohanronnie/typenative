@@ -1,15 +1,57 @@
+import { fromStatic } from "std/bytes";
+import { Utf8Error } from "std/string";
+
 function echo(value: string): string {
   return value;
 }
+function sameText(left: & str, right: & str): bool {
+  return left === right;
+}
 function make(): string {
-  const name: string = "ronnie";
-  const guest = echo("guest");
-  if (name !== "ronnie" || guest !== "guest") {
-    return "failed";
-  }
   return "done";
 }
-function main(): i32 {
+function main(): i32 throws Utf8Error {
+  const made = string.from("made");
+  if (made !== "made") {
+    return 7i32;
+  }
+  const decoded = try string.fromUtf8(fromStatic("utf8"));
+  if (decoded !== "utf8") {
+    return 8i32;
+  }
+  const name: string = "ronnie";
+  if (name !== "ronnie") {
+    return 10i32;
+  }
+  const guest = echo("guest");
+  if (guest !== "guest") {
+    return 11i32;
+  }
   const result = make();
-  return result === "done"?42i32: 1i32;
+  if (result !== "done") {
+    return 1i32;
+  }
+  const copy = result.clone();
+  if (result !== "done") {
+    return 2i32;
+  }
+  if (copy !== result) {
+    return 3i32;
+  }
+  const upper = result.toAsciiUppercase();
+  if (upper !== "DONE") {
+    return 9i32;
+  }
+  const view: & str = result.asStr();
+  if (result !== "done") {
+    return 4i32;
+  }
+  if (!sameText(view, "done")) {
+    return 5i32;
+  }
+  const raw: &[u8] = result.bytes();
+  if (raw[0usize] !== 100u8 || raw[3usize] !== 101u8) {
+    return 6i32;
+  }
+  return 42i32;
 }
