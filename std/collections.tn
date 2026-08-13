@@ -376,16 +376,219 @@ export struct QueueOptions {
     this.head = 0usize;
   }
 }
-@Drop export struct Deque<T> {
-  public pointer: * mut T;
-  public length: usize;
+export struct DequeOptions {
   public capacity: usize;
-  public elementSize: usize;
-  public head: usize;
+}
+@Drop export class Deque<T> {
+  private pointer: * mut T;
+  private initialized: * mut u8;
+  public readonly length: usize;
+  public readonly capacity: usize;
+  private elementSize: usize;
+  private head: usize;
+  public constructor(options: DequeOptions) {
+    const elementSize = sizeOf<T>();
+    unsafe {
+      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.initialized = rawAlloc(options.capacity);
+    }
+    this.length = 0usize;
+    this.capacity = options.capacity;
+    this.elementSize = elementSize;
+    this.head = 0usize;
+    let index: usize = 0usize;
+    while (index<options.capacity) {
+      unsafe {
+        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+      }
+      index = index + 1usize;
+    }
+  }
   mut drop(): void {
     unsafe {
+      dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
       rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
     }
+  }
+  public mut reserve(minimumCapacity: usize): void {
+    if (minimumCapacity <= this.capacity) {
+      return;
+    }
+    let next: usize = 1usize;
+    if (this.capacity > 0usize) {
+      next = this.capacity * 2usize;
+    }
+    if (next<minimumCapacity) {
+      next = minimumCapacity;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacementInitialized = rawAlloc(next);
+      let initializedIndex: usize = 0usize;
+      while (initializedIndex<next) {
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
+        initializedIndex = initializedIndex + 1usize;
+      }
+      let index: usize = 0usize;
+      while (index<this.length) {
+        const sourceIndex =(this.head + index) % this.capacity;
+        if (isCopy<T>()) {
+          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+        } else {
+          const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
+          storeElement<T>(replacement, index, replacementInitialized, move value);
+        }
+        index = index + 1usize;
+      }
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+      this.pointer = replacement;
+      this.initialized = replacementInitialized;
+    }
+    this.capacity = next;
+    this.head = 0usize;
+  }
+  public mut shrinkToFit(): void {
+    if (this.length === this.capacity) {
+      return;
+    }
+    if (this.length === 0usize) {
+      unsafe {
+        rawFree(this.pointer as * mut u8);
+        rawFree(this.initialized);
+        this.pointer = rawAlloc(0usize)as * mut T;
+        this.initialized = rawAlloc(0usize);
+      }
+      this.capacity = 0usize;
+      this.head = 0usize;
+      return;
+    }
+    const target = this.length;
+    unsafe {
+      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacementInitialized = rawAlloc(target);
+      let initializedIndex: usize = 0usize;
+      while (initializedIndex<target) {
+        tn_bytes_write_u8(replacementInitialized, target, initializedIndex, 0u8);
+        initializedIndex = initializedIndex + 1usize;
+      }
+      let index: usize = 0usize;
+      while (index<this.length) {
+        const sourceIndex =(this.head + index) % this.capacity;
+        if (isCopy<T>()) {
+          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+        } else {
+          const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
+          storeElement<T>(replacement, index, replacementInitialized, move value);
+        }
+        index = index + 1usize;
+      }
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+      this.pointer = replacement;
+      this.initialized = replacementInitialized;
+    }
+    this.capacity = target;
+    this.head = 0usize;
+  }
+  public mut push(value: T): void {
+    if (this.length === this.capacity) {
+      this.reserve(this.length + 1usize);
+    }
+    const destinationIndex =(this.head + this.length) % this.capacity;
+    if (isCopy<T>()) {
+      unsafe {
+        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, destinationIndex * this.elementSize);
+      }
+    } else {
+      unsafe {
+        storeElement<T>(this.pointer, destinationIndex, this.initialized, move value);
+      }
+    }
+    this.length = this.length + 1usize;
+  }
+  public mut pushFront(value: T): void {
+    if (this.length === this.capacity) {
+      this.reserve(this.length + 1usize);
+    }
+    if (this.length === 0usize) {
+      this.head = 0usize;
+    } else if (this.head === 0usize) {
+      this.head = this.capacity - 1usize;
+    } else {
+      this.head = this.head - 1usize;
+    }
+    if (isCopy<T>()) {
+      unsafe {
+        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, this.head * this.elementSize);
+      }
+    } else {
+      unsafe {
+        storeElement<T>(this.pointer, this.head, this.initialized, move value);
+      }
+    }
+    this.length = this.length + 1usize;
+  }
+  public mut pop(): T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    const sourceIndex = this.head;
+    const nextHead =(this.head + 1usize) % this.capacity;
+    const nextLength = this.length - 1usize;
+    if (!isCopy<T>()) {
+      unsafe {
+        const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
+        this.head = nextHead;
+        this.length = nextLength;
+        return value;
+      }
+    }
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      this.head = nextHead;
+      this.length = nextLength;
+      return value;
+    }
+  }
+  public mut popBack(): T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    const sourceIndex =(this.head + this.length - 1usize) % this.capacity;
+    const nextLength = this.length - 1usize;
+    if (!isCopy<T>()) {
+      unsafe {
+        const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
+        this.length = nextLength;
+        return value;
+      }
+    }
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      this.length = nextLength;
+      return value;
+    }
+  }
+  public mut clear(): void {
+    unsafe {
+      dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
+    }
+    this.length = 0usize;
+    this.head = 0usize;
   }
 }
 @Drop export struct Heap<T> {
@@ -530,201 +733,6 @@ export struct Slice<T> {
       rawFree(this.pointer as * mut u8);
     }
   }
-}
-export function dequeAllocate<T>(elementSize: usize, capacity: usize): Deque<T> {
-  unsafe {
-    return {
-      pointer: rawAlloc(capacity * elementSize)as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize, head: 0usize
-    };
-  }
-}
-export function dequeAllocateChecked<T>(elementSize: usize, capacity: usize): Deque<T > throws AllocError {
-  if (elementSize !== 0usize && capacity > 18446744073709551615usize / elementSize) {
-    throw allocationError();
-  }
-  unsafe {
-    const pointer = tryRawAlloc(capacity * elementSize);
-    if (isNull(pointer as * const u8)) {
-      throw allocationError();
-    }
-    return {
-      pointer: pointer as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize, head: 0usize
-    };
-  }
-}
-export function dequePush<T>(deque: & mut Deque<T>, value: * const u8): void {
-  if (deque.length === deque.capacity) {
-    let next: usize = 1usize;
-    if (deque.capacity > 0usize) {
-      next = deque.capacity * 2usize;
-    }
-    unsafe {
-      const replacement = rawAlloc(next * deque.elementSize);
-      let index: usize = 0usize;
-      while (index<deque.length) {
-        const sourceIndex =(deque.head + index) % deque.capacity;
-        tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize, index * deque.elementSize);
-        index = index + 1usize;
-      }
-      rawFree(deque.pointer as * mut u8);
-      deque.pointer = replacement as * mut T;
-      deque.head = 0usize;
-    }
-    deque.capacity = next;
-  }
-  const destinationIndex =(deque.head + deque.length) % deque.capacity;
-  unsafe {
-    tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, destinationIndex * deque.elementSize);
-  }
-  deque.length = deque.length + 1usize;
-}
-export function dequePushChecked<T>(deque: & mut Deque<T>, value: * const u8): void throws AllocError {
-  if (deque.length === deque.capacity) {
-    let next: usize = 1usize;
-    if (deque.capacity > 0usize) {
-      if (deque.capacity > 9223372036854775807usize) {
-        throw allocationError();
-      }
-      next = deque.capacity * 2usize;
-    }
-    if (deque.elementSize !== 0usize && next > 18446744073709551615usize / deque.elementSize) {
-      throw allocationError();
-    }
-    unsafe {
-      const replacement = tryRawAlloc(next * deque.elementSize);
-      if (isNull(replacement as * const u8)) {
-        throw allocationError();
-      }
-      let index: usize = 0usize;
-      while (index<deque.length) {
-        const sourceIndex =(deque.head + index) % deque.capacity;
-        if (tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize, index * deque.elementSize) !== 0i32) {
-          rawFree(replacement);
-          throw allocationError();
-        }
-        index = index + 1usize;
-      }
-      rawFree(deque.pointer as * mut u8);
-      deque.pointer = replacement as * mut T;
-      deque.head = 0usize;
-    }
-    deque.capacity = next;
-  }
-  const destinationIndex =(deque.head + deque.length) % deque.capacity;
-  unsafe {
-    if (tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, destinationIndex * deque.elementSize) !== 0i32) {
-      throw allocationError();
-    }
-  }
-  deque.length = deque.length + 1usize;
-}
-export function dequePop<T>(deque: & mut Deque<T>, value: * mut u8): bool {
-  if (deque.length === 0usize) {
-    return false;
-  }
-  const sourceIndex = deque.head;
-  unsafe {
-    tn_bytes_copy_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, value);
-  }
-  deque.head =(deque.head + 1usize) % deque.capacity;
-  deque.length = deque.length - 1usize;
-  return true;
-}
-export function dequePushFront<T>(deque: & mut Deque<T>, value: * const u8): void {
-  if (deque.length === deque.capacity) {
-    let next: usize = 1usize;
-    if (deque.capacity > 0usize) {
-      next = deque.capacity * 2usize;
-    }
-    unsafe {
-      const replacement = rawAlloc(next * deque.elementSize);
-      let index: usize = 0usize;
-      while (index<deque.length) {
-        const sourceIndex =(deque.head + index) % deque.capacity;
-        tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize,(index + 1usize) * deque.elementSize);
-        index = index + 1usize;
-      }
-      rawFree(deque.pointer as * mut u8);
-      deque.pointer = replacement as * mut T;
-      deque.head = 1usize;
-    }
-    deque.capacity = next;
-  }
-  if (deque.length === 0usize) {
-    deque.head = 0usize;
-  } else if (deque.head === 0usize) {
-    deque.head = deque.capacity - 1usize;
-  } else {
-    deque.head = deque.head - 1usize;
-  }
-  unsafe {
-    tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, deque.head * deque.elementSize);
-  }
-  deque.length = deque.length + 1usize;
-}
-export function dequePushFrontChecked<T>(deque: & mut Deque<T>, value: * const u8): void throws AllocError {
-  if (deque.length === deque.capacity) {
-    let next: usize = 1usize;
-    if (deque.capacity > 0usize) {
-      if (deque.capacity > 9223372036854775807usize) {
-        throw allocationError();
-      }
-      next = deque.capacity * 2usize;
-    }
-    if (deque.elementSize !== 0usize && next > 18446744073709551615usize / deque.elementSize) {
-      throw allocationError();
-    }
-    unsafe {
-      const replacement = tryRawAlloc(next * deque.elementSize);
-      if (isNull(replacement as * const u8)) {
-        throw allocationError();
-      }
-      let index: usize = 0usize;
-      while (index<deque.length) {
-        const sourceIndex =(deque.head + index) % deque.capacity;
-        if (tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize,(index + 1usize) * deque.elementSize) !== 0i32) {
-          rawFree(replacement);
-          throw allocationError();
-        }
-        index = index + 1usize;
-      }
-      rawFree(deque.pointer as * mut u8);
-      deque.pointer = replacement as * mut T;
-      deque.head = 1usize;
-    }
-    deque.capacity = next;
-  }
-  if (deque.length === 0usize) {
-    deque.head = 0usize;
-  } else if (deque.head === 0usize) {
-    deque.head = deque.capacity - 1usize;
-  } else {
-    deque.head = deque.head - 1usize;
-  }
-  unsafe {
-    if (tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, deque.head * deque.elementSize) !== 0i32) {
-      throw allocationError();
-    }
-  }
-  deque.length = deque.length + 1usize;
-}
-export function dequePopBack<T>(deque: & mut Deque<T>, value: * mut u8): bool {
-  if (deque.length === 0usize) {
-    return false;
-  }
-  const sourceIndex =(deque.head + deque.length - 1usize) % deque.capacity;
-  unsafe {
-    tn_bytes_copy_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, value);
-  }
-  deque.length = deque.length - 1usize;
-  return true;
-}
-export function dequeLength<T>(deque: & Deque<T >): usize {
-  return deque.length;
-}
-export function dequeClear<T>(deque: & mut Deque<T >): void {
-  deque.length = 0usize;
-  deque.head = 0usize;
 }
 export function heapAllocate<T>(elementSize: usize, capacity: usize): Heap<T> {
   unsafe {

@@ -1060,14 +1060,15 @@ Current evidence:
   so `Array<i32>` and other concrete copy types select the correct storage path;
   the collection native fixture now returns 42 in both debug and optimized
   products instead of its prior `Array.pop()` exit 6;
-- `Queue<T>` now uses the ordinary class constructor and declared `push`, `pop`,
-  `reserve`, `shrinkToFit`, and `clear` methods. Element layout is derived by
-  the private `size_of` intrinsic, storage fields are private, `length` and
-  `capacity` are externally read-only, and initialized-slot tracking moves and
-  destroys non-copy elements exactly once. The old exported `queueAllocate`,
-  `queuePush`, and `queuePop` family is absent and covered by a missing-export
-  regression; circular copy storage and growing/clearing `Queue<string>` both
-  return 42 in debug and optimized native collection products;
+- `Queue<T>` and `Deque<T>` now use ordinary class constructors and declared
+  `push`, `pop`, `pushFront`, `popBack`, `reserve`, `shrinkToFit`, and `clear`
+  methods as appropriate. Element layout is derived by the private `size_of`
+  intrinsic, storage fields are private, `length` and `capacity` are externally
+  read-only, and initialized-slot tracking moves and destroys non-copy elements
+  exactly once. The old exported `queue*` and `deque*` procedural families are
+  absent and covered by missing-export regressions; circular copy storage and
+  growing/clearing `string` elements return 42 in debug and optimized native
+  collection products;
 - readonly field assignment is rejected outside the declaring type with
   `TYPE_READONLY_FIELD_ASSIGNMENT`, while constructors and declared methods can
   maintain their own public read-only state;
@@ -1082,9 +1083,9 @@ Remaining scope:
   `try`/`catch`, direct capability decorators, `@Conform`, `@Drop`, `@Intrinsic`,
   `@Sealed`, `using`, generators, async generators, and typed user macros.
 - Complete the remaining collection surface: fixed arrays, slices,
-  `Map<K, V>`, `Set<T>`, `OrderedMap<K, V>`, `OrderedSet<T>`, `Deque<T>`, and
-  `Heap<T>`, including `Equal`/`Hash` key constraints; finish Queue borrowing
-  and iteration together with the canonical iterator protocol.
+  `Map<K, V>`, `Set<T>`, `OrderedMap<K, V>`, `OrderedSet<T>`, and `Heap<T>`,
+  including `Equal`/`Hash` key constraints; finish Queue/Deque borrowing and
+  iteration together with the canonical iterator protocol.
 - Remove obsolete `Result`, `Option`, `match`, `impl`, `extension`, `record`,
   `where`, `dyn`, collection, module, and compatibility spellings from every
   compiler layer and fixture.
