@@ -41,18 +41,18 @@ function allocationError(): AllocError {
     }
   }
 }
-@Intrinsic function sizeOf<T>(): usize {
+@Intrinsic("size_of")function sizeOf<T>(): usize {
   return 0usize;
 }
-@Intrinsic function borrowShared<T>(pointer: * const T): & T {
+@Intrinsic("borrow_shared")function borrowShared<T>(pointer: * const T): & T {
   unsafe {
     return & * pointer;
   }
 }
-@Intrinsic function storeRaw<T>(pointer: * mut T, value: T): bool {
+@Intrinsic("store_raw")function storeRaw<T>(pointer: * mut T, value: T): bool {
   return false;
 }
-@Intrinsic function cloneArc<T>(value: & mut Arc<T >): Arc<T> {
+@Intrinsic("arc_clone")function cloneArc<T>(value: & mut Arc<T >): Arc<T> {
   unsafe {
     const pointer = value as * mut Arc<T>;
     return * pointer;
@@ -131,7 +131,7 @@ export function rawAddress<T>(value: & mut T): * mut T {
     return value as * mut T;
   }
 }
-@Intrinsic function borrowMut<T>(pointer: * mut T): & mut T {
+@Intrinsic("borrow_mut")function borrowMut<T>(pointer: * mut T): & mut T {
   unsafe {
     return & mut * pointer;
   }

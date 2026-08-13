@@ -2847,7 +2847,7 @@ impl OwnershipMirLowerer<'_> {
         {
             concrete.parameters[0] = actual.clone();
         }
-        if self.is_intrinsic_call(start, callee_end, "sizeOf") {
+        if self.is_intrinsic_operation(start, callee_end, "size_of") {
             let type_argument = substitutions
                 .values()
                 .next()
@@ -2874,7 +2874,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "isString") {
+        if self.is_intrinsic_operation(start, callee_end, "is_string") {
             let type_argument = substitutions
                 .values()
                 .next()
@@ -2901,7 +2901,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "isCopy") {
+        if self.is_intrinsic_operation(start, callee_end, "is_copy") {
             let type_argument = substitutions
                 .values()
                 .next()
@@ -2924,7 +2924,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "elementInitialized") {
+        if self.is_intrinsic_operation(start, callee_end, "element_initialized") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -2944,7 +2944,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "moveElement") {
+        if self.is_intrinsic_operation(start, callee_end, "move_element") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -2964,7 +2964,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "storeElement") {
+        if self.is_intrinsic_operation(start, callee_end, "store_element") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -2984,7 +2984,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "borrowMut") {
+        if self.is_intrinsic_operation(start, callee_end, "borrow_mut") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3004,7 +3004,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "borrowShared") {
+        if self.is_intrinsic_operation(start, callee_end, "borrow_shared") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3044,7 +3044,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "storeRaw") {
+        if self.is_intrinsic_operation(start, callee_end, "store_raw") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3064,7 +3064,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "cloneArc") {
+        if self.is_intrinsic_operation(start, callee_end, "arc_clone") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3084,7 +3084,7 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_call(start, callee_end, "dropInitializedElements") {
+        if self.is_intrinsic_operation(start, callee_end, "drop_initialized_elements") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3202,25 +3202,6 @@ impl OwnershipMirLowerer<'_> {
             }
         }
         None
-    }
-
-    fn is_intrinsic_call(&self, start: usize, end: usize, name: &str) -> bool {
-        let Some(expression) = self.hir_expression_range(start, end) else {
-            return false;
-        };
-        let Some(ResolvedValue::Declaration(declaration)) = expression.resolution else {
-            return false;
-        };
-        self.program
-            .graph
-            .declaration(declaration)
-            .is_some_and(|declaration| {
-                declaration.name.as_deref() == Some(name)
-                    && declaration
-                        .attributes
-                        .iter()
-                        .any(|attribute| attribute.name == "Intrinsic")
-            })
     }
 
     fn is_intrinsic_operation(&self, start: usize, end: usize, operation: &str) -> bool {

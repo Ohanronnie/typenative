@@ -12,7 +12,7 @@ extern "C" {
 export struct Utf8Error {
   public offset: usize;
 }
-@Intrinsic function borrowShared<T>(pointer: * const T): & T {
+@Intrinsic("borrow_shared")function borrowShared<T>(pointer: * const T): & T {
   unsafe {
     return & * pointer;
   }

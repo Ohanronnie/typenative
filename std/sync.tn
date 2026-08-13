@@ -35,7 +35,7 @@ extern "C" {
   function tn_channel_close(handle: * mut u8): i32;
   function tn_channel_destroy(handle: * mut u8): i32;
 }
-@Intrinsic function borrowMut<T>(pointer: * mut T): & mut T {
+@Intrinsic("borrow_mut")function borrowMut<T>(pointer: * mut T): & mut T {
   unsafe {
     return & mut * pointer;
   }

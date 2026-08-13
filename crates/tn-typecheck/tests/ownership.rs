@@ -155,6 +155,18 @@ fn rejects_user_defined_primitive_intrinsic_bindings() {
     );
 }
 
+#[test]
+fn rejects_user_defined_intrinsic_operations() {
+    assert_eq!(
+        source_conditions("@Intrinsic(\"size_of\") function forged<T>(): usize { return 0usize; }"),
+        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+    );
+    assert_eq!(
+        source_conditions("@Intrinsic function unnamed<T>(): usize { return 0usize; }"),
+        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+    );
+}
+
 fn lower_mir(program: &tn_hir::Program) -> Vec<Body> {
     let checked = tn_typecheck::check_bodies(program);
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);

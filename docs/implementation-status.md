@@ -1052,6 +1052,10 @@ Current evidence:
 - the last HIR `BuiltinValue`, previously used for `usize.parseAscii`, has been
   removed; the operation is a declared static member of the bundled
   `@Intrinsic("usize")` definition, with user-defined binding fraud rejected;
+- private intrinsic functions select reviewed MIR operations through explicit
+  `@Intrinsic("operation")` arguments rather than compiler-known helper names;
+  operation/module pairs are closed and user-defined intrinsic functions are
+  rejected;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions

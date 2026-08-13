@@ -244,11 +244,10 @@ fn check_declaration_attributes(
                     DefinitionData::Struct { .. } | DefinitionData::Enum { .. }
                 ),
                 "Intrinsic" => match &definition.data {
-                    DefinitionData::Function(_) | DefinitionData::Extern { .. } => {
-                        attribute.arguments.is_empty()
-                            || (attribute.arguments.as_slice() == ["slice_from_raw_parts"]
-                                && module.path.to_string_lossy().ends_with("std/string.tn"))
-                    }
+                    DefinitionData::Function(_) => valid_intrinsic_operation(
+                        &module.path.to_string_lossy(),
+                        &attribute.arguments,
+                    ),
                     DefinitionData::Struct { .. } => {
                         matches!(attribute.arguments.as_slice(), [key] if key == "string" || key == "usize")
                             && module.path.to_string_lossy().ends_with("std/string.tn")
@@ -286,6 +285,26 @@ fn check_declaration_attributes(
                 ));
             }
         }
+    }
+}
+
+fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
+    let [operation] = arguments else {
+        return false;
+    };
+    match operation.as_str() {
+        "size_of" => path.ends_with("std/alloc.tn") || path.ends_with("std/collections.tn"),
+        "borrow_shared" => path.ends_with("std/alloc.tn") || path.ends_with("std/string.tn"),
+        "borrow_mut" => path.ends_with("std/alloc.tn") || path.ends_with("std/sync.tn"),
+        "store_raw" | "arc_clone" => path.ends_with("std/alloc.tn"),
+        "is_string"
+        | "is_copy"
+        | "element_initialized"
+        | "move_element"
+        | "store_element"
+        | "drop_initialized_elements" => path.ends_with("std/collections.tn"),
+        "slice_from_raw_parts" => path.ends_with("std/string.tn"),
+        _ => false,
     }
 }
 

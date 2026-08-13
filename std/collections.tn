@@ -24,27 +24,27 @@ export interface Equal<Rhs> {
 }
 export interface Ord {
 }
-@Intrinsic function sizeOf<T>(): usize {
+@Intrinsic("size_of")function sizeOf<T>(): usize {
   return 0usize;
 }
-@Intrinsic function isString<T>(): bool {
+@Intrinsic("is_string")function isString<T>(): bool {
   return false;
 }
-@Intrinsic function isCopy<T>(): bool {
+@Intrinsic("is_copy")function isCopy<T>(): bool {
   return false;
 }
-@Intrinsic function elementInitialized(pointer: * const u8, index: usize): bool {
+@Intrinsic("element_initialized")function elementInitialized(pointer: * const u8, index: usize): bool {
   return false;
 }
-@Intrinsic function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
+@Intrinsic("move_element")function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
   unsafe {
     return * pointer;
   }
 }
-@Intrinsic function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
+@Intrinsic("store_element")function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
   return false;
 }
-@Intrinsic function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
+@Intrinsic("drop_initialized_elements")function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
   return false;
 }
 function allocationError(): AllocError {

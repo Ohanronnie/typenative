@@ -39,13 +39,13 @@ traceable even though those tags are not source names.
 
 ## Private intrinsic functions
 
-The following names are currently recognized only after resolution confirms an
-`@Intrinsic` declaration: `sizeOf`, `isString`, `isCopy`, `elementInitialized`,
-`moveElement`, `storeElement`, `dropInitializedElements`, `borrowMut`,
-`borrowShared`, `storeRaw`, and `cloneArc`. They implement representation or
-ownership operations that TypeNative source cannot express safely. Migration
-work will replace name matching with explicit intrinsic operation arguments,
-as already done for `slice_from_raw_parts`.
+Private helper names are not compiler-known. Standard-library functions bind
+to reviewed operations with explicit attribute arguments such as
+`@Intrinsic("size_of")`, `@Intrinsic("borrow_shared")`, and
+`@Intrinsic("arc_clone")`. Renaming a helper preserves its compiler behavior;
+moving an operation outside its approved standard module or forging the
+attribute in user source is rejected. These operations implement representation
+or ownership behavior that TypeNative source cannot express safely.
 
 ## Internal MIR operation tags
 
