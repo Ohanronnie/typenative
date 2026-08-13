@@ -764,21 +764,159 @@ export struct SetOptions {
     }
   }
 }
-@Drop export struct OrderedMap<K, V> {
-  public handle: * mut u8;
-  public length: usize;
-  public keySize: usize;
-  public valueSize: usize;
+export struct OrderedMapOptions {
+  public capacity: usize;
+}
+@Drop export class OrderedMap<K extends Equal<K > & Hash, V> {
+  private handle: * mut u8;
+  public readonly length: usize;
+  public readonly capacity: usize;
+  private keySize: usize;
+  private valueSize: usize;
+  public constructor(options: OrderedMapOptions) {
+    const keySize = sizeOf<K>();
+    const valueSize = sizeOf<V>();
+    let stringKeys: i32 = 0i32;
+    let stringValues: i32 = 0i32;
+    if (isString<K>()) {
+      stringKeys = 1i32;
+    }
+    if (isString<V>()) {
+      stringValues = 1i32;
+    }
+    this.length = 0usize;
+    this.capacity = options.capacity;
+    this.keySize = keySize;
+    this.valueSize = valueSize;
+    unsafe {
+      this.handle = tn_map_create_ex(keySize, valueSize, 1i32, stringKeys, stringValues, options.capacity);
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut set(key: K, value: V): bool {
+    unsafe {
+      const status = tn_map_insert(this.handle,( & key)as * const u8,( & value)as * const u8);
+      this.length = tn_map_length(this.handle);
+      this.capacity = tn_map_capacity(this.handle);
+      return status === 0i32;
+    }
+  }
+  public get(key: & K): V | undefined {
+    unsafe {
+      const output = rawAlloc(this.valueSize)as * mut V;
+      if (tn_map_get(this.handle, key as * const u8, output as * mut u8) !== 1i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      return value;
+    }
+  }
+  public contains(key: & K): bool {
+    unsafe {
+      return tn_map_contains(this.handle, key as * const u8) === 1i32;
+    }
+  }
+  public mut remove(key: & K): bool {
+    unsafe {
+      const removed = tn_map_remove(this.handle, key as * const u8) === 1i32;
+      this.length = tn_map_length(this.handle);
+      return removed;
+    }
+  }
+  public mut reserve(minimumCapacity: usize): void throws AllocError {
+    unsafe {
+      if (tn_map_reserve(this.handle, minimumCapacity) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut shrinkToFit(): void throws AllocError {
+    unsafe {
+      if (tn_map_shrink_to_fit(this.handle) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut clear(): void {
+    unsafe {
+      tn_map_clear(this.handle);
+    }
+    this.length = 0usize;
+  }
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
     }
   }
 }
-@Drop export struct OrderedSet<T> {
-  public handle: * mut u8;
-  public length: usize;
-  public elementSize: usize;
+export struct OrderedSetOptions {
+  public capacity: usize;
+}
+@Drop export class OrderedSet<T extends Equal<T > & Hash> {
+  private handle: * mut u8;
+  public readonly length: usize;
+  public readonly capacity: usize;
+  private elementSize: usize;
+  public constructor(options: OrderedSetOptions) {
+    const elementSize = sizeOf<T>();
+    let stringValues: i32 = 0i32;
+    if (isString<T>()) {
+      stringValues = 1i32;
+    }
+    this.length = 0usize;
+    this.capacity = options.capacity;
+    this.elementSize = elementSize;
+    unsafe {
+      this.handle = tn_map_create_ex(elementSize, 0usize, 1i32, stringValues, 0i32, options.capacity);
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut insert(value: T): bool {
+    unsafe {
+      const status = tn_map_insert(this.handle,( & value)as * const u8,( & value)as * const u8);
+      this.length = tn_map_length(this.handle);
+      this.capacity = tn_map_capacity(this.handle);
+      return status === 0i32;
+    }
+  }
+  public contains(value: & T): bool {
+    unsafe {
+      return tn_map_contains(this.handle, value as * const u8) === 1i32;
+    }
+  }
+  public mut remove(value: & T): bool {
+    unsafe {
+      const removed = tn_map_remove(this.handle, value as * const u8) === 1i32;
+      this.length = tn_map_length(this.handle);
+      return removed;
+    }
+  }
+  public mut reserve(minimumCapacity: usize): void throws AllocError {
+    unsafe {
+      if (tn_map_reserve(this.handle, minimumCapacity) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut shrinkToFit(): void throws AllocError {
+    unsafe {
+      if (tn_map_shrink_to_fit(this.handle) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut clear(): void {
+    unsafe {
+      tn_map_clear(this.handle);
+    }
+    this.length = 0usize;
+  }
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
@@ -900,102 +1038,4 @@ export function heapPeek<T>(heap: & Heap<T>, value: * mut u8): bool {
   unsafe {
     return tn_bytes_copy_at(heap.pointer as * const u8, heap.capacity * heap.elementSize,(heap.length - 1usize) * heap.elementSize, heap.elementSize, value) === 0i32;
   }
-}
-export function orderedMapAllocate<K, V>(keySize: usize, valueSize: usize): OrderedMap<K, V> {
-  unsafe {
-    return {
-      handle: tn_map_create(keySize, valueSize, 1i32), length: 0usize, keySize: keySize, valueSize: valueSize
-    };
-  }
-}
-export function orderedMapAllocateChecked<K extends Equal<K > & Hash, V>(keySize: usize, valueSize: usize): OrderedMap<K, V > throws AllocError {
-  const map = orderedMapAllocate<K, V>(keySize, valueSize);
-  unsafe {
-    if (isNull(map.handle as * const u8)) {
-      throw allocationError();
-    }
-  }
-  return map;
-}
-export function orderedMapInsert<K extends Equal<K > & Hash, V>(map: & mut OrderedMap<K, V>, key: * const K, value: * const V): bool {
-  unsafe {
-    const status = tn_map_insert(map.handle, key as * const u8, value as * const u8);
-    map.length = tn_map_length(map.handle);
-    return status === 0i32;
-  }
-}
-export function orderedMapGet<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V>, key: * const K, value: * mut V): bool {
-  unsafe {
-    return tn_map_get(map.handle, key as * const u8, value as * mut u8) === 1i32;
-  }
-}
-export function orderedMapContains<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V>, key: * const K): bool {
-  unsafe {
-    return tn_map_contains(map.handle, key as * const u8) === 1i32;
-  }
-}
-export function orderedMapRemove<K extends Equal<K > & Hash, V>(map: & mut OrderedMap<K, V>, key: * const K): bool {
-  unsafe {
-    const removed = tn_map_remove(map.handle, key as * const u8) === 1i32;
-    map.length = tn_map_length(map.handle);
-    return removed;
-  }
-}
-export function orderedMapClear<K extends Equal<K > & Hash, V>(map: & mut OrderedMap<K, V >): void {
-  unsafe {
-    tn_map_clear(map.handle);
-    map.length = 0usize;
-  }
-}
-export function orderedMapLength<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V >): usize {
-  return map.length;
-}
-export function orderedMapNext<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V>, cursor: & mut usize, key: * mut K, value: * mut V): bool {
-  unsafe {
-    return tn_map_next(map.handle, cursor as * mut usize, key as * mut u8, value as * mut u8) === 1i32;
-  }
-}
-export function orderedSetAllocate<T>(elementSize: usize): OrderedSet<T> {
-  unsafe {
-    return {
-      handle: tn_map_create(elementSize, 0usize, 1i32), length: 0usize, elementSize: elementSize
-    };
-  }
-}
-export function orderedSetAllocateChecked<T extends Equal<T > & Hash>(elementSize: usize): OrderedSet<T > throws AllocError {
-  const set = orderedSetAllocate<T>(elementSize);
-  unsafe {
-    if (isNull(set.handle as * const u8)) {
-      throw allocationError();
-    }
-  }
-  return set;
-}
-export function orderedSetInsert<T extends Equal<T > & Hash>(set: & mut OrderedSet<T>, value: * const T): bool {
-  unsafe {
-    const status = tn_map_insert(set.handle, value as * const u8, "" as * const u8);
-    set.length = tn_map_length(set.handle);
-    return status === 0i32;
-  }
-}
-export function orderedSetContains<T extends Equal<T > & Hash>(set: & OrderedSet<T>, value: * const T): bool {
-  unsafe {
-    return tn_map_contains(set.handle, value as * const u8) === 1i32;
-  }
-}
-export function orderedSetRemove<T extends Equal<T > & Hash>(set: & mut OrderedSet<T>, value: * const T): bool {
-  unsafe {
-    const removed = tn_map_remove(set.handle, value as * const u8) === 1i32;
-    set.length = tn_map_length(set.handle);
-    return removed;
-  }
-}
-export function orderedSetClear<T extends Equal<T > & Hash>(set: & mut OrderedSet<T >): void {
-  unsafe {
-    tn_map_clear(set.handle);
-    set.length = 0usize;
-  }
-}
-export function orderedSetLength<T extends Equal<T > & Hash>(set: & OrderedSet<T >): usize {
-  return set.length;
 }

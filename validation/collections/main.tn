@@ -1,5 +1,5 @@
 import { AllocError } from "std/alloc";
-import { Array, Deque, Map, Queue, Set, heapAllocate, heapPop, heapPush, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert } from "std/collections";
+import { Array, Deque, Map, OrderedMap, OrderedSet, Queue, Set, heapAllocate, heapPop, heapPush } from "std/collections";
 
 function main(): i32 {
   let key: i32 = 16i32;
@@ -42,8 +42,12 @@ function main(): i32 {
   let textSet = new Set<string>({
     capacity: 4usize,
   });
-  let ordered = orderedMapAllocate<i32, i32>(4usize, 4usize);
-  let orderedValues = orderedSetAllocate<i32>(4usize);
+  let ordered = new OrderedMap<i32, i32>({
+    capacity: 4usize,
+  });
+  let orderedValues = new OrderedSet<i32>({
+    capacity: 4usize,
+  });
   let map = new Map<i32, i32>({
     capacity: 4usize,
   });
@@ -70,12 +74,8 @@ function main(): i32 {
       return 50i32;
     }
     canonical.set(key, value);
-    {
-      const keyRef = & key;
-      const valueRef = & value;
-      orderedMapInsert<i32, i32>( & mut ordered, keyRef as * const i32, valueRef as * const i32);
-      orderedSetInsert<i32>( & mut orderedValues, keyRef as * const i32);
-    }
+    ordered.set(key, value);
+    orderedValues.insert(key);
     try {
       try canonicalSetValue.reserve(64usize);
     } catch (error: AllocError) {
@@ -245,12 +245,15 @@ function main(): i32 {
       return 52i32;
     }
     {
-      const keyRef = & key;
-      const outputRef = & mut orderedMapOutput;
-      if (!orderedMapContains<i32, i32>( & ordered, keyRef as * const i32) || !orderedMapGet<i32, i32>( & ordered, keyRef as * const i32, outputRef as * mut i32)) {
+      if (!ordered.contains( & key)) {
         return 20i32;
       }
-      if (!orderedSetContains<i32>( & orderedValues, keyRef as * const i32)) {
+      const output = ordered.get( & key);
+      if (output === undefined) {
+        return 20i32;
+      }
+      orderedMapOutput = output!;
+      if (!orderedValues.contains( & key)) {
         return 21i32;
       }
     }
