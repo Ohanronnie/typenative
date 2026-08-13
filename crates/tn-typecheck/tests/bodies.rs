@@ -283,6 +283,27 @@ function invalid(counter: Counter): void {
 }
 
 #[test]
+fn canonical_set_requires_explicit_equality_and_hash_support() {
+    let (_, checked) = checked_with_workspace_standard_library(
+        r#"
+import { Set } from "std/collections";
+struct MissingKeyProtocols {}
+function invalid(): void {
+  const values = new Set<MissingKeyProtocols>({ capacity: 4usize });
+}
+"#,
+    );
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.condition.as_str() == "TYPE_UNSATISFIED_GENERIC_BOUND"),
+        "{:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn checks_closed_patterns_bindings_guards_and_unreachable_arms() {
     let diagnostics = conditions(
         r"

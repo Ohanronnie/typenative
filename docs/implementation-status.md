@@ -1072,6 +1072,17 @@ Current evidence:
 - readonly field assignment is rejected outside the declaring type with
   `TYPE_READONLY_FIELD_ASSIGNMENT`, while constructors and declared methods can
   maintain their own public read-only state;
+- `Set<T>` now has an ordinary capacity constructor and declared `insert`,
+  `contains`, `remove`, `reserve`, `shrinkToFit`, and `clear` methods over a
+  private runtime handle. Its length and actual runtime capacity are read-only,
+  its procedural `set*` export family is absent, primitive and owned-string
+  keys pass native debug/optimized tests, and construction rejects nominal key
+  types without explicit `Equal<T>` and `Hash` conformance. Nominal generic
+  arguments are now checked against declaration bounds at `new` expressions;
+- the reusable native map storage boundary exposes capacity, reserve, and
+  shrink operations with locking, checked allocation, and focused C runtime
+  coverage; canonical map-backed collections consume these operations without
+  exposing handles or element sizes;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions
@@ -1083,9 +1094,9 @@ Remaining scope:
   `try`/`catch`, direct capability decorators, `@Conform`, `@Drop`, `@Intrinsic`,
   `@Sealed`, `using`, generators, async generators, and typed user macros.
 - Complete the remaining collection surface: fixed arrays, slices,
-  `Map<K, V>`, `Set<T>`, `OrderedMap<K, V>`, `OrderedSet<T>`, and `Heap<T>`,
-  including `Equal`/`Hash` key constraints; finish Queue/Deque borrowing and
-  iteration together with the canonical iterator protocol.
+  `Map<K, V>`, `OrderedMap<K, V>`, `OrderedSet<T>`, and `Heap<T>`; finish
+  Queue/Deque/Set iteration and borrowing together with the canonical iterator
+  protocol.
 - Remove obsolete `Result`, `Option`, `match`, `impl`, `extension`, `record`,
   `where`, `dyn`, collection, module, and compatibility spellings from every
   compiler layer and fixture.

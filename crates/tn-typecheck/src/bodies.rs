@@ -1716,6 +1716,27 @@ impl BodyChecker<'_> {
             }
             resolved => resolved,
         };
+        if let Type::Nominal(id, arguments) | Type::DynamicInterface(id, arguments) = &ty
+            && !arguments.is_empty()
+            && let Some(definition) = self.program.definition(*id)
+        {
+            let generics = definition
+                .generics
+                .iter()
+                .map(|generic| tn_hir::GenericConstraint {
+                    name: generic.name.clone(),
+                    namespace: generic.namespace,
+                    bounds: generic.bounds.clone(),
+                })
+                .collect::<Vec<_>>();
+            let substitutions = generics
+                .iter()
+                .filter(|generic| generic.namespace != tn_hir::Namespace::Value)
+                .zip(arguments)
+                .map(|(generic, argument)| (generic.name.clone(), argument.clone()))
+                .collect::<BTreeMap<_, _>>();
+            self.validate_generic_bounds(&generics, &substitutions, Some(&name_token));
+        }
         let class = nominal_id(&ty).and_then(|id| {
             self.program.definition(id).and_then(|definition| {
                 if let DefinitionData::Class {

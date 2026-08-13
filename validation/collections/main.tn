@@ -1,4 +1,6 @@
-import { Array, Deque, Queue, heapAllocate, heapPop, heapPush, mapAllocate, mapContains, mapGet, mapInsert, mapLength, mapRemove, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert, setAllocate, setContains, setInsert, setLength, setRemove } from "std/collections";
+import { AllocError } from "std/alloc";
+import { Array, Deque, Queue, Set, heapAllocate, heapPop, heapPush, mapAllocate, mapContains, mapGet, mapInsert, mapLength, mapRemove, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert } from "std/collections";
+
 function main(): i32 {
   let key: i32 = 16i32;
   let value: i32 = 42i32;
@@ -32,7 +34,12 @@ function main(): i32 {
   });
   let heap = heapAllocate<i32>(4usize, 2usize);
   let canonical = mapAllocate<i32, i32>(4usize, 4usize);
-  let canonicalSetValue = setAllocate<i32>(4usize);
+  let canonicalSetValue = new Set<i32>({
+    capacity: 4usize,
+  });
+  let textSet = new Set<string>({
+    capacity: 4usize,
+  });
   let ordered = orderedMapAllocate<i32, i32>(4usize, 4usize);
   let orderedValues = orderedSetAllocate<i32>(4usize);
   let map = mapAllocate<i32, i32>(4usize, 4usize);
@@ -61,14 +68,23 @@ function main(): i32 {
       orderedMapInsert<i32, i32>( & mut ordered, keyRef as * const i32, valueRef as * const i32);
       orderedSetInsert<i32>( & mut orderedValues, keyRef as * const i32);
     }
-    {
-      const keyRef = & key;
-      setInsert<i32>( & mut canonicalSetValue, keyRef as * const i32);
+    try {
+      try canonicalSetValue.reserve(64usize);
+    } catch (error: AllocError) {
+      return 45i32;
     }
+    if (canonicalSetValue.capacity<64usize) {
+      return 46i32;
+    }
+    canonicalSetValue.insert(key);
+    if (!canonicalSetValue.contains( & key)) {
+      return 3i32;
+    }
+    textSet.insert("key");
     {
-      const keyRef = & key;
-      if (!setContains<i32>( & canonicalSetValue, keyRef as * const i32)) {
-        return 3i32;
+      const textKey: string = "key";
+      if (!textSet.contains( & textKey)) {
+        return 44i32;
       }
     }
     {
@@ -233,19 +249,22 @@ function main(): i32 {
       }
     }
     {
-      let removed = false;
-      {
-        const keyRef = & key;
-        removed = setRemove<i32>( & mut canonicalSetValue, keyRef as * const i32);
-      }
-      if (!removed) {
+      if (!canonicalSetValue.remove( & key)) {
         return 17i32;
       }
     }
     {
-      if (setLength<i32>( & canonicalSetValue) !== 0usize) {
+      if (canonicalSetValue.length !== 0usize) {
         return 17i32;
       }
+    }
+    try {
+      try canonicalSetValue.shrinkToFit();
+    } catch (error: AllocError) {
+      return 47i32;
+    }
+    if (canonicalSetValue.capacity !== 8usize) {
+      return 48i32;
     }
     {
       const keyRef = & key;

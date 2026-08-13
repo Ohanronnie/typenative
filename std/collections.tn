@@ -15,6 +15,9 @@ extern "C" {
   function tn_map_remove(handle: * mut u8, key: * const u8): i32;
   function tn_map_clear(handle: * mut u8): i32;
   function tn_map_length(handle: * mut u8): usize;
+  function tn_map_capacity(handle: * mut u8): usize;
+  function tn_map_reserve(handle: * mut u8, minimumCapacity: usize): i32;
+  function tn_map_shrink_to_fit(handle: * mut u8): i32;
   function tn_map_next(handle: * mut u8, cursor: * mut usize, key: * mut u8, value: * mut u8): i32;
   function tn_map_destroy(handle: * mut u8): i32;
 }
@@ -673,10 +676,70 @@ export struct MapOptions {
     }
   }
 }
-@Drop export struct Set<T> {
-  public handle: * mut u8;
-  public length: usize;
-  public elementSize: usize;
+export struct SetOptions {
+  public capacity: usize;
+}
+@Drop export class Set<T extends Equal<T > & Hash> {
+  private handle: * mut u8;
+  public readonly length: usize;
+  public readonly capacity: usize;
+  private elementSize: usize;
+  public constructor(options: SetOptions) {
+    const elementSize = sizeOf<T>();
+    let stringValues: i32 = 0i32;
+    if (isString<T>()) {
+      stringValues = 1i32;
+    }
+    this.length = 0usize;
+    this.capacity = options.capacity;
+    this.elementSize = elementSize;
+    unsafe {
+      this.handle = tn_map_create_ex(elementSize, 0usize, 0i32, stringValues, 0i32, options.capacity);
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut insert(value: T): bool {
+    unsafe {
+      const status = tn_map_insert(this.handle,( & value)as * const u8,( & value)as * const u8);
+      this.length = tn_map_length(this.handle);
+      this.capacity = tn_map_capacity(this.handle);
+      return status === 0i32;
+    }
+  }
+  public contains(value: & T): bool {
+    unsafe {
+      return tn_map_contains(this.handle, value as * const u8) === 1i32;
+    }
+  }
+  public mut remove(value: & T): bool {
+    unsafe {
+      const removed = tn_map_remove(this.handle, value as * const u8) === 1i32;
+      this.length = tn_map_length(this.handle);
+      return removed;
+    }
+  }
+  public mut reserve(minimumCapacity: usize): void throws AllocError {
+    unsafe {
+      if (tn_map_reserve(this.handle, minimumCapacity) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut shrinkToFit(): void throws AllocError {
+    unsafe {
+      if (tn_map_shrink_to_fit(this.handle) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut clear(): void {
+    unsafe {
+      tn_map_clear(this.handle);
+    }
+    this.length = 0usize;
+  }
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
@@ -874,53 +937,6 @@ export function mapNext<K extends Equal<K > & Hash, V>(map: & Map<K, V>, cursor:
   unsafe {
     return tn_map_next(map.handle, cursor as * mut usize, key as * mut u8, value as * mut u8) === 1i32;
   }
-}
-function setAllocateRaw<T>(elementSize: usize): Set<T> {
-  unsafe {
-    return {
-      handle: tn_map_create(elementSize, 0usize, 0i32), length: 0usize, elementSize: elementSize
-    };
-  }
-}
-export function setAllocate<T extends Equal<T > & Hash>(elementSize: usize): Set<T> {
-  return setAllocateRaw<T>(elementSize);
-}
-export function setAllocateChecked<T extends Equal<T > & Hash>(elementSize: usize): Set<T > throws AllocError {
-  const set = setAllocateRaw<T>(elementSize);
-  unsafe {
-    if (isNull(set.handle as * const u8)) {
-      throw allocationError();
-    }
-  }
-  return set;
-}
-export function setInsert<T extends Equal<T > & Hash>(set: & mut Set<T>, value: * const T): bool {
-  unsafe {
-    const status = tn_map_insert(set.handle, value as * const u8, "" as * const u8);
-    set.length = tn_map_length(set.handle);
-    return status === 0i32;
-  }
-}
-export function setContains<T extends Equal<T > & Hash>(set: & Set<T>, value: * const T): bool {
-  unsafe {
-    return tn_map_contains(set.handle, value as * const u8) === 1i32;
-  }
-}
-export function setRemove<T extends Equal<T > & Hash>(set: & mut Set<T>, value: * const T): bool {
-  unsafe {
-    const removed = tn_map_remove(set.handle, value as * const u8) === 1i32;
-    set.length = tn_map_length(set.handle);
-    return removed;
-  }
-}
-export function setClear<T extends Equal<T > & Hash>(set: & mut Set<T >): void {
-  unsafe {
-    tn_map_clear(set.handle);
-    set.length = 0usize;
-  }
-}
-export function setLength<T extends Equal<T > & Hash>(set: & Set<T >): usize {
-  return set.length;
 }
 export function orderedMapAllocate<K, V>(keySize: usize, valueSize: usize): OrderedMap<K, V> {
   unsafe {

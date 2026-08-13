@@ -29,6 +29,9 @@ int tn_map_get(void *map, const void *key, void *value);
 int tn_map_contains(void *map, const void *key);
 int tn_map_remove(void *map, const void *key);
 size_t tn_map_length(void *map);
+size_t tn_map_capacity(void *map);
+int tn_map_reserve(void *map, size_t minimum_capacity);
+int tn_map_shrink_to_fit(void *map);
 int tn_map_next(void *map, size_t *cursor, void *key, void *value);
 int tn_map_destroy(void *map);
 void *tn_channel_create(size_t element_size, size_t capacity);
@@ -118,6 +121,9 @@ static void test_map(void) {
   assert(map != NULL);
   assert(tn_map_insert(map, &key0, &value0) == 0);
   assert(tn_map_insert(map, &key1, &value1) == 0);
+  assert(tn_map_capacity(map) >= 16);
+  assert(tn_map_reserve(map, 64) == 0);
+  assert(tn_map_capacity(map) >= 64);
   assert(tn_map_contains(map, &key0) == 1);
   assert(tn_map_contains(map, &key1) == 1);
   assert(tn_map_remove(map, &key0) == 1);
@@ -132,6 +138,8 @@ static void test_map(void) {
   assert(iterated_key == key1 && iterated_value == value1);
   assert(tn_map_next(map, &cursor, &iterated_key, &iterated_value) == 0);
   assert(tn_map_length(map) == 1);
+  assert(tn_map_shrink_to_fit(map) == 0);
+  assert(tn_map_capacity(map) == 8);
   assert(tn_map_destroy(map) == 0);
 
   map = tn_map_create(sizeof(key0), 0, 1);

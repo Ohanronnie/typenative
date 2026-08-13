@@ -2615,6 +2615,50 @@ size_t tn_map_length(void *handle) {
   return length;
 }
 
+size_t tn_map_capacity(void *handle) {
+  tn_map *map = handle;
+  if (map == NULL) {
+    return 0;
+  }
+  pthread_mutex_lock(&map->mutex);
+  size_t capacity = map->capacity;
+  pthread_mutex_unlock(&map->mutex);
+  return capacity;
+}
+
+int tn_map_reserve(void *handle, size_t minimum_capacity) {
+  tn_map *map = handle;
+  if (map == NULL) {
+    return -EINVAL;
+  }
+  pthread_mutex_lock(&map->mutex);
+  int status = 0;
+  if (minimum_capacity > map->capacity) {
+    status = tn_map_resize(map, minimum_capacity);
+  }
+  pthread_mutex_unlock(&map->mutex);
+  return status == 0 ? 0 : -status;
+}
+
+int tn_map_shrink_to_fit(void *handle) {
+  tn_map *map = handle;
+  if (map == NULL) {
+    return -EINVAL;
+  }
+  pthread_mutex_lock(&map->mutex);
+  size_t target = map->length < 8 ? 8 : map->length;
+  if (!map->ordered && map->length >= 4) {
+    if (map->length > SIZE_MAX / 2) {
+      pthread_mutex_unlock(&map->mutex);
+      return -ENOMEM;
+    }
+    target = map->length * 2;
+  }
+  int status = target < map->capacity ? tn_map_resize(map, target) : 0;
+  pthread_mutex_unlock(&map->mutex);
+  return status == 0 ? 0 : -status;
+}
+
 int tn_map_next(void *handle, size_t *cursor, void *key, void *value) {
   tn_map *map = handle;
   if (map == NULL || cursor == NULL || key == NULL ||

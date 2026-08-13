@@ -240,23 +240,23 @@ fn rejects_package_specifiers_missing_exports_and_overload_sets() {
 }
 
 #[test]
-fn removed_procedural_ring_collection_apis_are_not_importable() {
+fn removed_procedural_collection_apis_are_not_importable() {
     let directory = tempfile::tempdir().expect("temporary module graph");
     let root = directory.path();
     let standard_library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
     write(
         &root.join("main.tn"),
-        "import { dequeAllocate, queueAllocate } from \"std/collections\";\nfunction main(): void {}\n",
+        "import { dequeAllocate, queueAllocate, setAllocate } from \"std/collections\";\nfunction main(): void {}\n",
     );
     let error = load_module_graph(root, &root.join("main.tn"), &standard_library)
-        .expect_err("removed procedural ring collection APIs must not resolve");
+        .expect_err("removed procedural collection APIs must not resolve");
     assert_eq!(
         error
             .diagnostics()
             .iter()
             .filter(|diagnostic| diagnostic.condition.as_str() == "RESOLVE_MISSING_EXPORT")
             .count(),
-        2
+        3
     );
 }
 
