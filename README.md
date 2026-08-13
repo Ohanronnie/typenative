@@ -50,14 +50,14 @@ struct Endpoint {
   port: u16;
 }
 
-async function readGreeting(endpoint: &Endpoint): Promise<string, IOError> throws IOError {
-  const address = `${endpoint.host}:${endpoint.port}`.toString();
+async function readGreeting(endpoint: &Endpoint): Promise<string, IOError> {
+  const address: string = `${endpoint.host}:${endpoint.port}`;
   let stream = try await TcpStream.connect(address.asStr());
   return try await stream.readToString();
 }
 
 function main(): void throws IOError {
-  const endpoint: Endpoint = { host: "127.0.0.1".toString(), port: 6379 };
+  const endpoint: Endpoint = { host: "127.0.0.1", port: 6379 };
   const greeting = try run(readGreeting(&endpoint));
   console.log(`server replied: ${greeting}`);
 }

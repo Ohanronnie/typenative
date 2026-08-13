@@ -1,6 +1,5 @@
 import { rawAlloc, rawFree } from "std/alloc";
 import { Drop } from "std/core";
-import { String } from "std/string";
 
 export struct Path {
   public text: & static str;
@@ -21,6 +20,7 @@ export struct PathError {
 extern "C" {
   function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
   function tn_path_basename(path: * const u8, output: * mut u8, capacity: usize): i32;
+  function tn_string_from_bytes(bytes: * const u8, length: usize): string;
   function strlen(bytes: * const u8): usize;
 }
 export function join(left: & static str, right: & static str, output: * mut u8, capacity: usize): i32 {
@@ -52,7 +52,7 @@ export function joinOwned(left: & static str, right: & static str): OwnedPath th
     };
   }
 }
-export function basenameOwned(path: & static str): String throws PathError {
+export function basenameOwned(path: & static str): string throws PathError {
   unsafe {
     const capacity = strlen(path as * const u8) + 1usize;
     const pointer = rawAlloc(capacity);
@@ -61,8 +61,8 @@ export function basenameOwned(path: & static str): String throws PathError {
       rawFree(pointer);
       throw pathError(status);
     }
-    return {
-      pointer: pointer, length: strlen(pointer as * const u8), capacity: capacity
-    };
+    const result = tn_string_from_bytes(pointer as * const u8, strlen(pointer as * const u8));
+    rawFree(pointer);
+    return result;
   }
 }

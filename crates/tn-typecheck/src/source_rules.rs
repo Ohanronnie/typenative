@@ -33,7 +33,8 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
         "Promise",
     ];
     let obsolete_public_types = [
-        "Option", "Result", "Vec", "VecDeque", "HashMap", "HashSet", "BTreeMap", "BTreeSet",
+        "Option", "Result", "String", "Vec", "VecDeque", "HashMap", "HashSet", "BTreeMap",
+        "BTreeSet",
     ];
     for module in &program.graph.modules {
         for declaration in &module.declarations {

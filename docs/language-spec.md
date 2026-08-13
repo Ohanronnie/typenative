@@ -284,6 +284,20 @@ is the only union syntax. Optional fields `field?: T` are the same type.
 General unions and intersections are excluded; use nominal enums for other sum
 types.
 
+`string` is the sole public owned UTF-8 text type. `str` is an unsized UTF-8
+view and `&str` is its borrowed form. The uppercase name `String` is obsolete
+and rejected. A string literal has type `&static str`; when an assignment,
+argument, return, field, or enum payload requires owned `string`, the compiler
+materializes an explicit owned conversion in HIR and MIR. This contextual rule
+applies only from a string literal to `string` and is not a general implicit
+conversion.
+
+Canonical owned text operations are `string.from(view)`,
+`string.fromUtf8(bytes)`, `text.toAsciiUppercase()`, `text.clone()`,
+`text.asStr()`, and `text.bytes()`. Strict equality compares UTF-8 contents
+without allocating. Text cannot be indexed by byte; callers use byte, scalar,
+or grapheme views and checked UTF-8-boundary slicing.
+
 Integer literals infer from assignments, parameters, returns, fields, enum
 payloads, and generic instantiations. An unconstrained integer defaults to
 `number`; an unconstrained decimal defaults to `f64`. A suffix selects an
@@ -371,8 +385,8 @@ checked, elements are destroyed exactly once, and map/set keys require explicit
 ```tn
 function makeUsers(): Array<string> {
   const users = new Array<string>({ capacity: 2 });
-  users.push("ronnie".toString());
-  users.push("guest".toString());
+  users.push("ronnie");
+  users.push("guest");
   users.reserve(8);
   return users;
 }

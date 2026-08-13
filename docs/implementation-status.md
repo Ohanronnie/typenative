@@ -799,7 +799,7 @@ FAIL: bootstrap message: independent self-hosting failed: compiler A could not b
 
 Fresh full-matrix verification on 2026-08-12 (macOS ARM64) used the built compiler explicitly:
 
-```text
+````text
 TN_BIN=/Users/ronnie/.cargo.target/debug/tn \
   TYPENATIVE_RUNTIME_ROOT=/Users/ronnie/Projects/typenative/runtime scripts/verify-all.sh
 PASS: design, toolchain, workspace tests, Clippy, docs, TypeNative format/check, CLI, hosted
@@ -835,7 +835,7 @@ PASS: executable returned 40
 runtime conditional/comparison regression
 PASS: evaluator comparison and conditional select; single-function and multi-function LLVM
 `icmp`/zero-extension/`select`; strict runtime compile
-```
+````
 
 The combined post-change rerun (parameter-aware LLVM emission, the aggregate typed backend
 operation stream, content-stable HIR declaration identities, and the active-target cleanup) used
@@ -871,7 +871,8 @@ FAIL: independent self-hosting failed: compiler A could not build compiler B
 The resolver-aware rerun reached the same boundary with
 `module-check=5381000ns`, `ownership=5390000ns`, `mir-drop=0ns`, and
 `monomorphization=4000ns`, then exited before B was emitted.
-```
+
+````
 
 The standalone CLI validation also passes with the explicit compiler path on this checkout:
 
@@ -879,7 +880,7 @@ The standalone CLI validation also passes with the explicit compiler path on thi
 TN_BIN=/Users/ronnie/.cargo.target/debug/tn \
   TYPENATIVE_RUNTIME_ROOT=/Users/ronnie/Projects/typenative/runtime scripts/verify-cli.sh
 PASS: tn-cli-surface=pass
-```
+````
 
 The verification scripts now resolve an absolute `CARGO_TARGET_DIR` before falling back to the
 compiler binary, so the external target directory is handled without a repository-local symlink.
@@ -1029,6 +1030,9 @@ Current evidence:
 
 - the canonical specification, migration manifest, architecture, implementation
   plan, Redis acceptance contract, and preparation records are synchronized;
+- uppercase public `String` has been removed from the non-protected standard
+  library and is rejected as `TYPE_OBSOLETE_PUBLIC_TYPE`; owned-returning
+  string, environment, and path APIs use lowercase `string`;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions

@@ -39,6 +39,13 @@ declared in TypeNative standard-library modules and are not hidden compiler
 operations. The remaining project-owned C inventory and its retirement
 criteria are recorded in [`gate10-native-inventory.md`](gate10-native-inventory.md).
 
+The compiler recognizes lowercase `string`, unsized `str`, and borrowed
+`&str` as language layout and ownership categories. It does not recognize an
+uppercase `String` declaration. Literal-to-owned conversion is type-directed,
+retained in typed HIR, and lowered to an explicit MIR operation. String methods
+resolve through the canonical standard-library surface; reviewed native calls
+remain private implementation details of `std/string`.
+
 This boundary documents compiler-independent preparation only. The protected
 `compiler-tn/**` implementation and self-hosting orchestration are not used as
 evidence here, and a complete independent compiler chain remains an open

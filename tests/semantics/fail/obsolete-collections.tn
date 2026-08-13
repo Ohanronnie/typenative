@@ -1,1 +1,4 @@
-export struct Vec<T> {}
+export struct Vec<T> {
+}
+export struct String {
+}
