@@ -5,6 +5,10 @@ surface and native semantics. It targets hosted command-line tools, servers,
 databases, and native libraries without a garbage collector or JavaScript
 runtime.
 
+The hosted runtime and executable startup are ordinary TypeNative. Platform
+services remain explicit `extern "C"` boundaries to external libc, pthread,
+operating-system, LLVM, and Node-API implementations.
+
 The language uses explicit native layouts, affine ownership, checked borrowing,
 deterministic destruction, typed recoverable errors, and LLVM code generation.
 Familiar syntax is a usability goal; TypeScript source compatibility is not.

@@ -1,0 +1,3038 @@
+extern "C" {
+  function calloc(count: usize, size: usize): * mut u8;
+  function free(pointer: * mut u8): void;
+  function malloc(size: usize): * mut u8;
+  function realloc(pointer: * mut u8, size: usize): * mut u8;
+  function memcpy(destination: * mut u8, source: * const u8, length: usize): * mut u8;
+  function memmove(destination: * mut u8, source: * const u8, length: usize): * mut u8;
+  function memcmp(left: * const u8, right: * const u8, length: usize): i32;
+  function strlen(bytes: * const u8): usize;
+  function strcmp(left: * const u8, right: * const u8): i32;
+  function strtoul(text: * const u8, end: * mut * mut u8, base: i32): usize;
+  function snprintf(buffer: * mut u8, capacity: usize, format: * const u8, value: i64): usize;
+  function memset(pointer: * mut u8, value: i32, size: usize): * mut u8;
+  function write(fd: i32, bytes: * const u8, length: usize): isize;
+  function abort(): void;
+  function _exit(code: i32): void;
+  function getpid(): i32;
+  function pthread_mutex_init(mutex: * mut u8, attributes: * const u8): i32;
+  function pthread_mutex_lock(mutex: * mut u8): i32;
+  function pthread_mutex_unlock(mutex: * mut u8): i32;
+  function pthread_mutex_destroy(mutex: * mut u8): i32;
+  function pthread_cond_init(condition: * mut u8, attributes: * const u8): i32;
+  function pthread_cond_wait(condition: * mut u8, mutex: * mut u8): i32;
+  function pthread_cond_signal(condition: * mut u8): i32;
+  function pthread_cond_broadcast(condition: * mut u8): i32;
+  function pthread_cond_destroy(condition: * mut u8): i32;
+  function pthread_rwlock_init(lock: * mut u8, attributes: * const u8): i32;
+  function pthread_rwlock_rdlock(lock: * mut u8): i32;
+  function pthread_rwlock_wrlock(lock: * mut u8): i32;
+  function pthread_rwlock_unlock(lock: * mut u8): i32;
+  function pthread_rwlock_destroy(lock: * mut u8): i32;
+  function pthread_create(thread: * mut u64, attributes: * const u8, entry: * mut u8, argument: * mut u8): i32;
+  function pthread_join(thread: u64, result: * mut * mut u8): i32;
+  function pthread_detach(thread: u64): i32;
+  function pthread_self(): u64;
+  function nanosleep(request: * mut u8, remainder: * mut u8): i32;
+  function sched_yield(): i32;
+  function open(path: * const u8, flags: i32, mode: i32): i32;
+  function read(fd: i32, bytes: * mut u8, length: usize): isize;
+  function close(fd: i32): i32;
+  function fsync(fd: i32): i32;
+  function access(path: * const u8, mode: i32): i32;
+  function unlink(path: * const u8): i32;
+  function getcwd(buffer: * mut u8, capacity: usize): * mut u8;
+  function stat(path: * const u8, output: * mut u8): i32;
+  function opendir(path: * const u8): * mut u8;
+  function readdir(directory: * mut u8): * mut u8;
+  function closedir(directory: * mut u8): i32;
+  function clock_gettime(clockId: i32, value: * mut u8): i32;
+  function getenv(name: * const u8): * const u8;
+  function dlopen(path: * const u8, flags: i32): * mut u8;
+  function dlsym(handle: * mut u8, name: * const u8): * mut u8;
+  function dlclose(handle: * mut u8): i32;
+  function socket(domain: i32, kind: i32, protocol: i32): i32;
+  function connect(handle: i32, address: * const u8, length: u32): i32;
+  function bind(handle: i32, address: * const u8, length: u32): i32;
+  function listen(handle: i32, backlog: i32): i32;
+  function accept(handle: i32, address: * mut u8, length: * mut u32): i32;
+  function setsockopt(handle: i32, level: i32, option: i32, value: * const u8, length: u32): i32;
+  function shutdown(handle: i32, how: i32): i32;
+  function recv(handle: i32, bytes: * mut u8, length: usize, flags: i32): isize;
+  function send(handle: i32, bytes: * const u8, length: usize, flags: i32): isize;
+  function recvfrom(handle: i32, bytes: * mut u8, length: usize, flags: i32, address: * mut u8, addressLength: * mut u32): isize;
+  function sendto(handle: i32, bytes: * const u8, length: usize, flags: i32, address: * const u8, addressLength: u32): isize;
+  function inet_pton(family: i32, source: * const u8, destination: * mut u8): i32;
+  function htons(value: u16): u16;
+  function fcntl(handle: i32, command: i32, value: i32): i32;
+  function poll(descriptors: * mut u8, count: usize, timeout: i32): i32;
+  function waitpid(process: i32, status: * mut i32, options: i32): i32;
+  function kill(process: i32, signal: i32): i32;
+  function fork(): i32;
+  function execvp(command: * const u8, arguments: * mut * mut u8): i32;
+}
+@Intrinsic("is_null")
+function isNullIntrinsic<T>(pointer: * const T): bool {
+  return false;
+}
+@Intrinsic("null_pointer")
+function nullPointerIntrinsic<T>(): * mut T {
+  unsafe {
+    return calloc(0usize, 0usize)as * mut T;
+  }
+}
+@Intrinsic("borrow_element")
+function borrowElement<T>(pointer: * const T, index: usize): & T {
+  unsafe {
+    return & * pointer;
+  }
+}
+@Intrinsic("borrow_element")
+function borrowElementI32<T>(pointer: * const T, index: i32): & T {
+  unsafe {
+    return & * pointer;
+  }
+}
+@Intrinsic("size_of")
+function sizeOfIntrinsic<T>(): usize {
+  return 0usize;
+}
+@Intrinsic("store_raw")
+function storeRawIntrinsic<T>(pointer: * mut T, value: T): bool {
+  return false;
+}
+@Intrinsic("call_raw")
+function callRaw(callback: * mut u8, first: * mut u8, second: * mut u8): bool {
+  return false;
+}
+@Intrinsic("call_raw_void")
+function callRawVoid(callback: * mut u8, argument: * mut u8): bool {
+  return false;
+}
+@Intrinsic("call_raw_pointer")
+function callRawPointer(callback: * mut u8, argument: * mut u8): * mut u8 {
+  return nullPointerIntrinsic<u8>();
+}
+static mut argumentCount: i32 = 0i32;
+static mut argumentValues: * mut u8 = undefined;
+static mut allocationCount: u64 = 0u64;
+static mut freeCount: u64 = 0u64;
+@Layout("C")
+struct RefHeader {
+  public strong: usize;
+  public weak: usize;
+  public size: usize;
+}
+@Layout("C")
+struct Timespec {
+  public seconds: i64;
+  public nanoseconds: i64;
+}
+@Copy
+@Layout("C")
+struct PollDescriptor {
+  public handle: i32;
+  public events: i16;
+  public revents: i16;
+}
+@Layout("C")
+struct SockAddrIn {
+  public family: u16;
+  public port: u16;
+  public address: u32;
+  public padding0: u64;
+}
+@Layout("C")
+struct StatLayout {
+  public device: u64;
+  public inode: u64;
+  public mode: u32;
+  public linkCount: u32;
+  public user: u32;
+  public group: u32;
+  public deviceType: u64;
+  public size: i64;
+  public blockSize: i64;
+  public blocks: i64;
+  public accessSeconds: i64;
+  public accessNanoseconds: i64;
+  public modifySeconds: i64;
+  public modifyNanoseconds: i64;
+  public changeSeconds: i64;
+  public changeNanoseconds: i64;
+}
+function byteAt(pointer: * const u8, index: usize): u8 {
+  unsafe {
+    const address = borrowElement<u8>(pointer, index);
+    return *(address as * const u8);
+  }
+}
+function setByte(pointer: * mut u8, index: usize, value: u8): void {
+  unsafe {
+    const address = borrowElement<u8>(pointer as * const u8, index);
+    storeRawIntrinsic<u8>(address as * mut u8, value);
+  }
+}
+function refHeader(pointer: * const u8): * mut RefHeader {
+  unsafe {
+    const address = borrowElementI32<u8>(pointer, - 24i32);
+    return address as * mut RefHeader;
+  }
+}
+function refData(pointer: * mut u8): * mut u8 {
+  unsafe {
+    const address = borrowElement<u8>(pointer as * const u8, sizeOfIntrinsic<RefHeader>());
+    return address as * mut u8;
+  }
+}
+@Export("tn_process_set_args")
+export function processSetArgs(argc: i32, argv: * mut u8): void {
+  unsafe {
+    argumentCount = argc;
+    argumentValues = argv;
+  }
+}
+@Export("tn_process_argc")
+export function processArgc(): i32 {
+  unsafe {
+    return argumentCount;
+  }
+}
+@Export("tn_process_argv")
+export function processArgv(index: i32): * const u8 {
+  unsafe {
+    if (index<0i32 || index >= argumentCount || isNullIntrinsic<u8>(argumentValues as * const u8)) {
+      return nullPointerIntrinsic<u8>()as * const u8;
+    }
+    const address = borrowElement< * mut u8>(argumentValues as * const * mut u8, index as usize);
+    const value = *(address as * const * const u8);
+    return value;
+  }
+}
+@Export("tn_process_id")
+export function processId(): i32 {
+  unsafe {
+    return getpid();
+  }
+}
+@Export("tn_process_exit")
+export function processExit(code: i32): void {
+  unsafe {
+    _exit(code);
+  }
+}
+@Export("tn_runtime_abort")
+export function runtimeAbort(code: u32): void {
+  unsafe {
+    write(2i32, "TypeNative panic\n" as * const u8, 17usize);
+    abort();
+  }
+}
+@Export("tn_runtime_alloc")
+export function runtimeAlloc(size: usize): * mut u8 {
+  unsafe {
+    const pointer = calloc(1usize, size === 0usize?1usize: size);
+    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+      abort();
+    }
+    allocationCount = allocationCount + 1u64;
+    return pointer;
+  }
+}
+@Export("tn_runtime_try_alloc")
+export function runtimeTryAlloc(size: usize): * mut u8 {
+  unsafe {
+    const result = calloc(1usize, size === 0usize?1usize: size);
+    if (!isNullIntrinsic<u8>(result as * const u8)) {
+      allocationCount = allocationCount + 1u64;
+    }
+    return result;
+  }
+}
+@Export("tn_runtime_realloc")
+export function runtimeRealloc(pointer: * mut u8, size: usize): * mut u8 {
+  unsafe {
+    const result = realloc(pointer, size === 0usize?1usize: size);
+    if (isNullIntrinsic<u8>(result as * const u8)) {
+      abort();
+    }
+    return result;
+  }
+}
+@Export("tn_runtime_try_realloc")
+export function runtimeTryRealloc(pointer: * mut u8, size: usize): * mut u8 {
+  unsafe {
+    return realloc(pointer, size === 0usize?1usize: size);
+  }
+}
+@Export("tn_runtime_free")
+export function runtimeFree(pointer: * mut u8): void {
+  unsafe {
+    free(pointer);
+    if (!isNullIntrinsic<u8>(pointer as * const u8)) {
+      freeCount = freeCount + 1u64;
+    }
+  }
+}
+@Export("tn_null_pointer")
+export function nullPointer(): * mut u8 {
+  return nullPointerIntrinsic<u8>();
+}
+@Export("tn_pointer_is_null")
+export function pointerIsNull(pointer: * const u8): i32 {
+  return isNullIntrinsic<u8>(pointer)?1i32: 0i32;
+}
+@Export("tn_runtime_allocation_count")
+export function runtimeAllocationCount(): u64 {
+  unsafe {
+    return allocationCount;
+  }
+}
+@Export("tn_runtime_free_count")
+export function runtimeFreeCount(): u64 {
+  unsafe {
+    return freeCount;
+  }
+}
+@Export("tn_runtime_reset_allocation_count")
+export function runtimeResetAllocationCount(): void {
+  unsafe {
+    allocationCount = 0u64;
+    freeCount = 0u64;
+  }
+}
+@Export("tn_ref_alloc")
+export function refAlloc(size: usize): * mut u8 {
+  unsafe {
+    const headerSize = sizeOfIntrinsic<RefHeader>();
+    const total = headerSize + size;
+    const block = calloc(1usize, total === 0usize?1usize: total);
+    if (isNullIntrinsic<u8>(block as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const header: RefHeader = {
+      strong: 1usize, weak: 0usize, size: size
+    };
+    storeRawIntrinsic<RefHeader>(block as * mut RefHeader, header);
+    allocationCount = allocationCount + 1u64;
+    return refData(block);
+  }
+}
+@Export("tn_ref_try_alloc")
+export function refTryAlloc(size: usize): * mut u8 {
+  return refAlloc(size);
+}
+@Export("tn_ref_retain")
+export function refRetain(pointer: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const headerPointer = refHeader(pointer as * const u8);
+    let header = *(headerPointer as * const RefHeader);
+    if (header.strong === 0usize) {
+      return nullPointerIntrinsic<u8>();
+    }
+    header.strong = header.strong + 1usize;
+    storeRawIntrinsic<RefHeader>(headerPointer, header);
+    return pointer;
+  }
+}
+@Export("tn_ref_release")
+export function refRelease(pointer: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+      return 0i32;
+    }
+    const headerPointer = refHeader(pointer as * const u8);
+    let header = *(headerPointer as * const RefHeader);
+    if (header.strong === 0usize) {
+      return 0i32;
+    }
+    header.strong = header.strong - 1usize;
+    if (header.strong === 0usize) {
+      if (header.weak === 0usize) {
+        free(headerPointer as * mut u8);
+        freeCount = freeCount + 1u64;
+      } else {
+        storeRawIntrinsic<RefHeader>(headerPointer, header);
+      }
+      return 1i32;
+    }
+    storeRawIntrinsic<RefHeader>(headerPointer, header);
+    return 0i32;
+  }
+}
+@Export("tn_ref_downgrade")
+export function refDowngrade(pointer: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const headerPointer = refHeader(pointer as * const u8);
+    let header = *(headerPointer as * const RefHeader);
+    if (header.strong === 0usize) {
+      return nullPointerIntrinsic<u8>();
+    }
+    header.weak = header.weak + 1usize;
+    storeRawIntrinsic<RefHeader>(headerPointer, header);
+    return pointer;
+  }
+}
+@Export("tn_ref_upgrade")
+export function refUpgrade(pointer: * mut u8): * mut u8 {
+  return refRetain(pointer);
+}
+@Export("tn_ref_release_weak")
+export function refReleaseWeak(pointer: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+      return 0i32;
+    }
+    const headerPointer = refHeader(pointer as * const u8);
+    let header = *(headerPointer as * const RefHeader);
+    if (header.weak === 0usize) {
+      return 0i32;
+    }
+    header.weak = header.weak - 1usize;
+    if (header.weak === 0usize && header.strong === 0usize) {
+      free(headerPointer as * mut u8);
+      freeCount = freeCount + 1u64;
+      return 1i32;
+    }
+    storeRawIntrinsic<RefHeader>(headerPointer, header);
+    return 0i32;
+  }
+}
+@Export("tn_console_write")
+export function consoleWrite(fd: i32, bytes: * const u8, length: usize): i32 {
+  return ioWriteAll(fd, bytes, length);
+}
+@Export("tn_io_write_all")
+export function ioWriteAll(fd: i32, bytes: * const u8, length: usize): i32 {
+  let written: usize = 0usize;
+  while (written !== length) {
+    unsafe {
+      const pointer = borrowElement<u8>(bytes, written);
+      const result = write(fd, pointer as * const u8, length - written);
+      if (result <= 0isize ||(result as usize) > length - written) {
+        return - 1i32;
+      }
+      written = written +(result as usize);
+    }
+  }
+  return 0i32;
+}
+@Export("tn_io_flush")
+export function ioFlush(fd: i32): i32 {
+  return 0i32;
+}
+@Export("tn_string_from_bytes")
+export function stringFromBytes(bytes: * const u8, length: usize): * mut u8 {
+  unsafe {
+    const result = runtimeAlloc(length + 1usize);
+    if (length > 0usize) {
+      memcpy(result, bytes, length);
+    }
+    setByte(result, length, 0u8);
+    return result;
+  }
+}
+@Export("tn_string_equals")
+export function stringEquals(left: * const u8, right: * const u8): i32 {
+  unsafe {
+    const leftNull = isNullIntrinsic<u8>(left);
+    const rightNull = isNullIntrinsic<u8>(right);
+    if (leftNull || rightNull) {
+      return(leftNull && rightNull)?1i32: 0i32;
+    }
+    return strcmp(left, right) === 0i32?1i32: 0i32;
+  }
+}
+@Export("tn_string_compare")
+export function stringCompare(left: * const u8, right: * const u8): i32 {
+  unsafe {
+    const leftNull = isNullIntrinsic<u8>(left);
+    const rightNull = isNullIntrinsic<u8>(right);
+    if (leftNull || rightNull) {
+      if (rightNull) {
+        return 0i32;
+      }
+      return - 1i32;
+    }
+    return strcmp(left, right);
+  }
+}
+@Export("tn_string_to_ascii_upper")
+export function stringToAsciiUpper(text: * const u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(text)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const length = strlen(text);
+    const result = runtimeAlloc(length + 1usize);
+    let index: usize = 0usize;
+    while (index !== length) {
+      let value = byteAt(text, index);
+      if (value >= 97u8 && value <= 122u8) {
+        value = value - 32u8;
+      }
+      setByte(result, index, value);
+      index = index + 1usize;
+    }
+    setByte(result, length, 0u8);
+    return result;
+  }
+}
+@Export("tn_utf8_validate")
+export function utf8Validate(bytes: * const u8, length: usize): i32 {
+  unsafe {
+    if (length > 0usize && isNullIntrinsic<u8>(bytes)) {
+      return 0i32;
+    }
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const first = byteAt(bytes, offset);
+      offset = offset + 1usize;
+      let continuation: usize = 0usize;
+      let value: u32 = 0u32;
+      if (first<128u8) {
+        continue;
+      } else if (first >= 194u8 && first <= 223u8) {
+        continuation = 1usize;
+        value =(first as u32) & 31u32;
+      } else if (first >= 224u8 && first <= 239u8) {
+        continuation = 2usize;
+        value =(first as u32) & 15u32;
+      } else if (first >= 240u8 && first <= 244u8) {
+        continuation = 3usize;
+        value =(first as u32) & 7u32;
+      } else {
+        return 0i32;
+      }
+      if (continuation > length - offset) {
+        return 0i32;
+      }
+      let index: usize = 0usize;
+      while (index !== continuation) {
+        const next = byteAt(bytes, offset);
+        offset = offset + 1usize;
+        if ((next & 192u8) !== 128u8) {
+          return 0i32;
+        }
+        value =(value << 6u32) |((next as u32) & 63u32);
+      }
+      if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32)) {
+        return 0i32;
+      }
+      if ((continuation === 2usize && value<2048u32) ||(continuation === 3usize && value<65536u32)) {
+        return 0i32;
+      }
+    }
+    return 1i32;
+  }
+}
+@Export("tn_utf8_decode")
+export function utf8Decode(bytes: * const u8, length: usize, offset: usize, codepoint: * mut u32, next: * mut usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(bytes) || isNullIntrinsic<u32>(codepoint as * const u32) || isNullIntrinsic<usize>(next as * const usize) || offset >= length) {
+      return 0i32;
+    }
+    const first = byteAt(bytes, offset);
+    let cursor = offset + 1usize;
+    let continuation: usize = 0usize;
+    let value: u32 = 0u32;
+    if (first<128u8) {
+      value = first as u32;
+    } else if (first >= 194u8 && first <= 223u8) {
+      continuation = 1usize;
+      value =(first as u32) & 31u32;
+    } else if (first >= 224u8 && first <= 239u8) {
+      continuation = 2usize;
+      value =(first as u32) & 15u32;
+    } else if (first >= 240u8 && first <= 244u8) {
+      continuation = 3usize;
+      value =(first as u32) & 7u32;
+    } else {
+      return - 22i32;
+    }
+    if (continuation > length - cursor) {
+      return - 22i32;
+    }
+    let index: usize = 0usize;
+    while (index !== continuation) {
+      const nextByte = byteAt(bytes, cursor);
+      cursor = cursor + 1usize;
+      if ((nextByte & 192u8) !== 128u8) {
+        return - 22i32;
+      }
+      value =(value << 6u32) |((nextByte as u32) & 63u32);
+    }
+    if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32) ||(continuation === 2usize && value<2048u32) ||(continuation === 3usize && value<65536u32)) {
+      return - 22i32;
+    }
+    storeRawIntrinsic<u32>(codepoint, value);
+    storeRawIntrinsic<usize>(next, cursor);
+    return 1i32;
+  }
+}
+@Export("tn_utf8_slice_copy")
+export function utf8SliceCopy(bytes: * const u8, length: usize, start: usize, end: usize, destination: * mut u8, capacity: usize, written: * mut usize): i32 {
+  unsafe {
+    if (start > end || end > length || capacity<end - start + 1usize ||(end > start && isNullIntrinsic<u8>(destination as * const u8))) {
+      return - 22i32;
+    }
+    if (utf8Validate(bytes, length) === 0i32) {
+      return - 84i32;
+    }
+    let boundary: usize = 0usize;
+    let startValid = start === 0usize;
+    let endValid = end === 0usize;
+    while (boundary !== length) {
+      const codepointPointer = runtimeAlloc(4usize)as * mut u32;
+      const nextPointer = runtimeAlloc(sizeOfIntrinsic<usize>())as * mut usize;
+      const status = utf8Decode(bytes, length, boundary, codepointPointer, nextPointer);
+      if (status <= 0i32) {
+        runtimeFree(codepointPointer as * mut u8);
+        runtimeFree(nextPointer as * mut u8);
+        return - 84i32;
+      }
+      const nextBoundary = *(nextPointer as * const usize);
+      runtimeFree(codepointPointer as * mut u8);
+      runtimeFree(nextPointer as * mut u8);
+      if (nextBoundary === start) {
+        startValid = true;
+      }
+      if (nextBoundary === end) {
+        endValid = true;
+      }
+      boundary = nextBoundary;
+    }
+    if (end === length) {
+      endValid = true;
+    }
+    if (!startValid || !endValid) {
+      return - 34i32;
+    }
+    const count = end - start;
+    if (count > 0usize) {
+      const source = borrowElement<u8>(bytes, start);
+      memcpy(destination, source as * const u8, count);
+    }
+    setByte(destination, count, 0u8);
+    if (!isNullIntrinsic<usize>(written as * const usize)) {
+      storeRawIntrinsic<usize>(written, count);
+    }
+    return 0i32;
+  }
+}
+@Export("tn_bytes_copy")
+export function bytesCopy(source: * const u8, length: usize, destination: * mut u8): usize {
+  unsafe {
+    if (length > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8))) {
+      return 0usize;
+    }
+    memcpy(destination, source, length);
+    return length;
+  }
+}
+@Export("tn_bytes_move")
+export function bytesMove(source: * const u8, length: usize, destination: * mut u8): usize {
+  unsafe {
+    if (length > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8))) {
+      return 0usize;
+    }
+    memmove(destination, source, length);
+    return length;
+  }
+}
+@Export("tn_bytes_copy_at")
+export function bytesCopyAt(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32 {
+  unsafe {
+    if (offset > length || count > length - offset ||(count > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8)))) {
+      return - 22i32;
+    }
+    const start = borrowElement<u8>(source, offset);
+    memcpy(destination, start as * const u8, count);
+    return 0i32;
+  }
+}
+@Export("tn_bytes_copy_to_at")
+export function bytesCopyToAt(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32 {
+  unsafe {
+    if (sourceOffset > sourceLength || count > sourceLength - sourceOffset || destinationOffset > destinationLength || count > destinationLength - destinationOffset) {
+      return - 22i32;
+    }
+    const sourceStart = borrowElement<u8>(source, sourceOffset);
+    const destinationStart = borrowElement<u8>(destination as * const u8, destinationOffset);
+    memcpy(destinationStart as * mut u8, sourceStart as * const u8, count);
+    return 0i32;
+  }
+}
+@Export("tn_bytes_move_at")
+export function bytesMoveAt(bytes: * mut u8, length: usize, sourceOffset: usize, destinationOffset: usize, count: usize): i32 {
+  unsafe {
+    if (sourceOffset > length || destinationOffset > length || count > length - sourceOffset || count > length - destinationOffset) {
+      return - 22i32;
+    }
+    const sourceStart = borrowElement<u8>(bytes as * const u8, sourceOffset);
+    const destinationStart = borrowElement<u8>(bytes as * const u8, destinationOffset);
+    memmove(destinationStart as * mut u8, sourceStart as * const u8, count);
+    return 0i32;
+  }
+}
+@Export("tn_bytes_read_u8")
+export function bytesReadU8(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32 {
+  unsafe {
+    if (index >= length || isNullIntrinsic<u8>(bytes) || isNullIntrinsic<u8>(value as * const u8)) {
+      return - 22i32;
+    }
+    storeRawIntrinsic<u8>(value, byteAt(bytes, index));
+    return 0i32;
+  }
+}
+@Export("tn_bytes_read_u8_mut")
+export function bytesReadU8Mut(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32 {
+  return bytesReadU8(bytes, length, index, value);
+}
+@Export("tn_bytes_write_u8")
+export function bytesWriteU8(bytes: * mut u8, length: usize, index: usize, value: u8): i32 {
+  if (index >= length) {
+    return - 22i32;
+  }
+  setByte(bytes, index, value);
+  return 0i32;
+}
+@Export("tn_bytes_slice")
+export function bytesSlice(bytes: * const u8, length: usize, start: usize, end: usize): * const u8 {
+  unsafe {
+    if (start > end || end > length) {
+      return nullPointerIntrinsic<u8>()as * const u8;
+    }
+    const address = borrowElement<u8>(bytes, start);
+    return address as * const u8;
+  }
+}
+@Export("tn_bytes_slice_mut")
+export function bytesSliceMut(bytes: * mut u8, length: usize, start: usize, end: usize): * const u8 {
+  unsafe {
+    return bytesSlice(bytes as * const u8, length, start, end);
+  }
+}
+@Export("tn_bytes_append_ascii")
+export function bytesAppendAscii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize {
+  unsafe {
+    if (length > capacity || textLength > capacity - length ||(textLength > 0usize && isNullIntrinsic<u8>(text))) {
+      return 18446744073709551615usize;
+    }
+    const destination = borrowElement<u8>(buffer as * const u8, length);
+    memcpy(destination as * mut u8, text, textLength);
+    return length + textLength;
+  }
+}
+@Export("tn_bytes_append_safe_ascii")
+export function bytesAppendSafeAscii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize {
+  if (length > capacity || textLength > capacity - length) {
+    return 18446744073709551615usize;
+  }
+  let index: usize = 0usize;
+  while (index !== textLength) {
+    let value = byteAt(text, index);
+    if (value === 10u8 || value === 13u8) {
+      value = 32u8;
+    }
+    setByte(buffer, length + index, value);
+    index = index + 1usize;
+  }
+  return length + textLength;
+}
+@Export("tn_bytes_append_bytes")
+export function bytesAppendBytes(buffer: * mut u8, capacity: usize, length: usize, source: * const u8, sourceLength: usize): usize {
+  return bytesAppendAscii(buffer, capacity, length, source, sourceLength);
+}
+@Export("tn_bytes_append_decimal")
+export function bytesAppendDecimal(buffer: * mut u8, capacity: usize, length: usize, value: i64): usize {
+  unsafe {
+    if (length >= capacity) {
+      return 18446744073709551615usize;
+    }
+    const scratch = runtimeAlloc(32usize);
+    let magnitude: u64 = 0u64;
+    let negative = false;
+    if (value<0i64) {
+      negative = true;
+      magnitude =(( -(value + 1i64))as u64) + 1u64;
+    } else {
+      magnitude = value as u64;
+    }
+    let count: usize = 0usize;
+    if (magnitude === 0u64) {
+      setByte(scratch, 0usize, 48u8);
+      count = 1usize;
+    } else {
+      while (magnitude !== 0u64) {
+        setByte(scratch, count,((magnitude % 10u64)as u8) + 48u8);
+        magnitude = magnitude / 10u64;
+        count = count + 1usize;
+      }
+    }
+    if (negative) {
+      setByte(scratch, count, 45u8);
+      count = count + 1usize;
+    }
+    if (count > capacity - length - 1usize) {
+      runtimeFree(scratch);
+      return 18446744073709551615usize;
+    }
+    let index: usize = 0usize;
+    while (index !== count) {
+      const source = byteAt(scratch as * const u8, count - index - 1usize);
+      setByte(buffer, length + index, source);
+      index = index + 1usize;
+    }
+    runtimeFree(scratch);
+    return length + count;
+  }
+}
+@Export("tn_bytes_append_usize")
+export function bytesAppendUsize(buffer: * mut u8, capacity: usize, length: usize, value: usize): usize {
+  unsafe {
+    if (length >= capacity) {
+      return 18446744073709551615usize;
+    }
+    const scratch = runtimeAlloc(32usize);
+    let magnitude = value as u64;
+    let count: usize = 0usize;
+    if (magnitude === 0u64) {
+      setByte(scratch, 0usize, 48u8);
+      count = 1usize;
+    } else {
+      while (magnitude !== 0u64) {
+        setByte(scratch, count,((magnitude % 10u64)as u8) + 48u8);
+        magnitude = magnitude / 10u64;
+        count = count + 1usize;
+      }
+    }
+    if (count > capacity - length - 1usize) {
+      runtimeFree(scratch);
+      return 18446744073709551615usize;
+    }
+    let index: usize = 0usize;
+    while (index !== count) {
+      const source = byteAt(scratch as * const u8, count - index - 1usize);
+      setByte(buffer, length + index, source);
+      index = index + 1usize;
+    }
+    runtimeFree(scratch);
+    return length + count;
+  }
+}
+@Export("tn_parse_ascii")
+export function parseAscii(bytes: * const u8, length: usize, value: * mut usize, offset: * mut usize): i32 {
+  unsafe {
+    if (length === 0usize || isNullIntrinsic<u8>(bytes) || isNullIntrinsic<usize>(value as * const usize) || isNullIntrinsic<usize>(offset as * const usize)) {
+      if (!isNullIntrinsic<usize>(offset as * const usize)) {
+        storeRawIntrinsic<usize>(offset, 0usize);
+      }
+      return - 22i32;
+    }
+    let parsed: usize = 0usize;
+    let index: usize = 0usize;
+    while (index !== length) {
+      const digit = byteAt(bytes, index);
+      if (digit<48u8 || digit > 57u8) {
+        storeRawIntrinsic<usize>(offset, index);
+        return - 22i32;
+      }
+      const number =(digit - 48u8)as usize;
+      if (parsed>(18446744073709551615usize - number) / 10usize) {
+        storeRawIntrinsic<usize>(offset, index);
+        return - 34i32;
+      }
+      parsed = parsed * 10usize + number;
+      index = index + 1usize;
+    }
+    storeRawIntrinsic<usize>(value, parsed);
+    storeRawIntrinsic<usize>(offset, length);
+    return 0i32;
+  }
+}
+@Export("tn_cstring_validate")
+export function cstringValidate(bytes: * const u8, length: usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(bytes)) {
+      return - 22i32;
+    }
+    let index: usize = 0usize;
+    while (index !== length) {
+      if (byteAt(bytes, index) === 0u8) {
+        return - 22i32;
+      }
+      index = index + 1usize;
+    }
+    return 0i32;
+  }
+}
+@Export("tn_cstring_length")
+export function cstringLength(bytes: * const u8, length: usize, firstNul: * mut usize): i32 {
+  const status = cstringValidate(bytes, length);
+  if (status !== 0i32) {
+    return status;
+  }
+  unsafe {
+    if (!isNullIntrinsic<usize>(firstNul as * const usize)) {
+      storeRawIntrinsic<usize>(firstNul, length);
+    }
+  }
+  return 0i32;
+}
+@Export("tn_cstring_alloc")
+export function cstringAlloc(bytes: * const u8, length: usize): * mut u8 {
+  if (cstringValidate(bytes, length) !== 0i32) {
+    return nullPointerIntrinsic<u8>();
+  }
+  return stringFromBytes(bytes, length);
+}
+@Copy
+@Layout("C")
+struct MapEntry {
+  public key: * mut u8;
+  public value: * mut u8;
+  public keyLength: usize;
+  public valueLength: usize;
+  public occupied: i32;
+}
+@Copy
+@Layout("C")
+struct MapState {
+  public keySize: usize;
+  public valueSize: usize;
+  public length: usize;
+  public capacity: usize;
+  public ordered: i32;
+  public stringKeys: i32;
+  public stringValues: i32;
+  public entries: * mut MapEntry;
+}
+function mapRead(handle: * mut u8): MapState {
+  unsafe {
+    return *(handle as * const MapState);
+  }
+}
+function mapWrite(handle: * mut u8, map: MapState): void {
+  unsafe {
+    storeRawIntrinsic<MapState>(handle as * mut MapState, map);
+  }
+}
+function mapEntryPointer(map: MapState, index: usize): * mut MapEntry {
+  unsafe {
+    const address = borrowElement<MapEntry>(map.entries as * const MapEntry, index);
+    return address as * mut MapEntry;
+  }
+}
+function mapEntryRead(map: MapState, index: usize): MapEntry {
+  unsafe {
+    return *(mapEntryPointer(map, index)as * const MapEntry);
+  }
+}
+function mapTextKey(key: * const u8): * const u8 {
+  unsafe {
+    return *(key as * const * const u8);
+  }
+}
+function mapCopyPayload(source: * const u8, size: usize, stringValue: i32): * mut u8 {
+  unsafe {
+    if (stringValue !== 0i32) {
+      const text = mapTextKey(source);
+      if (isNullIntrinsic<u8>(text)) {
+        return nullPointerIntrinsic<u8>();
+      }
+      const length = strlen(text);
+      const copy = runtimeTryAlloc(length + 1usize);
+      if (isNullIntrinsic<u8>(copy as * const u8)) {
+        return nullPointerIntrinsic<u8>();
+      }
+      memcpy(copy, text, length + 1usize);
+      return copy;
+    }
+    const copy = runtimeTryAlloc(size === 0usize?1usize: size);
+    if (isNullIntrinsic<u8>(copy as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    if (size > 0usize) {
+      memcpy(copy, source, size);
+    }
+    return copy;
+  }
+}
+function mapFreeEntry(entry: MapEntry): void {
+  unsafe {
+    runtimeFree(entry.key);
+    runtimeFree(entry.value);
+  }
+}
+function mapKeysEqual(map: MapState, entry: MapEntry, key: * const u8): bool {
+  unsafe {
+    if (entry.occupied === 0i32 || isNullIntrinsic<u8>(entry.key as * const u8)) {
+      return false;
+    }
+    if (map.stringKeys !== 0i32) {
+      const incoming = mapTextKey(key);
+      return !isNullIntrinsic<u8>(incoming) && strcmp(entry.key as * const u8, incoming) === 0i32;
+    }
+    return memcmp(entry.key as * const u8, key, map.keySize) === 0i32;
+  }
+}
+function mapFind(map: MapState, key: * const u8): i32 {
+  let index: usize = 0usize;
+  while (index !== map.length) {
+    if (mapKeysEqual(map, mapEntryRead(map, index), key)) {
+      return index as i32;
+    }
+    index = index + 1usize;
+  }
+  return - 1i32;
+}
+function mapEnsureCapacity(handle: * mut u8, required: usize): i32 {
+  unsafe {
+    let map = mapRead(handle);
+    if (required <= map.capacity) {
+      return 0i32;
+    }
+    let capacity = map.capacity;
+    if (capacity<8usize) {
+      capacity = 8usize;
+    }
+    while (capacity<required) {
+      capacity = capacity * 2usize;
+    }
+    const entries = calloc(capacity, sizeOfIntrinsic<MapEntry>())as * mut MapEntry;
+    if (isNullIntrinsic<u8>(entries as * const u8)) {
+      return - 12i32;
+    }
+    if (map.length > 0usize) {
+      memcpy(entries as * mut u8, map.entries as * const u8, map.length * sizeOfIntrinsic<MapEntry>());
+    }
+    runtimeFree(map.entries as * mut u8);
+    map.entries = entries;
+    map.capacity = capacity;
+    mapWrite(handle, map);
+    return 0i32;
+  }
+}
+function mapCopyStored(entry: MapEntry, stringValue: i32, destination: * mut u8): i32 {
+  unsafe {
+    if (stringValue !== 0i32) {
+      const copy = runtimeTryAlloc(entry.valueLength + 1usize);
+      if (isNullIntrinsic<u8>(copy as * const u8)) {
+        return - 12i32;
+      }
+      memcpy(copy, entry.value as * const u8, entry.valueLength + 1usize);
+      storeRawIntrinsic< * mut u8>(destination as * mut * mut u8, copy);
+      return 0i32;
+    }
+    if (entry.valueLength > 0usize) {
+      memcpy(destination, entry.value as * const u8, entry.valueLength);
+    }
+    return 0i32;
+  }
+}
+@Export("tn_map_create_ex")
+export function mapCreateEx(keySize: usize, valueSize: usize, ordered: i32, stringKeys: i32, stringValues: i32, initialCapacity: usize): * mut u8 {
+  unsafe {
+    const map = runtimeTryAlloc(sizeOfIntrinsic<MapState>());
+    if (isNullIntrinsic<u8>(map as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const capacity = initialCapacity<8usize?8usize: initialCapacity;
+    const entries = calloc(capacity, sizeOfIntrinsic<MapEntry>())as * mut MapEntry;
+    if (isNullIntrinsic<u8>(entries as * const u8)) {
+      runtimeFree(map);
+      return nullPointerIntrinsic<u8>();
+    }
+    const state: MapState = {
+      keySize: keySize, valueSize: valueSize, length: 0usize, capacity: capacity, ordered: ordered, stringKeys: stringKeys, stringValues: stringValues, entries: entries
+    };
+    mapWrite(map, state);
+    return map;
+  }
+}
+@Export("tn_map_create")
+export function mapCreate(keySize: usize, valueSize: usize, ordered: i32): * mut u8 {
+  return mapCreateEx(keySize, valueSize, ordered, 0i32, 0i32, 16usize);
+}
+@Export("tn_map_insert")
+export function mapInsert(handle: * mut u8, key: * const u8, value: * const u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(key) || isNullIntrinsic<u8>(value) && mapRead(handle).valueSize !== 0usize) {
+      return - 22i32;
+    }
+    let map = mapRead(handle);
+    const found = mapFind(map, key);
+    if (found >= 0i32) {
+      const index = found as usize;
+      const entryPointer = mapEntryPointer(map, index);
+      const old = *(entryPointer as * const MapEntry);
+      const copy = mapCopyPayload(value, map.valueSize, map.stringValues);
+      if (isNullIntrinsic<u8>(copy as * const u8)) {
+        return - 12i32;
+      }
+      runtimeFree(old.value);
+      let updated = old;
+      updated.value = copy;
+      updated.valueLength = map.stringValues !== 0i32?strlen(mapTextKey(value)): map.valueSize;
+      storeRawIntrinsic<MapEntry>(entryPointer, updated);
+      return 0i32;
+    }
+    if (mapEnsureCapacity(handle, map.length + 1usize) !== 0i32) {
+      return - 12i32;
+    }
+    map = mapRead(handle);
+    let position = map.length;
+    if (map.ordered !== 0i32) {
+      position = 0usize;
+      while (position !== map.length) {
+        const current = mapEntryRead(map, position);
+        const comparison = map.stringKeys !== 0i32?strcmp(current.key as * const u8, mapTextKey(key)): memcmp(current.key as * const u8, key, map.keySize);
+        if (comparison > 0i32) {
+          break;
+        }
+        position = position + 1usize;
+      }
+      let shift = map.length;
+      while (shift > position) {
+        const previous = mapEntryRead(map, shift - 1usize);
+        storeRawIntrinsic<MapEntry>(mapEntryPointer(map, shift), previous);
+        shift = shift - 1usize;
+      }
+    }
+    const newKey = mapCopyPayload(key, map.keySize, map.stringKeys);
+    if (isNullIntrinsic<u8>(newKey as * const u8)) {
+      return - 12i32;
+    }
+    const newValue = mapCopyPayload(value, map.valueSize, map.stringValues);
+    if (map.valueSize !== 0usize && isNullIntrinsic<u8>(newValue as * const u8)) {
+      runtimeFree(newKey);
+      return - 12i32;
+    }
+    const entry: MapEntry = {
+      key: newKey, value: newValue, keyLength: map.stringKeys !== 0i32?strlen(mapTextKey(key)): map.keySize, valueLength: map.stringValues !== 0i32?strlen(mapTextKey(value)): map.valueSize, occupied: 1i32
+    };
+    storeRawIntrinsic<MapEntry>(mapEntryPointer(map, position), entry);
+    map.length = map.length + 1usize;
+    mapWrite(handle, map);
+    return 0i32;
+  }
+}
+@Export("tn_map_get")
+export function mapGet(handle: * mut u8, key: * const u8, value: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(key)) {
+      return - 22i32;
+    }
+    const map = mapRead(handle);
+    const found = mapFind(map, key);
+    if (found<0i32) {
+      return 0i32;
+    }
+    if (map.valueSize !== 0usize && mapCopyStored(mapEntryRead(map, found as usize), map.stringValues, value) !== 0i32) {
+      return - 12i32;
+    }
+    return 1i32;
+  }
+}
+@Export("tn_map_contains")
+export function mapContains(handle: * mut u8, key: * const u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(key)) {
+      return - 22i32;
+    }
+    return mapFind(mapRead(handle), key) >= 0i32?1i32: 0i32;
+  }
+}
+@Export("tn_map_remove")
+export function mapRemove(handle: * mut u8, key: * const u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(key)) {
+      return - 22i32;
+    }
+    let map = mapRead(handle);
+    const found = mapFind(map, key);
+    if (found<0i32) {
+      return 0i32;
+    }
+    const index = found as usize;
+    mapFreeEntry(mapEntryRead(map, index));
+    let cursor = index + 1usize;
+    while (cursor !== map.length) {
+      const next = mapEntryRead(map, cursor);
+      storeRawIntrinsic<MapEntry>(mapEntryPointer(map, cursor - 1usize), next);
+      cursor = cursor + 1usize;
+    }
+    map.length = map.length - 1usize;
+    const empty: MapEntry = {
+      key: nullPointerIntrinsic<u8>(), value: nullPointerIntrinsic<u8>(), keyLength: 0usize, valueLength: 0usize, occupied: 0i32
+    };
+    storeRawIntrinsic<MapEntry>(mapEntryPointer(map, map.length), empty);
+    mapWrite(handle, map);
+    return 1i32;
+  }
+}
+@Export("tn_map_clear")
+export function mapClear(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return - 22i32;
+    }
+    let map = mapRead(handle);
+    let index: usize = 0usize;
+    while (index !== map.length) {
+      mapFreeEntry(mapEntryRead(map, index));
+      const empty: MapEntry = {
+        key: nullPointerIntrinsic<u8>(), value: nullPointerIntrinsic<u8>(), keyLength: 0usize, valueLength: 0usize, occupied: 0i32
+      };
+      storeRawIntrinsic<MapEntry>(mapEntryPointer(map, index), empty);
+      index = index + 1usize;
+    }
+    map.length = 0usize;
+    mapWrite(handle, map);
+    return 0i32;
+  }
+}
+@Export("tn_map_length")
+export function mapLength(handle: * mut u8): usize {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?0usize: mapRead(handle).length;
+  }
+}
+@Export("tn_map_capacity")
+export function mapCapacity(handle: * mut u8): usize {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?0usize: mapRead(handle).capacity;
+  }
+}
+@Export("tn_map_reserve")
+export function mapReserve(handle: * mut u8, minimumCapacity: usize): i32 {
+  return mapEnsureCapacity(handle, minimumCapacity);
+}
+@Export("tn_map_shrink_to_fit")
+export function mapShrinkToFit(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return - 22i32;
+    }
+    const map = mapRead(handle);
+    const target = map.length<8usize?8usize: map.length;
+    if (target >= map.capacity) {
+      return 0i32;
+    }
+    const entries = calloc(target, sizeOfIntrinsic<MapEntry>())as * mut MapEntry;
+    if (isNullIntrinsic<u8>(entries as * const u8)) {
+      return - 12i32;
+    }
+    if (map.length > 0usize) {
+      memcpy(entries as * mut u8, map.entries as * const u8, map.length * sizeOfIntrinsic<MapEntry>());
+    }
+    runtimeFree(map.entries as * mut u8);
+    let updated = map;
+    updated.entries = entries;
+    updated.capacity = target;
+    mapWrite(handle, updated);
+    return 0i32;
+  }
+}
+@Export("tn_map_next")
+export function mapNext(handle: * mut u8, cursor: * mut usize, key: * mut u8, value: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<usize>(cursor as * const usize) || isNullIntrinsic<u8>(key as * const u8)) {
+      return - 22i32;
+    }
+    const map = mapRead(handle);
+    let index = *(cursor as * const usize);
+    while (index !== map.length) {
+      const entry = mapEntryRead(map, index);
+      if (entry.occupied !== 0i32) {
+        if (map.stringKeys !== 0i32) {
+          const copy = runtimeTryAlloc(entry.keyLength + 1usize);
+          if (isNullIntrinsic<u8>(copy as * const u8)) {
+            return - 12i32;
+          }
+          memcpy(copy, entry.key as * const u8, entry.keyLength + 1usize);
+          storeRawIntrinsic< * mut u8>(key as * mut * mut u8, copy);
+        } else {
+          memcpy(key, entry.key as * const u8, map.keySize);
+        }
+        if (map.valueSize !== 0usize && mapCopyStored(entry, map.stringValues, value) !== 0i32) {
+          return - 12i32;
+        }
+        storeRawIntrinsic<usize>(cursor as * mut usize, index + 1usize);
+        return 1i32;
+      }
+      index = index + 1usize;
+    }
+    storeRawIntrinsic<usize>(cursor as * mut usize, map.length);
+    return 0i32;
+  }
+}
+@Export("tn_map_destroy")
+export function mapDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 0i32;
+    }
+    const map = mapRead(handle);
+    let index: usize = 0usize;
+    while (index !== map.length) {
+      mapFreeEntry(mapEntryRead(map, index));
+      index = index + 1usize;
+    }
+    runtimeFree(map.entries as * mut u8);
+    runtimeFree(handle);
+    return 0i32;
+  }
+}
+@Copy
+@Layout("C")
+struct AsyncPromise {
+  public mutex: * mut u8;
+  public condition: * mut u8;
+  public poll: * mut u8;
+  public drop: * mut u8;
+  public context: * mut u8;
+  public result: * mut u8;
+  public resultOffset: usize;
+  public state: i32;
+}
+function asyncRead(handle: * mut u8): AsyncPromise {
+  unsafe {
+    return *(handle as * const AsyncPromise);
+  }
+}
+function asyncWrite(handle: * mut u8, promise: AsyncPromise): void {
+  unsafe {
+    storeRawIntrinsic<AsyncPromise>(handle as * mut AsyncPromise, promise);
+  }
+}
+function asyncReleaseContext(drop: * mut u8, context: * mut u8): void {
+  unsafe {
+    if (!isNullIntrinsic<u8>(drop as * const u8)) {
+      callRawVoid(drop, context);
+    } else {
+      runtimeFree(context);
+    }
+  }
+}
+@Export("tn_runtime_async_create")
+export function asyncCreate(resultSize: usize, resultOffset: usize, poll: * mut u8, context: * mut u8, drop: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(poll as * const u8)) {
+      runtimeFree(context);
+      return nullPointerIntrinsic<u8>();
+    }
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<AsyncPromise>());
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      asyncReleaseContext(drop, context);
+      return nullPointerIntrinsic<u8>();
+    }
+    const result = runtimeTryAlloc(resultSize === 0usize?1usize: resultSize);
+    if (isNullIntrinsic<u8>(result as * const u8)) {
+      asyncReleaseContext(drop, context);
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    const mutex = calloc(1usize, 128usize);
+    if (isNullIntrinsic<u8>(mutex as * const u8) || pthread_mutex_init(mutex, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+      runtimeFree(mutex);
+      asyncReleaseContext(drop, context);
+      runtimeFree(result);
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    const condition = calloc(1usize, 128usize);
+    if (isNullIntrinsic<u8>(condition as * const u8) || pthread_cond_init(condition, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+      runtimeFree(condition);
+      pthread_mutex_destroy(mutex);
+      runtimeFree(mutex);
+      asyncReleaseContext(drop, context);
+      runtimeFree(result);
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    const promise: AsyncPromise = {
+      mutex: mutex, condition: condition, poll: poll, drop: drop, context: context, result: result, resultOffset: resultOffset, state: 0i32
+    };
+    asyncWrite(handle, promise);
+    return handle;
+  }
+}
+@Export("tn_runtime_async_wait")
+export function asyncWait(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return - 22i32;
+    }
+    let promise = asyncRead(handle);
+    pthread_mutex_lock(promise.mutex);
+    if (promise.state === 2i32) {
+      pthread_mutex_unlock(promise.mutex);
+      return 0i32;
+    }
+    if (promise.state === 3i32) {
+      pthread_mutex_unlock(promise.mutex);
+      return - 125i32;
+    }
+    if (promise.state === 1i32) {
+      while (promise.state === 1i32) {
+        pthread_cond_wait(promise.condition, promise.mutex);
+        promise = asyncRead(handle);
+      }
+      const status = promise.state === 2i32?0i32: - 125i32;
+      pthread_mutex_unlock(promise.mutex);
+      return status;
+    }
+    promise.state = 1i32;
+    const poll = promise.poll;
+    const context = promise.context;
+    const result = promise.result;
+    asyncWrite(handle, promise);
+    pthread_mutex_unlock(promise.mutex);
+    callRaw(poll, context, result);
+    pthread_mutex_lock(promise.mutex);
+    promise = asyncRead(handle);
+    if (promise.state === 1i32) {
+      promise.state = 2i32;
+      asyncWrite(handle, promise);
+    }
+    pthread_cond_broadcast(promise.condition);
+    const status = promise.state === 2i32?0i32: - 125i32;
+    pthread_mutex_unlock(promise.mutex);
+    return status;
+  }
+}
+@Export("tn_runtime_async_result")
+export function asyncResult(handle: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const promise = asyncRead(handle);
+    if (isNullIntrinsic<u8>(promise.result as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const address = borrowElement<u8>(promise.result as * const u8, promise.resultOffset);
+    return address as * mut u8;
+  }
+}
+@Export("tn_runtime_async_raw_result")
+export function asyncRawResult(handle: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    return asyncRead(handle).result;
+  }
+}
+@Export("tn_runtime_async_destroy")
+export function asyncDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 0i32;
+    }
+    let promise = asyncRead(handle);
+    pthread_mutex_lock(promise.mutex);
+    while (promise.state === 1i32) {
+      pthread_cond_wait(promise.condition, promise.mutex);
+      promise = asyncRead(handle);
+    }
+    const started = promise.state !== 0i32;
+    promise.state = 3i32;
+    const context = promise.context;
+    const result = promise.result;
+    const drop = promise.drop;
+    promise.context = nullPointerIntrinsic<u8>();
+    promise.result = nullPointerIntrinsic<u8>();
+    asyncWrite(handle, promise);
+    pthread_mutex_unlock(promise.mutex);
+    pthread_cond_destroy(promise.condition);
+    pthread_mutex_destroy(promise.mutex);
+    runtimeFree(promise.condition);
+    runtimeFree(promise.mutex);
+    if (!started) {
+      asyncReleaseContext(drop, context);
+    } else {
+      runtimeFree(context);
+    }
+    runtimeFree(result);
+    runtimeFree(handle);
+    return 0i32;
+  }
+}
+@Export("tn_runtime_promise_wait")
+export function promiseWait(handle: * mut u8): void {
+  unsafe {
+    if (!isNullIntrinsic<u8>(handle as * const u8)) {
+      asyncWait(handle);
+    }
+  }
+}
+@Export("tn_runtime_promise_take_i32")
+export function promiseTakeI32(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || asyncWait(handle) !== 0i32) {
+      asyncDestroy(handle);
+      return 0i32;
+    }
+    const result = asyncResult(handle);
+    const value = isNullIntrinsic<u8>(result as * const u8)?0i32: *(result as * const i32);
+    asyncDestroy(handle);
+    return value;
+  }
+}
+@Copy
+@Layout("C")
+struct MutexState {
+  public pointer: * mut u8;
+}
+@Copy
+@Layout("C")
+struct BarrierState {
+  public mutex: * mut u8;
+  public condition: * mut u8;
+  public threshold: usize;
+  public waiting: usize;
+  public generation: u64;
+}
+@Copy
+@Layout("C")
+struct ChannelState {
+  public storage: * mut u8;
+  public elementSize: usize;
+  public capacity: usize;
+  public length: usize;
+  public head: usize;
+  public unbuffered: i32;
+  public closed: i32;
+  public mutex: * mut u8;
+  public readable: * mut u8;
+  public writable: * mut u8;
+}
+@Copy
+@Layout("C")
+struct ThreadState {
+  public thread: u64;
+}
+function mutexHandleCreate(initializer: * mut u8): * mut u8 {
+  unsafe {
+    const handle = calloc(1usize, 128usize);
+    if (isNullIntrinsic<u8>(handle as * const u8) || pthread_mutex_init(handle, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    return handle;
+  }
+}
+@Export("tn_mutex_create")
+export function mutexCreate(): * mut u8 {
+  return mutexHandleCreate(nullPointerIntrinsic<u8>());
+}
+@Export("tn_mutex_lock")
+export function mutexLock(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_mutex_lock(handle);
+  }
+}
+@Export("tn_mutex_unlock")
+export function mutexUnlock(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_mutex_unlock(handle);
+  }
+}
+@Export("tn_mutex_destroy")
+export function mutexDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const result = pthread_mutex_destroy(handle);
+    if (result === 0i32) {
+      runtimeFree(handle);
+    }
+    return result;
+  }
+}
+@Export("tn_rwlock_create")
+export function rwlockCreate(): * mut u8 {
+  unsafe {
+    const handle = calloc(1usize, 128usize);
+    if (isNullIntrinsic<u8>(handle as * const u8) || pthread_rwlock_init(handle, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    return handle;
+  }
+}
+@Export("tn_rwlock_read_lock")
+export function rwlockReadLock(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_rwlock_rdlock(handle);
+  }
+}
+@Export("tn_rwlock_write_lock")
+export function rwlockWriteLock(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_rwlock_wrlock(handle);
+  }
+}
+@Export("tn_rwlock_unlock")
+export function rwlockUnlock(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_rwlock_unlock(handle);
+  }
+}
+@Export("tn_rwlock_destroy")
+export function rwlockDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const result = pthread_rwlock_destroy(handle);
+    if (result === 0i32) {
+      runtimeFree(handle);
+    }
+    return result;
+  }
+}
+@Export("tn_cond_create")
+export function conditionCreate(): * mut u8 {
+  unsafe {
+    const handle = calloc(1usize, 128usize);
+    if (isNullIntrinsic<u8>(handle as * const u8) || pthread_cond_init(handle, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    return handle;
+  }
+}
+@Export("tn_cond_wait")
+export function conditionWait(condition: * mut u8, mutex: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(condition as * const u8) || isNullIntrinsic<u8>(mutex as * const u8)) {
+      return 22i32;
+    }
+    return pthread_cond_wait(condition, mutex);
+  }
+}
+@Export("tn_cond_signal")
+export function conditionSignal(condition: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(condition as * const u8)?22i32: pthread_cond_signal(condition);
+  }
+}
+@Export("tn_cond_broadcast")
+export function conditionBroadcast(condition: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(condition as * const u8)?22i32: pthread_cond_broadcast(condition);
+  }
+}
+@Export("tn_cond_destroy")
+export function conditionDestroy(condition: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(condition as * const u8)) {
+      return 22i32;
+    }
+    const result = pthread_cond_destroy(condition);
+    if (result === 0i32) {
+      runtimeFree(condition);
+    }
+    return result;
+  }
+}
+@Export("tn_barrier_create")
+export function barrierCreate(threshold: usize): * mut u8 {
+  unsafe {
+    if (threshold === 0usize) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<BarrierState>());
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const mutex = mutexCreate();
+    const condition = conditionCreate();
+    if (isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+      mutexDestroy(mutex);
+      conditionDestroy(condition);
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    const barrier: BarrierState = {
+      mutex: mutex, condition: condition, threshold: threshold, waiting: 0usize, generation: 0u64
+    };
+    storeRawIntrinsic<BarrierState>(handle as * mut BarrierState, barrier);
+    return handle;
+  }
+}
+@Export("tn_barrier_wait")
+export function barrierWait(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let barrier = *(handle as * const BarrierState);
+    mutexLock(barrier.mutex);
+    const generation = barrier.generation;
+    barrier.waiting = barrier.waiting + 1usize;
+    if (barrier.waiting === barrier.threshold) {
+      barrier.waiting = 0usize;
+      barrier.generation = barrier.generation + 1u64;
+      storeRawIntrinsic<BarrierState>(handle as * mut BarrierState, barrier);
+      conditionBroadcast(barrier.condition);
+      mutexUnlock(barrier.mutex);
+      return 1i32;
+    }
+    storeRawIntrinsic<BarrierState>(handle as * mut BarrierState, barrier);
+    while (barrier.generation === generation) {
+      conditionWait(barrier.condition, barrier.mutex);
+      barrier = *(handle as * const BarrierState);
+    }
+    mutexUnlock(barrier.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_barrier_destroy")
+export function barrierDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 0i32;
+    }
+    const barrier = *(handle as * const BarrierState);
+    const conditionStatus = conditionDestroy(barrier.condition);
+    const mutexStatus = mutexDestroy(barrier.mutex);
+    if (conditionStatus === 0i32 && mutexStatus === 0i32) {
+      runtimeFree(handle);
+      return 0i32;
+    }
+    return conditionStatus !== 0i32?conditionStatus: mutexStatus;
+  }
+}
+function channelRead(handle: * mut u8): ChannelState {
+  unsafe {
+    return *(handle as * const ChannelState);
+  }
+}
+function channelWrite(handle: * mut u8, channel: ChannelState): void {
+  unsafe {
+    storeRawIntrinsic<ChannelState>(handle as * mut ChannelState, channel);
+  }
+}
+@Export("tn_channel_create")
+export function channelCreate(elementSize: usize, capacity: usize): * mut u8 {
+  unsafe {
+    if (elementSize === 0usize ||(capacity !== 0usize && elementSize > 18446744073709551615usize / capacity)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const unbuffered = capacity === 0usize;
+    const actualCapacity = unbuffered?1usize: capacity;
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<ChannelState>());
+    const storage = calloc(actualCapacity, elementSize);
+    const mutex = mutexCreate();
+    const readable = conditionCreate();
+    const writable = conditionCreate();
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(storage as * const u8) || isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(readable as * const u8) || isNullIntrinsic<u8>(writable as * const u8)) {
+      runtimeFree(handle);
+      runtimeFree(storage);
+      mutexDestroy(mutex);
+      conditionDestroy(readable);
+      conditionDestroy(writable);
+      return nullPointerIntrinsic<u8>();
+    }
+    const channel: ChannelState = {
+      storage: storage, elementSize: elementSize, capacity: actualCapacity, length: 0usize, head: 0usize, unbuffered: unbuffered?1i32: 0i32, closed: 0i32, mutex: mutex, readable: readable, writable: writable
+    };
+    channelWrite(handle, channel);
+    return handle;
+  }
+}
+@Export("tn_channel_send")
+export function channelSend(handle: * mut u8, value: * const i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<i32>(value as * const i32)) {
+      return 22i32;
+    }
+    let channel = channelRead(handle);
+    mutexLock(channel.mutex);
+    while (channel.length === channel.capacity && channel.closed === 0i32) {
+      conditionWait(channel.writable, channel.mutex);
+      channel = channelRead(handle);
+    }
+    if (channel.closed !== 0i32) {
+      mutexUnlock(channel.mutex);
+      return 32i32;
+    }
+    const index =(channel.head + channel.length) % channel.capacity;
+    const destination = borrowElement<u8>(channel.storage as * const u8, index * channel.elementSize);
+    memcpy(destination as * mut u8, value as * const u8, channel.elementSize);
+    channel.length = channel.length + 1usize;
+    channelWrite(handle, channel);
+    conditionSignal(channel.readable);
+    if (channel.unbuffered !== 0i32) {
+      while (channel.length !== 0usize && channel.closed === 0i32) {
+        conditionWait(channel.writable, channel.mutex);
+        channel = channelRead(handle);
+      }
+      if (channel.closed !== 0i32 && channel.length !== 0usize) {
+        mutexUnlock(channel.mutex);
+        return 32i32;
+      }
+    }
+    mutexUnlock(channel.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_channel_receive")
+export function channelReceive(handle: * mut u8, value: * mut i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<i32>(value as * const i32)) {
+      return 22i32;
+    }
+    let channel = channelRead(handle);
+    mutexLock(channel.mutex);
+    while (channel.length === 0usize && channel.closed === 0i32) {
+      conditionWait(channel.readable, channel.mutex);
+      channel = channelRead(handle);
+    }
+    if (channel.length === 0usize) {
+      mutexUnlock(channel.mutex);
+      return channel.closed !== 0i32?0i32: 11i32;
+    }
+    const source = borrowElement<u8>(channel.storage as * const u8, channel.head * channel.elementSize);
+    memcpy(value as * mut u8, source as * const u8, channel.elementSize);
+    channel.head =(channel.head + 1usize) % channel.capacity;
+    channel.length = channel.length - 1usize;
+    channelWrite(handle, channel);
+    conditionSignal(channel.writable);
+    mutexUnlock(channel.mutex);
+    return 1i32;
+  }
+}
+@Export("tn_channel_close")
+export function channelClose(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let channel = channelRead(handle);
+    mutexLock(channel.mutex);
+    channel.closed = 1i32;
+    channelWrite(handle, channel);
+    conditionBroadcast(channel.readable);
+    conditionBroadcast(channel.writable);
+    mutexUnlock(channel.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_channel_destroy")
+export function channelDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 0i32;
+    }
+    const channel = channelRead(handle);
+    const readableStatus = conditionDestroy(channel.readable);
+    const writableStatus = conditionDestroy(channel.writable);
+    const mutexStatus = mutexDestroy(channel.mutex);
+    if (readableStatus === 0i32 && writableStatus === 0i32 && mutexStatus === 0i32) {
+      runtimeFree(channel.storage);
+      runtimeFree(handle);
+      return 0i32;
+    }
+    return readableStatus !== 0i32?readableStatus:(writableStatus !== 0i32?writableStatus: mutexStatus);
+  }
+}
+@Export("tn_atomic_i32_load")
+export function atomicI32Load(value: * const i32): i32 {
+  unsafe {
+    return isNullIntrinsic<i32>(value)?0i32: *(value as * const i32);
+  }
+}
+@Export("tn_atomic_i32_fetch_add")
+export function atomicI32FetchAdd(value: * mut i32, delta: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<i32>(value as * const i32)) {
+      return 0i32;
+    }
+    const current = *(value as * const i32);
+    storeRawIntrinsic<i32>(value, current + delta);
+    return current;
+  }
+}
+@Export("tn_atomic_i32_store")
+export function atomicI32Store(value: * mut i32, next: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<i32>(value as * const i32)) {
+      return 22i32;
+    }
+    storeRawIntrinsic<i32>(value, next);
+    return next;
+  }
+}
+@Export("tn_atomic_i32_compare_exchange")
+export function atomicI32CompareExchange(value: * mut i32, expected: * mut i32, next: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<i32>(value as * const i32) || isNullIntrinsic<i32>(expected as * const i32)) {
+      return 0i32;
+    }
+    const current = *(value as * const i32);
+    const wanted = *(expected as * const i32);
+    if (current === wanted) {
+      storeRawIntrinsic<i32>(value, next);
+      return 1i32;
+    }
+    storeRawIntrinsic<i32>(expected, current);
+    return 0i32;
+  }
+}
+@Export("tn_atomic_u64_load")
+export function atomicU64Load(value: * const u64): u64 {
+  unsafe {
+    return isNullIntrinsic<u64>(value)?0u64: *(value as * const u64);
+  }
+}
+@Export("tn_atomic_u64_fetch_add")
+export function atomicU64FetchAdd(value: * mut u64, delta: u64): u64 {
+  unsafe {
+    if (isNullIntrinsic<u64>(value as * const u64)) {
+      return 0u64;
+    }
+    const current = *(value as * const u64);
+    storeRawIntrinsic<u64>(value, current + delta);
+    return current;
+  }
+}
+@Export("tn_atomic_u64_store")
+export function atomicU64Store(value: * mut u64, next: u64): u64 {
+  unsafe {
+    if (isNullIntrinsic<u64>(value as * const u64)) {
+      return 0u64;
+    }
+    storeRawIntrinsic<u64>(value, next);
+    return next;
+  }
+}
+@Export("tn_atomic_u64_compare_exchange")
+export function atomicU64CompareExchange(value: * mut u64, expected: * mut u64, next: u64): i32 {
+  unsafe {
+    if (isNullIntrinsic<u64>(value as * const u64) || isNullIntrinsic<u64>(expected as * const u64)) {
+      return 0i32;
+    }
+    const current = *(value as * const u64);
+    const wanted = *(expected as * const u64);
+    if (current === wanted) {
+      storeRawIntrinsic<u64>(value, next);
+      return 1i32;
+    }
+    storeRawIntrinsic<u64>(expected, current);
+    return 0i32;
+  }
+}
+@Export("tn_atomic_usize_load")
+export function atomicUsizeLoad(value: * const usize): usize {
+  unsafe {
+    return isNullIntrinsic<usize>(value)?0usize: *(value as * const usize);
+  }
+}
+@Export("tn_atomic_usize_fetch_add")
+export function atomicUsizeFetchAdd(value: * mut usize, delta: usize): usize {
+  unsafe {
+    if (isNullIntrinsic<usize>(value as * const usize)) {
+      return 0usize;
+    }
+    const current = *(value as * const usize);
+    storeRawIntrinsic<usize>(value, current + delta);
+    return current;
+  }
+}
+@Export("tn_atomic_usize_store")
+export function atomicUsizeStore(value: * mut usize, next: usize): usize {
+  unsafe {
+    if (isNullIntrinsic<usize>(value as * const usize)) {
+      return 0usize;
+    }
+    storeRawIntrinsic<usize>(value, next);
+    return next;
+  }
+}
+@Export("tn_atomic_usize_compare_exchange")
+export function atomicUsizeCompareExchange(value: * mut usize, expected: * mut usize, next: usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<usize>(value as * const usize) || isNullIntrinsic<usize>(expected as * const usize)) {
+      return 0i32;
+    }
+    const current = *(value as * const usize);
+    const wanted = *(expected as * const usize);
+    if (current === wanted) {
+      storeRawIntrinsic<usize>(value, next);
+      return 1i32;
+    }
+    storeRawIntrinsic<usize>(expected, current);
+    return 0i32;
+  }
+}
+@Export("tn_thread_sleep_ns")
+export function threadSleepNs(nanoseconds: u64): void {
+  unsafe {
+    let request: Timespec = {
+      seconds:(nanoseconds / 1000000000u64)as i64, nanoseconds:(nanoseconds % 1000000000u64)as i64
+    };
+    nanosleep(( & mut request)as * mut u8, nullPointerIntrinsic<u8>());
+  }
+}
+@Export("tn_thread_yield")
+export function threadYield(): void {
+  unsafe {
+    sched_yield();
+  }
+}
+@Export("tn_thread_id")
+export function threadId(): u64 {
+  unsafe {
+    return pthread_self();
+  }
+}
+function threadSpawnRawPointer(entry: * mut u8, argument: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(entry as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<ThreadState>());
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const callback = entry as * mut u8;
+    let state: ThreadState = {
+      thread: 0u64
+    };
+    const threadAddress =( & mut state.thread)as * mut u64;
+    if (pthread_create(threadAddress, nullPointerIntrinsic<u8>()as * const u8, callback, argument) !== 0i32) {
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    storeRawIntrinsic<ThreadState>(handle as * mut ThreadState, state);
+    return handle;
+  }
+}
+@Export("tn_thread_spawn_raw")
+export function threadSpawnRaw(entry: usize, argument: * mut u8): * mut u8 {
+  unsafe {
+    return threadSpawnRawPointer(entry as * mut u8, argument);
+  }
+}
+@Export("tn_thread_spawn_raw_pointer")
+export function threadSpawnRawPointerExport(entry: * mut u8, argument: * mut u8): * mut u8 {
+  return threadSpawnRawPointer(entry, argument);
+}
+@Export("tn_thread_join")
+export function threadJoin(handle: * mut u8, result: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const thread =( *(handle as * const ThreadState)).thread;
+    const status = pthread_join(thread, result as * mut * mut u8);
+    if (status === 0i32) {
+      runtimeFree(handle);
+    }
+    return status;
+  }
+}
+@Export("tn_thread_detach")
+export function threadDetach(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const thread =( *(handle as * const ThreadState)).thread;
+    const status = pthread_detach(thread);
+    if (status === 0i32) {
+      runtimeFree(handle);
+    }
+    return status;
+  }
+}
+function byteAddress(pointer: * const u8, offset: usize): * mut u8 {
+  unsafe {
+    const address = borrowElement<u8>(pointer, offset);
+    return address as * mut u8;
+  }
+}
+@Export("tn_process_cwd")
+export function processCwd(buffer: * mut u8, capacity: usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(buffer as * const u8) || capacity === 0usize || isNullIntrinsic<u8>(getcwd(buffer, capacity)as * const u8)) {
+      return - 34i32;
+    }
+    return 0i32;
+  }
+}
+@Export("tn_file_open")
+export function fileOpen(path: * const u8, flags: i32, mode: i32): i32 {
+  unsafe {
+    return open(path, flags, mode);
+  }
+}
+@Export("tn_file_open_create")
+export function fileOpenCreate(path: * const u8, flags: i32, mode: i32): i32 {
+  unsafe {
+    return open(path, flags | 64i32, mode);
+  }
+}
+@Export("tn_file_read")
+export function fileRead(handle: i32, bytes: * mut u8, length: usize): isize {
+  unsafe {
+    return read(handle, bytes, length);
+  }
+}
+@Export("tn_file_write")
+export function fileWrite(handle: i32, bytes: * const u8, length: usize): isize {
+  unsafe {
+    return write(handle, bytes, length);
+  }
+}
+@Export("tn_file_read_exact")
+export function fileReadExact(handle: i32, bytes: * mut u8, length: usize): isize {
+  unsafe {
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const destination = byteAddress(bytes as * const u8, offset);
+      const received = read(handle, destination, length - offset);
+      if (received<0isize) {
+        return - 5isize;
+      }
+      if (received === 0isize) {
+        return - 32isize;
+      }
+      offset = offset +(received as usize);
+    }
+    return 0isize;
+  }
+}
+@Export("tn_file_write_all")
+export function fileWriteAll(handle: i32, bytes: * const u8, length: usize): isize {
+  unsafe {
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const source = borrowElement<u8>(bytes, offset);
+      const written = write(handle, source as * const u8, length - offset);
+      if (written<0isize) {
+        return - 5isize;
+      }
+      if (written === 0isize) {
+        return - 5isize;
+      }
+      offset = offset +(written as usize);
+    }
+    return 0isize;
+  }
+}
+@Export("tn_file_close")
+export function fileClose(handle: i32): i32 {
+  unsafe {
+    return close(handle);
+  }
+}
+@Export("tn_file_exists")
+export function fileExists(path: * const u8): i32 {
+  unsafe {
+    return access(path, 0i32) === 0i32?1i32: 0i32;
+  }
+}
+@Export("tn_file_remove")
+export function fileRemove(path: * const u8): i32 {
+  unsafe {
+    return unlink(path);
+  }
+}
+@Export("tn_file_stat")
+export function fileStat(path: * const u8, size: * mut u64, modified: * mut u64, mode: * mut u32): i32 {
+  unsafe {
+    const output = runtimeTryAlloc(sizeOfIntrinsic<StatLayout>());
+    if (isNullIntrinsic<u8>(output as * const u8) || stat(path, output) !== 0i32) {
+      runtimeFree(output);
+      return - 2i32;
+    }
+    const value = *(output as * const StatLayout);
+    if (!isNullIntrinsic<u64>(size as * const u64)) {
+      storeRawIntrinsic<u64>(size, value.size as u64);
+    }
+    if (!isNullIntrinsic<u64>(modified as * const u64)) {
+      storeRawIntrinsic<u64>(modified, value.modifySeconds as u64 * 1000000000u64 + value.modifyNanoseconds as u64);
+    }
+    if (!isNullIntrinsic<u32>(mode as * const u32)) {
+      storeRawIntrinsic<u32>(mode, value.mode);
+    }
+    runtimeFree(output);
+    return 0i32;
+  }
+}
+@Export("tn_dir_open")
+export function directoryOpen(path: * const u8): * mut u8 {
+  unsafe {
+    return opendir(path);
+  }
+}
+@Export("tn_dir_next")
+export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(name as * const u8) || capacity === 0usize) {
+      return - 22i32;
+    }
+    const entry = readdir(handle);
+    if (isNullIntrinsic<u8>(entry as * const u8)) {
+      return 0i32;
+    }
+    const recordLength = *(byteAddress(entry as * const u8, 16usize)as * const u16);
+    const namePointer = byteAddress(entry as * const u8, 19usize);
+    let length: usize = 0usize;
+    while (length<capacity && length<(recordLength as usize - 19usize) && byteAt(namePointer as * const u8, length) !== 0u8) {
+      length = length + 1usize;
+    }
+    if (length + 1usize > capacity) {
+      return - 36i32;
+    }
+    memcpy(name, namePointer as * const u8, length);
+    setByte(name, length, 0u8);
+    if (!isNullIntrinsic<u32>(kind as * const u32)) {
+      storeRawIntrinsic<u32>(kind, byteAt(entry as * const u8, 18usize)as u32);
+    }
+    return 1i32;
+  }
+}
+@Export("tn_dir_close")
+export function directoryClose(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?0i32: closedir(handle);
+  }
+}
+@Export("tn_path_join")
+export function pathJoin(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(left) || isNullIntrinsic<u8>(right) || isNullIntrinsic<u8>(output as * const u8) || capacity === 0usize) {
+      return - 22i32;
+    }
+    const leftLength = strlen(left);
+    const rightLength = strlen(right);
+    const separator = leftLength !== 0usize && byteAt(left, leftLength - 1usize) !== 47u8?1usize: 0usize;
+    if (leftLength + separator + rightLength + 1usize > capacity) {
+      return - 36i32;
+    }
+    if (leftLength > 0usize) {
+      memcpy(output, left, leftLength);
+    }
+    if (separator !== 0usize) {
+      setByte(output, leftLength, 47u8);
+    }
+    if (rightLength > 0usize) {
+      memcpy(byteAddress(output as * const u8, leftLength + separator), right, rightLength);
+    }
+    setByte(output, leftLength + separator + rightLength, 0u8);
+    return 0i32;
+  }
+}
+@Export("tn_path_basename")
+export function pathBasename(path: * const u8, output: * mut u8, capacity: usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(path) || isNullIntrinsic<u8>(output as * const u8) || capacity === 0usize) {
+      return - 22i32;
+    }
+    const length = strlen(path);
+    let start: usize = 0usize;
+    let index: usize = 0usize;
+    while (index !== length) {
+      if (byteAt(path, index) === 47u8) {
+        start = index + 1usize;
+      }
+      index = index + 1usize;
+    }
+    const count = length - start;
+    if (count + 1usize > capacity) {
+      return - 36i32;
+    }
+    if (count > 0usize) {
+      memcpy(output, byteAddress(path, start)as * const u8, count);
+    }
+    setByte(output, count, 0u8);
+    return 0i32;
+  }
+}
+function clockNanoseconds(clockId: i32): u64 {
+  unsafe {
+    let value: Timespec = {
+      seconds: 0i64, nanoseconds: 0i64
+    };
+    if (clock_gettime(clockId,( & mut value)as * mut u8) !== 0i32) {
+      return 0u64;
+    }
+    return value.seconds as u64 * 1000000000u64 + value.nanoseconds as u64;
+  }
+}
+@Export("tn_clock_monotonic_ns")
+export function clockMonotonicNanoseconds(): u64 {
+  const first = clockNanoseconds(1i32);
+  if (first !== 0u64) {
+    return first;
+  }
+  return clockNanoseconds(6i32);
+}
+@Export("tn_clock_wall_ns")
+export function clockWallNanoseconds(): u64 {
+  return clockNanoseconds(0i32);
+}
+@Export("tn_process_getenv")
+export function processGetenv(name: * const u8): * const u8 {
+  unsafe {
+    return getenv(name);
+  }
+}
+@Export("tn_process_getenv_length")
+export function processGetenvLength(name: * const u8): usize {
+  unsafe {
+    const value = getenv(name);
+    return isNullIntrinsic<u8>(value)?18446744073709551615usize: strlen(value);
+  }
+}
+@Export("tn_process_getenv_copy")
+export function processGetenvCopy(name: * const u8, destination: * mut u8, capacity: usize): i32 {
+  unsafe {
+    const value = getenv(name);
+    if (isNullIntrinsic<u8>(value) || isNullIntrinsic<u8>(destination as * const u8)) {
+      return - 2i32;
+    }
+    const length = strlen(value);
+    if (length + 1usize > capacity) {
+      return - 34i32;
+    }
+    memcpy(destination, value, length);
+    setByte(destination, length, 0u8);
+    return 0i32;
+  }
+}
+@Export("tn_library_open")
+export function libraryOpen(path: * const u8): * mut u8 {
+  unsafe {
+    return dlopen(path, 2i32 | 8i32);
+  }
+}
+@Export("tn_library_symbol")
+export function librarySymbol(handle: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    return dlsym(handle, name);
+  }
+}
+@Export("tn_library_close")
+export function libraryClose(handle: * mut u8): i32 {
+  unsafe {
+    return isNullIntrinsic<u8>(handle as * const u8)?0i32: dlclose(handle);
+  }
+}
+@Export("tn_process_spawn")
+export function processSpawn(command: * const u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(command) || strlen(command) === 0usize) {
+      return - 22i32;
+    }
+    const arguments = runtimeTryAlloc(2usize * sizeOfIntrinsic< * mut u8>());
+    if (isNullIntrinsic<u8>(arguments as * const u8)) {
+      return - 12i32;
+    }
+    storeRawIntrinsic< * mut u8>(arguments as * mut * mut u8, command as * mut u8);
+    storeRawIntrinsic< * mut u8>(byteAddress(arguments as * const u8, sizeOfIntrinsic< * mut u8>())as * mut * mut u8, nullPointerIntrinsic<u8>());
+    const child = fork();
+    if (child === 0i32) {
+      execvp(command, arguments as * mut * mut u8);
+      _exit(127i32);
+    }
+    runtimeFree(arguments);
+    return child > 0i32?child: - 1i32;
+  }
+}
+@Export("tn_process_wait")
+export function processWait(process: i32, exitCode: * mut i32): i32 {
+  unsafe {
+    if (process <= 0i32) {
+      return 22i32;
+    }
+    let status: i32 = 0i32;
+    if (waitpid(process,( & mut status)as * mut i32, 0i32) < 0i32) {
+      return - 1i32;
+    }
+    if (!isNullIntrinsic<i32>(exitCode as * const i32)) {
+      const exited =(status & 127i32) === 0i32;
+      const value = exited?(status >> 8i32) & 255i32: 128i32 +(status & 127i32);
+      storeRawIntrinsic<i32>(exitCode, value);
+    }
+    return 0i32;
+  }
+}
+@Export("tn_process_kill")
+export function processKill(process: i32, signal: i32): i32 {
+  unsafe {
+    return process > 0i32 && kill(process, signal) === 0i32?0i32: - 1i32;
+  }
+}
+@Copy
+@Layout("C")
+struct ReactorState {
+  public descriptor: PollDescriptor;
+  public watched: i32;
+}
+function socketAddress(host: * const u8, port: u16, address: * mut SockAddrIn): i32 {
+  unsafe {
+    if (isNullIntrinsic<SockAddrIn>(address as * const SockAddrIn)) {
+      return - 22i32;
+    }
+    let value: SockAddrIn = {
+      family: 2u16, port: htons(port), address: 0u32, padding0: 0u64
+    };
+    if (!isNullIntrinsic<u8>(host) && strlen(host) !== 0usize) {
+      if (inet_pton(2i32, host,( & mut value.address)as * mut u8) !== 1i32) {
+        if (strcmp(host, "localhost" as * const u8) !== 0i32) {
+          return - 1i32;
+        }
+        value.address = 16777343u32;
+      }
+    }
+    storeRawIntrinsic<SockAddrIn>(address, value);
+    return 0i32;
+  }
+}
+@Export("tn_net_tcp_connect")
+export function netTcpConnect(host: * const u8, port: u16): i32 {
+  unsafe {
+    const handle = socket(2i32, 1i32, 0i32);
+    if (handle<0i32) {
+      return - 1i32;
+    }
+    let address: SockAddrIn = {
+      family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
+    };
+    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32 || connect(handle,( & address)as * const u8, 16u32) !== 0i32) {
+      close(handle);
+      return - 1i32;
+    }
+    return handle;
+  }
+}
+@Export("tn_net_tcp_listen")
+export function netTcpListen(host: * const u8, port: u16, backlog: i32): i32 {
+  unsafe {
+    const handle = socket(2i32, 1i32, 0i32);
+    if (handle<0i32) {
+      return - 1i32;
+    }
+    const reuse: i32 = 1i32;
+    setsockopt(handle, 1i32, 2i32,( & reuse)as * const u8, 4u32);
+    let address: SockAddrIn = {
+      family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
+    };
+    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32 || bind(handle,( & address)as * const u8, 16u32) !== 0i32 || listen(handle, backlog > 0i32?backlog: 128i32) !== 0i32) {
+      close(handle);
+      return - 1i32;
+    }
+    return handle;
+  }
+}
+@Export("tn_net_tcp_listen_address")
+export function netTcpListenAddress(address: * const u8, backlog: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(address)) {
+      return - 1i32;
+    }
+    const length = strlen(address);
+    let separator: usize = 0usize;
+    let separatorIndex: usize = 0usize;
+    while (separatorIndex !== length) {
+      if (byteAt(address, separatorIndex) === 58u8) {
+        separator = separatorIndex;
+      }
+      separatorIndex = separatorIndex + 1usize;
+    }
+    if (separator === 0usize || separator + 1usize >= length) {
+      return - 1i32;
+    }
+    const hostLength = separator;
+    const host = runtimeTryAlloc(hostLength + 1usize);
+    if (isNullIntrinsic<u8>(host as * const u8)) {
+      return - 12i32;
+    }
+    memcpy(host, address, hostLength);
+    setByte(host, hostLength, 0u8);
+    const port = strtoul(byteAddress(address, separator + 1usize)as * const u8, nullPointerIntrinsic< * mut u8>()as * mut * mut u8, 10i32);
+    if (port > 65535usize) {
+      runtimeFree(host);
+      return - 1i32;
+    }
+    const handle = netTcpListen(host as * const u8, port as u16, backlog);
+    runtimeFree(host);
+    return handle;
+  }
+}
+@Export("tn_net_tcp_accept")
+export function netTcpAccept(handle: i32): i32 {
+  unsafe {
+    return accept(handle, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u32>()as * mut u32);
+  }
+}
+@Export("tn_net_set_nonblocking")
+export function netSetNonblocking(handle: i32, enabled: i32): i32 {
+  unsafe {
+    const flags = fcntl(handle, 3i32, 0i32);
+    if (flags<0i32) {
+      return - 1i32;
+    }
+    const next = enabled !== 0i32?flags | 4i32: flags &( - 5i32);
+    return fcntl(handle, 4i32, next) === 0i32?0i32: - 1i32;
+  }
+}
+@Export("tn_net_shutdown")
+export function netShutdown(handle: i32): i32 {
+  unsafe {
+    return shutdown(handle, 2i32);
+  }
+}
+@Export("tn_net_read")
+export function netRead(handle: i32, bytes: * mut u8, length: usize): isize {
+  unsafe {
+    return recv(handle, bytes, length, 0i32);
+  }
+}
+@Export("tn_net_read_into")
+export function netReadInto(handle: i32, bytes: * mut u8, capacity: usize, length: usize, received: * mut usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(bytes as * const u8) || isNullIntrinsic<usize>(received as * const usize) || length > capacity) {
+      return 22i32;
+    }
+    const result = recv(handle, byteAddress(bytes as * const u8, length), capacity - length, 0i32);
+    if (result<0isize) {
+      return 5i32;
+    }
+    storeRawIntrinsic<usize>(received, result as usize);
+    return 0i32;
+  }
+}
+@Export("tn_net_write")
+export function netWrite(handle: i32, bytes: * const u8, length: usize): isize {
+  unsafe {
+    return send(handle, bytes, length, 0i32);
+  }
+}
+@Export("tn_net_read_exact")
+export function netReadExact(handle: i32, bytes: * mut u8, length: usize): i32 {
+  unsafe {
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const result = recv(handle, byteAddress(bytes as * const u8, offset), length - offset, 0i32);
+      if (result === - 1isize || result === 0isize) {
+        return result === 0isize?32i32: 5i32;
+      }
+      const progress: usize = result as usize;
+      offset = offset + progress;
+    }
+    return 0i32;
+  }
+}
+@Export("tn_net_write_all")
+export function netWriteAll(handle: i32, bytes: * const u8, length: usize): i32 {
+  unsafe {
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const result = send(handle, borrowElement<u8>(bytes, offset)as * const u8, length - offset, 0i32);
+      if (result === - 1isize || result === 0isize) {
+        return result === 0isize?5i32: 5i32;
+      }
+      const progress: usize = result as usize;
+      offset = offset + progress;
+    }
+    return 0i32;
+  }
+}
+@Export("tn_net_close")
+export function netClose(handle: i32): i32 {
+  unsafe {
+    return close(handle);
+  }
+}
+@Export("tn_net_udp_bind")
+export function netUdpBind(host: * const u8, port: u16): i32 {
+  unsafe {
+    const handle = socket(2i32, 2i32, 0i32);
+    if (handle<0i32) {
+      return - 1i32;
+    }
+    let address: SockAddrIn = {
+      family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
+    };
+    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32 || bind(handle,( & address)as * const u8, 16u32) !== 0i32) {
+      close(handle);
+      return - 1i32;
+    }
+    return handle;
+  }
+}
+@Export("tn_net_udp_send")
+export function netUdpSend(handle: i32, bytes: * const u8, length: usize, host: * const u8, port: u16): isize {
+  unsafe {
+    let address: SockAddrIn = {
+      family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
+    };
+    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32) {
+      return - 1isize;
+    }
+    return sendto(handle, bytes, length, 0i32,( & address)as * const u8, 16u32);
+  }
+}
+@Export("tn_net_udp_recv")
+export function netUdpReceive(handle: i32, bytes: * mut u8, length: usize): isize {
+  unsafe {
+    return recvfrom(handle, bytes, length, 0i32, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u32>()as * mut u32);
+  }
+}
+@Export("tn_net_resolve_ipv4")
+export function netResolveIpv4(host: * const u8, address: * mut u32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(host) || isNullIntrinsic<u32>(address as * const u32)) {
+      return - 1i32;
+    }
+    const value: SockAddrIn = {
+      family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
+    };
+    if (inet_pton(2i32, host,( & mut value.address)as * mut u8) !== 1i32) {
+      return - 1i32;
+    }
+    storeRawIntrinsic<u32>(address, value.address);
+    return 0i32;
+  }
+}
+@Export("tn_reactor_create")
+export function reactorCreate(): * mut u8 {
+  unsafe {
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<ReactorState>());
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const state: ReactorState = {
+      descriptor: {
+        handle: - 1i32, events: 0i16, revents: 0i16
+      }, watched: 0i32
+    };
+    storeRawIntrinsic<ReactorState>(handle as * mut ReactorState, state);
+    return handle;
+  }
+}
+@Export("tn_reactor_watch")
+export function reactorWatch(handle: * mut u8, descriptor: i32, events: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let reactor = *(handle as * const ReactorState);
+    reactor.descriptor.handle = descriptor;
+    reactor.descriptor.events = events as i16;
+    reactor.descriptor.revents = 0i16;
+    reactor.watched = 1i32;
+    storeRawIntrinsic<ReactorState>(handle as * mut ReactorState, reactor);
+    return 0i32;
+  }
+}
+@Export("tn_reactor_unwatch")
+export function reactorUnwatch(handle: * mut u8, descriptor: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let reactor = *(handle as * const ReactorState);
+    if (reactor.watched !== 0i32 && reactor.descriptor.handle === descriptor) {
+      reactor.watched = 0i32;
+      reactor.descriptor.handle = - 1i32;
+      reactor.descriptor.events = 0i16;
+      reactor.descriptor.revents = 0i16;
+      storeRawIntrinsic<ReactorState>(handle as * mut ReactorState, reactor);
+    }
+    return 0i32;
+  }
+}
+@Export("tn_reactor_wait")
+export function reactorWait(handle: * mut u8, timeout: i32, ready: * mut i32, events: * mut i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return - 22i32;
+    }
+    let reactor = *(handle as * const ReactorState);
+    if (reactor.watched === 0i32) {
+      return 0i32;
+    }
+    const result = poll(( & mut reactor.descriptor)as * mut u8, 1usize, timeout);
+    if (result <= 0i32) {
+      return result;
+    }
+    if (!isNullIntrinsic<i32>(ready as * const i32)) {
+      storeRawIntrinsic<i32>(ready, reactor.descriptor.handle);
+    }
+    if (!isNullIntrinsic<i32>(events as * const i32)) {
+      storeRawIntrinsic<i32>(events, reactor.descriptor.revents as i32);
+    }
+    return result;
+  }
+}
+@Export("tn_reactor_destroy")
+export function reactorDestroy(handle: * mut u8): i32 {
+  runtimeFree(handle);
+  return 0i32;
+}
+@Copy
+@Layout("C")
+struct TaskGroupState {
+  public mutex: * mut u8;
+  public condition: * mut u8;
+  public cancelled: i32;
+  public active: usize;
+}
+@Copy
+@Layout("C")
+struct TaskWorkerState {
+  public group: * mut u8;
+  public promise: * mut u8;
+}
+@Copy
+@Layout("C")
+struct RawPromiseState {
+  public mutex: * mut u8;
+  public condition: * mut u8;
+  public value: * mut u8;
+  public error: * mut u8;
+  public waiters: usize;
+  public ready: i32;
+  public failed: i32;
+  public consumed: i32;
+}
+function rawPromiseRead(handle: * mut u8): RawPromiseState {
+  unsafe {
+    return *(handle as * const RawPromiseState);
+  }
+}
+function rawPromiseWrite(handle: * mut u8, promise: RawPromiseState): void {
+  unsafe {
+    storeRawIntrinsic<RawPromiseState>(handle as * mut RawPromiseState, promise);
+  }
+}
+@Export("tn_promise_create")
+export function rawPromiseCreate(): * mut u8 {
+  unsafe {
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<RawPromiseState>());
+    const mutex = mutexCreate();
+    const condition = conditionCreate();
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+      runtimeFree(handle);
+      mutexDestroy(mutex);
+      conditionDestroy(condition);
+      return nullPointerIntrinsic<u8>();
+    }
+    const promise: RawPromiseState = {
+      mutex: mutex, condition: condition, value: nullPointerIntrinsic<u8>(), error: nullPointerIntrinsic<u8>(), waiters: 0usize, ready: 0i32, failed: 0i32, consumed: 0i32
+    };
+    rawPromiseWrite(handle, promise);
+    return handle;
+  }
+}
+function rawPromiseComplete(handle: * mut u8, value: * mut u8, error: * mut u8, failed: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let promise = rawPromiseRead(handle);
+    mutexLock(promise.mutex);
+    if (promise.ready !== 0i32 || promise.consumed !== 0i32) {
+      mutexUnlock(promise.mutex);
+      return 114i32;
+    }
+    promise.value = value;
+    promise.error = error;
+    promise.failed = failed;
+    promise.ready = 1i32;
+    rawPromiseWrite(handle, promise);
+    conditionBroadcast(promise.condition);
+    mutexUnlock(promise.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_promise_resolve")
+export function rawPromiseResolve(handle: * mut u8, value: * mut u8): i32 {
+  return rawPromiseComplete(handle, value, nullPointerIntrinsic<u8>(), 0i32);
+}
+@Export("tn_promise_reject")
+export function rawPromiseReject(handle: * mut u8, error: * mut u8): i32 {
+  return rawPromiseComplete(handle, nullPointerIntrinsic<u8>(), error, 1i32);
+}
+@Export("tn_promise_cancel")
+export function rawPromiseCancel(handle: * mut u8): i32 {
+  return rawPromiseComplete(handle, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u8>(), 1i32);
+}
+@Export("tn_promise_wait")
+export function rawPromiseWait(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let promise = rawPromiseRead(handle);
+    mutexLock(promise.mutex);
+    promise.waiters = promise.waiters + 1usize;
+    rawPromiseWrite(handle, promise);
+    while (promise.ready === 0i32) {
+      conditionWait(promise.condition, promise.mutex);
+      promise = rawPromiseRead(handle);
+    }
+    const failed = promise.failed;
+    promise.waiters = promise.waiters - 1usize;
+    rawPromiseWrite(handle, promise);
+    conditionBroadcast(promise.condition);
+    mutexUnlock(promise.mutex);
+    return failed;
+  }
+}
+@Export("tn_promise_wait_result")
+export function rawPromiseWaitResult(handle: * mut u8): i32 {
+  return rawPromiseWait(handle);
+}
+@Export("tn_promise_take")
+export function rawPromiseTake(handle: * mut u8, failed: * mut i32): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    let promise = rawPromiseRead(handle);
+    mutexLock(promise.mutex);
+    promise.waiters = promise.waiters + 1usize;
+    rawPromiseWrite(handle, promise);
+    while (promise.ready === 0i32) {
+      conditionWait(promise.condition, promise.mutex);
+      promise = rawPromiseRead(handle);
+    }
+    if (promise.consumed !== 0i32) {
+      promise.waiters = promise.waiters - 1usize;
+      rawPromiseWrite(handle, promise);
+      conditionBroadcast(promise.condition);
+      mutexUnlock(promise.mutex);
+      return nullPointerIntrinsic<u8>();
+    }
+    const value = promise.failed !== 0i32?promise.error: promise.value;
+    if (!isNullIntrinsic<i32>(failed as * const i32)) {
+      storeRawIntrinsic<i32>(failed, promise.failed);
+    }
+    promise.consumed = 1i32;
+    promise.waiters = promise.waiters - 1usize;
+    rawPromiseWrite(handle, promise);
+    while (promise.waiters !== 0usize) {
+      conditionWait(promise.condition, promise.mutex);
+      promise = rawPromiseRead(handle);
+    }
+    mutexUnlock(promise.mutex);
+    conditionDestroy(promise.condition);
+    mutexDestroy(promise.mutex);
+    runtimeFree(handle);
+    return value;
+  }
+}
+@Export("tn_promise_destroy")
+export function rawPromiseDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 0i32;
+    }
+    let promise = rawPromiseRead(handle);
+    mutexLock(promise.mutex);
+    if (promise.consumed !== 0i32) {
+      mutexUnlock(promise.mutex);
+      return 114i32;
+    }
+    if (promise.ready === 0i32) {
+      promise.ready = 1i32;
+      promise.failed = 1i32;
+      rawPromiseWrite(handle, promise);
+      conditionBroadcast(promise.condition);
+    }
+    while (promise.waiters !== 0usize) {
+      conditionWait(promise.condition, promise.mutex);
+      promise = rawPromiseRead(handle);
+    }
+    mutexUnlock(promise.mutex);
+    conditionDestroy(promise.condition);
+    mutexDestroy(promise.mutex);
+    runtimeFree(handle);
+    return 0i32;
+  }
+}
+@Export("tn_task_group_create")
+export function taskGroupCreate(): * mut u8 {
+  unsafe {
+    const handle = runtimeTryAlloc(sizeOfIntrinsic<TaskGroupState>());
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const mutex = mutexCreate();
+    const condition = conditionCreate();
+    if (isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+      mutexDestroy(mutex);
+      conditionDestroy(condition);
+      runtimeFree(handle);
+      return nullPointerIntrinsic<u8>();
+    }
+    const state: TaskGroupState = {
+      mutex: mutex, condition: condition, cancelled: 0i32, active: 0usize
+    };
+    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    return handle;
+  }
+}
+@Export("tn_task_group_cancel")
+export function taskGroupCancel(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let state = *(handle as * const TaskGroupState);
+    mutexLock(state.mutex);
+    state.cancelled = 1i32;
+    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    conditionBroadcast(state.condition);
+    mutexUnlock(state.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_task_group_is_cancelled")
+export function taskGroupIsCancelled(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 1i32;
+    }
+    const state = *(handle as * const TaskGroupState);
+    mutexLock(state.mutex);
+    const cancelled =( *(handle as * const TaskGroupState)).cancelled;
+    mutexUnlock(state.mutex);
+    return cancelled;
+  }
+}
+@Export("tn_task_group_enter")
+export function taskGroupEnter(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let state = *(handle as * const TaskGroupState);
+    mutexLock(state.mutex);
+    if (state.cancelled !== 0i32) {
+      mutexUnlock(state.mutex);
+      return - 125i32;
+    }
+    state.active = state.active + 1usize;
+    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    mutexUnlock(state.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_task_group_leave")
+export function taskGroupLeave(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let state = *(handle as * const TaskGroupState);
+    mutexLock(state.mutex);
+    if (state.active === 0usize) {
+      mutexUnlock(state.mutex);
+      return 22i32;
+    }
+    state.active = state.active - 1usize;
+    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    conditionBroadcast(state.condition);
+    mutexUnlock(state.mutex);
+    return 0i32;
+  }
+}
+function taskGroupWorker(argument: * mut u8): * mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(argument as * const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const worker = *(argument as * const TaskWorkerState);
+    asyncWait(worker.promise);
+    asyncDestroy(worker.promise);
+    taskGroupLeave(worker.group);
+    runtimeFree(argument);
+    return nullPointerIntrinsic<u8>();
+  }
+}
+@Export("tn_task_group_spawn")
+export function taskGroupSpawn(handle: * mut u8, promise: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(promise as * const u8)) {
+      return 22i32;
+    }
+    if (taskGroupEnter(handle) !== 0i32) {
+      return - 125i32;
+    }
+    const worker = runtimeTryAlloc(sizeOfIntrinsic<TaskWorkerState>());
+    if (isNullIntrinsic<u8>(worker as * const u8)) {
+      taskGroupLeave(handle);
+      asyncDestroy(promise);
+      return - 12i32;
+    }
+    const state: TaskWorkerState = {
+      group: handle, promise: promise
+    };
+    storeRawIntrinsic<TaskWorkerState>(worker as * mut TaskWorkerState, state);
+    const thread = threadSpawnRawPointer(taskGroupWorker as * mut u8, worker);
+    if (isNullIntrinsic<u8>(thread as * const u8)) {
+      runtimeFree(worker);
+      taskGroupLeave(handle);
+      asyncDestroy(promise);
+      return - 11i32;
+    }
+    const detached = threadDetach(thread);
+    if (detached !== 0i32) {
+      threadJoin(thread, nullPointerIntrinsic<u8>());
+      return detached;
+    }
+    return 0i32;
+  }
+}
+@Export("tn_task_group_wait")
+export function taskGroupWait(handle: * mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    let state = *(handle as * const TaskGroupState);
+    mutexLock(state.mutex);
+    while (state.active !== 0usize) {
+      conditionWait(state.condition, state.mutex);
+      state = *(handle as * const TaskGroupState);
+    }
+    mutexUnlock(state.mutex);
+    return 0i32;
+  }
+}
+@Export("tn_task_group_destroy")
+export function taskGroupDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (!isNullIntrinsic<u8>(handle as * const u8)) {
+      taskGroupWait(handle);
+      const state = *(handle as * const TaskGroupState);
+      conditionDestroy(state.condition);
+      mutexDestroy(state.mutex);
+      runtimeFree(handle);
+    }
+  }
+  return 0i32;
+}

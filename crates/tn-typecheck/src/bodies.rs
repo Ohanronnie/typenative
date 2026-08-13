@@ -2615,7 +2615,16 @@ impl BodyChecker<'_> {
         // mandatory outside an unsafe region.
         let raw_pointer_cast =
             matches!(target, Type::RawPointer { .. }) && !matches!(source.ty, Type::Error);
-        let valid = compatible(self.program, &source.ty, &target) || raw_pointer_cast;
+        let runtime_numeric_cast = self
+            .module
+            .path
+            .to_string_lossy()
+            .ends_with("runtime/runtime.tn")
+            && is_numeric(&source.ty)
+            && is_numeric(&target);
+        let valid = compatible(self.program, &source.ty, &target)
+            || runtime_numeric_cast
+            || raw_pointer_cast;
         if raw_pointer_cast
             && self.unsafe_depth == 0
             && let Some(token) = token

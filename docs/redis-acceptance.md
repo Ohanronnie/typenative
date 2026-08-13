@@ -131,8 +131,8 @@ Both debug and optimized canonical TypeNative builds passed CRUD, unknown
 commands, fragmented and pipelined frames, malformed/invalid UTF-8/oversized/
 truncated input closure, 12,000-byte capacity growth, and 32 concurrent
 mutex-protected clients. The result was `redis-canonical-protocol=pass`.
-The harness builds `validation/redis/main-alt.tn` and does not execute the
-legacy `runtime/redis.c` application.
+The harness builds `validation/redis/main-alt.tn` and has no project-owned
+native server implementation to select.
 The sanitizer runs produced `redis-canonical-address-undefined-sanitizers=pass`
 and `redis-canonical-thread-sanitizers=pass`.
 
@@ -158,9 +158,7 @@ boundary test passes under AddressSanitizer and UndefinedBehaviorSanitizer.
 
 ## Gate boundary
 
-The TypeNative source checks and this acceptance contract are part of the
-compiler-independent preparation work. They do not claim self-hosting or
-replace the protected self-hosting validation paths. Native-source dispositions
-and the remaining retirement evidence are tracked in
-[`gate10-native-inventory.md`](gate10-native-inventory.md) and
+The TypeNative source checks and this acceptance contract close the hosted
+Gate 10 migration. They do not claim self-hosting or replace the protected
+self-hosting validation paths. The remaining protected work is tracked in
 [`gate11-preparation.md`](gate11-preparation.md).

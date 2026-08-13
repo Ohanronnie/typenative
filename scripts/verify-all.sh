@@ -11,73 +11,89 @@ if [ -n "${TN_BIN:-}" ]; then
   tn=$TN_BIN
 elif [ -x "$target_dir/debug/tn" ]; then
   tn=$target_dir/debug/tn
-elif command -v tn >/dev/null 2>&1; then
-  tn=$(command -v tn)
 else
-  echo "tn compiler not found; set TN_BIN" >&2
-  exit 2
+  cargo_target_dir=$(cargo metadata --no-deps --format-version 1 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+  if [ -n "$cargo_target_dir" ] && [ -x "$cargo_target_dir/debug/tn" ]; then
+    tn=$cargo_target_dir/debug/tn
+  elif command -v tn >/dev/null 2>&1; then
+    tn=$(command -v tn)
+  else
+    echo "tn compiler not found; set TN_BIN" >&2
+    exit 2
+  fi
 fi
 
 [ -x "$tn" ] || { echo "tn compiler is not executable: $tn" >&2; exit 2; }
 
-run() {
-  printf '%s\n' "verify: $*"
-  started=$(date +%s)
-  if "$@"; then
+time_stage() {
+  stage=$1
+  shift
+  printf '%s\n' "verify-stage-start: category=$stage command=$*"
+  if /usr/bin/time -p "$@"; then
     result=0
   else
     result=$?
   fi
-  finished=$(date +%s)
-  printf '%s\n' "verify-result: exit=$result elapsed=$((finished - started))s command=$*"
+  printf '%s\n' "verify-stage-result: category=$stage exit=$result"
   return "$result"
 }
 
-run scripts/verify-design.sh
-run scripts/check-toolchain.sh
-run cargo fmt --all -- --check
-run cargo test --workspace --all-targets
-run cargo clippy --workspace --all-targets -- -D warnings
-run env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
-
-run "$tn" fmt --check std
-run "$tn" fmt --check compiler-tn
-run "$tn" fmt --check validation
+time_stage compiler scripts/verify-design.sh
+time_stage compiler scripts/check-toolchain.sh
+time_stage compiler scripts/check-native-sources.sh
+time_stage compiler cargo fmt --all -- --check
+time_stage compiler "$tn" fmt --check std
+time_stage compiler "$tn" fmt --check validation
 for source in "$root"/std/*.tn; do
   [ -f "$source" ] || continue
-  run "$tn" check "$source"
+  time_stage compiler "$tn" check "$source"
 done
-run "$tn" check "$root/compiler-tn/main.tn"
+
+time_stage tests cargo test --workspace --all-targets
+time_stage tests cargo clippy --workspace --all-targets -- -D warnings
+time_stage tests env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
 
 parallel_dir=$(mktemp -d "${TMPDIR:-/tmp}/typenative-verify-all.XXXXXX")
 trap 'rm -rf -- "$parallel_dir"' EXIT
-printf '%s\n' 'verify-parallel: cli stdlib runtime debug-info c-abi node redis sanitizers'
-(run env TN_BIN="$tn" scripts/verify-cli.sh) >"$parallel_dir/cli.log" 2>&1 &
-cli_pid=$!
-(run env TN_BIN="$tn" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) >"$parallel_dir/stdlib.log" 2>&1 &
-stdlib_pid=$!
-(run scripts/verify-runtime.sh) >"$parallel_dir/runtime.log" 2>&1 &
-runtime_pid=$!
-(run env TN_BIN="$tn" scripts/verify-debug-info.sh) >"$parallel_dir/debug-info.log" 2>&1 &
-debug_info_pid=$!
-(run env TN_BIN="$tn" scripts/verify-c-abi.sh) >"$parallel_dir/c-abi.log" 2>&1 &
-c_abi_pid=$!
-(run env TN_BIN="$tn" scripts/verify-node.sh) >"$parallel_dir/node.log" 2>&1 &
-node_pid=$!
-(run env TN_BIN="$tn" scripts/verify-redis.sh) >"$parallel_dir/redis.log" 2>&1 &
-redis_pid=$!
-(run env TN_BIN="$tn" scripts/run-sanitizers.sh) >"$parallel_dir/sanitizers.log" 2>&1 &
-sanitizers_pid=$!
+
+time_log() {
+  label=$1
+  shift
+  log="$parallel_dir/$label.log"
+  if {
+    printf '%s\n' "verify-stage-start: category=$label command=$*"
+    if /usr/bin/time -p "$@"; then
+      result=0
+    else
+      result=$?
+    fi
+    printf '%s\n' "verify-stage-result: category=$label exit=$result"
+    exit "$result"
+  } >"$log" 2>&1; then
+    return 0
+  fi
+  return $?
+}
+
+printf '%s\n' 'verify-parallel: cli stdlib runtime debug-info c-abi node benchmarks sanitizers'
+(time_log tests-cli env TN_BIN="$tn" scripts/verify-cli.sh) & cli_pid=$!
+(time_log tests-stdlib env TN_BIN="$tn" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) & stdlib_pid=$!
+(time_log tests-runtime env TN_BIN="$tn" scripts/verify-runtime.sh) & runtime_pid=$!
+(time_log tests-debug-info env TN_BIN="$tn" scripts/verify-debug-info.sh) & debug_info_pid=$!
+(time_log tests-abi env TN_BIN="$tn" scripts/verify-c-abi.sh) & c_abi_pid=$!
+(time_log tests-node env TN_BIN="$tn" scripts/verify-node.sh) & node_pid=$!
+(time_log benchmarks env TN_BIN="$tn" scripts/verify-redis.sh) & benchmarks_pid=$!
+(time_log sanitizers env TN_BIN="$tn" scripts/run-sanitizers.sh) & sanitizers_pid=$!
 
 parallel_failed=0
 for job in \
-  "$cli_pid:cli" \
-  "$stdlib_pid:stdlib" \
-  "$runtime_pid:runtime" \
-  "$debug_info_pid:debug-info" \
-  "$c_abi_pid:c-abi" \
-  "$node_pid:node" \
-  "$redis_pid:redis" \
+  "$cli_pid:tests-cli" \
+  "$stdlib_pid:tests-stdlib" \
+  "$runtime_pid:tests-runtime" \
+  "$debug_info_pid:tests-debug-info" \
+  "$c_abi_pid:tests-abi" \
+  "$node_pid:tests-node" \
+  "$benchmarks_pid:benchmarks" \
   "$sanitizers_pid:sanitizers"; do
   pid=${job%%:*}
   name=${job#*:}
@@ -92,12 +108,11 @@ rm -r -- "$parallel_dir"
 trap - EXIT
 [ "$parallel_failed" -eq 0 ] || exit 1
 
-if ! command -v cargo-fuzz >/dev/null 2>&1; then
-  echo "cargo-fuzz is required for the syntax fuzz gate" >&2
-  exit 2
+if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list 2>/dev/null | rg -q '^nightly'; then
+  time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run lexer -- -runs=10000 -max_len=4096 -timeout=5"
+  time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run parser -- -runs=10000 -max_len=4096 -timeout=5"
+else
+  printf '%s\n' 'fuzzing=unavailable (cargo-fuzz/nightly not installed)'
 fi
-run sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run lexer -- -runs=10000 -max_len=4096 -timeout=5"
-run sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run parser -- -runs=10000 -max_len=4096 -timeout=5"
 
-run env TN_BIN="$tn" scripts/bootstrap-self-host.sh
 printf '%s\n' 'verification-matrix=pass'

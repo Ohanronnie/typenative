@@ -1778,23 +1778,31 @@ impl OwnershipMirLowerer<'_> {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_expression_statement(&mut self) {
         let token = self.tokens[self.index];
         let end = self.statement_end(self.index);
         if let Some((assignment, compound)) = self.find_assignment(self.index, end) {
-            let destination = self
-                .lower_expression_range(self.index, assignment, None)
-                .and_then(|(operand, ty)| operand_place(operand).map(|place| (place, ty)));
-            if let Some((destination, destination_type)) = destination {
+            if let Some((declaration, destination_type)) =
+                self.global_declaration(self.index, assignment)
+            {
+                let left = compound.and_then(|operator| {
+                    let (left, left_type) = self.lower_expression_range(
+                        self.index,
+                        assignment,
+                        Some(&destination_type),
+                    )?;
+                    Some((operator, left, left_type))
+                });
                 let value =
                     self.lower_expression_range(assignment + 1, end, Some(&destination_type));
                 if let Some((operand, source_type)) = value {
-                    let value = if let Some(operator) = compound {
+                    let value = if let Some((operator, left_operator, left_type)) = left {
                         Rvalue::CheckedBinary {
                             operator,
-                            left: Operand::Copy(destination.clone()),
+                            left: left_operator,
                             right: operand,
-                            operand_type: destination_type.clone(),
+                            operand_type: binary_operand_type(&left_type, &source_type),
                             result_type: destination_type.clone(),
                         }
                     } else if source_type == destination_type {
@@ -1806,10 +1814,57 @@ impl OwnershipMirLowerer<'_> {
                             kind: mir_cast_kind(&source_type, &destination_type),
                         }
                     };
+                    let value_local = self.temporary(destination_type.clone(), self.span(token));
+                    self.statement(StatementKind::StorageLive(value_local), self.span(token));
                     self.statement(
-                        StatementKind::Assign(destination, Box::new(value)),
+                        StatementKind::Assign(Place::local(value_local), Box::new(value)),
                         self.span(token),
                     );
+                    let stored =
+                        self.temporary(Type::Primitive(PrimitiveType::Bool), self.span(token));
+                    self.statement(StatementKind::StorageLive(stored), self.span(token));
+                    self.statement(
+                        StatementKind::Assign(
+                            Place::local(stored),
+                            Box::new(Rvalue::RawOperation {
+                                operation: format!("global_store:{}", declaration.0),
+                                operands: vec![Operand::Move(Place::local(value_local))],
+                                ty: Type::Primitive(PrimitiveType::Bool),
+                            }),
+                        ),
+                        self.span(token),
+                    );
+                }
+            } else {
+                let destination = self
+                    .lower_expression_range(self.index, assignment, None)
+                    .and_then(|(operand, ty)| operand_place(operand).map(|place| (place, ty)));
+                if let Some((destination, destination_type)) = destination {
+                    let value =
+                        self.lower_expression_range(assignment + 1, end, Some(&destination_type));
+                    if let Some((operand, source_type)) = value {
+                        let value = if let Some(operator) = compound {
+                            Rvalue::CheckedBinary {
+                                operator,
+                                left: Operand::Copy(destination.clone()),
+                                right: operand,
+                                operand_type: destination_type.clone(),
+                                result_type: destination_type.clone(),
+                            }
+                        } else if source_type == destination_type {
+                            Rvalue::Use(operand)
+                        } else {
+                            Rvalue::Cast {
+                                operand,
+                                ty: destination_type.clone(),
+                                kind: mir_cast_kind(&source_type, &destination_type),
+                            }
+                        };
+                        self.statement(
+                            StatementKind::Assign(destination, Box::new(value)),
+                            self.span(token),
+                        );
+                    }
                 }
             }
         } else if let Some((operand, ty)) = self
@@ -3398,6 +3453,69 @@ impl OwnershipMirLowerer<'_> {
                         operands: vec![Operand::Constant(tn_mir::Constant::Undefined(
                             type_argument,
                         ))],
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "is_null") {
+            let result_type = Type::Primitive(PrimitiveType::Bool);
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "is_null".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "null_pointer") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "null_pointer".into(),
+                        operands: Vec::new(),
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        let raw_call_operation = ["call_raw", "call_raw_void", "call_raw_pointer"]
+            .into_iter()
+            .find(|operation| self.is_intrinsic_operation(start, callee_end, operation));
+        if let Some(raw_call_operation) = raw_call_operation {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: raw_call_operation.into(),
+                        operands: arguments,
                         ty: result_type.clone(),
                     }),
                 ),
@@ -5205,6 +5323,7 @@ impl OwnershipMirLowerer<'_> {
         None
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_atom(&mut self, index: usize, expected: Option<&Type>) -> Option<(Operand, Type)> {
         let token = *self.tokens.get(index)?;
         let hir = self.hir_expression_at(token);
@@ -5239,6 +5358,26 @@ impl OwnershipMirLowerer<'_> {
                 Some(ResolvedValue::Local(local)) => {
                     let local = *self.hir_local_ids.get(&local)?;
                     return self.local_value(local);
+                }
+                Some(ResolvedValue::Declaration(declaration))
+                    if !matches!(expression.ty, Type::Function(_))
+                        && self.is_global_declaration(declaration) =>
+                {
+                    let ty = expression.ty.clone();
+                    let destination = self.temporary(ty.clone(), self.span(token));
+                    self.statement(StatementKind::StorageLive(destination), self.span(token));
+                    self.statement(
+                        StatementKind::Assign(
+                            Place::local(destination),
+                            Box::new(Rvalue::RawOperation {
+                                operation: format!("global_load:{}", declaration.0),
+                                operands: Vec::new(),
+                                ty: ty.clone(),
+                            }),
+                        ),
+                        self.span(token),
+                    );
+                    return Some((Operand::Move(Place::local(destination)), ty));
                 }
                 Some(ResolvedValue::Declaration(declaration))
                     if matches!(expression.ty, Type::Function(_)) =>
@@ -5341,6 +5480,42 @@ impl OwnershipMirLowerer<'_> {
         self.hir.expressions.iter().rev().find(|expression| {
             expression.origin.byte_start == byte_start && expression.origin.byte_end == byte_end
         })
+    }
+
+    fn global_declaration(&self, start: usize, end: usize) -> Option<(DeclarationId, Type)> {
+        let declaration = self
+            .hir_expression_range(start, end)
+            .and_then(|expression| match expression.resolution {
+                Some(ResolvedValue::Declaration(declaration)) => Some(declaration),
+                _ => None,
+            })?;
+        let declaration_data = self.program.graph.declaration(declaration)?;
+        if !matches!(
+            declaration_data.kind,
+            tn_hir::DeclarationKind::Const | tn_hir::DeclarationKind::Static
+        ) {
+            return None;
+        }
+        let ty = self
+            .program
+            .definition(declaration)
+            .and_then(|definition| match &definition.data {
+                DefinitionData::Constant { ty, .. } => Some(ty.clone()),
+                _ => None,
+            })?;
+        Some((declaration, ty))
+    }
+
+    fn is_global_declaration(&self, declaration: DeclarationId) -> bool {
+        self.program
+            .graph
+            .declaration(declaration)
+            .is_some_and(|declaration| {
+                matches!(
+                    declaration.kind,
+                    tn_hir::DeclarationKind::Const | tn_hir::DeclarationKind::Static
+                )
+            })
     }
 
     fn block_id(index: usize) -> BasicBlockId {

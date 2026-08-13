@@ -22,8 +22,9 @@ An eventual independent run must start from a clean checkout with:
 
 The clean-checkout procedure must verify the source tree before building and
 must fail if an ignored `build/` or `target/` artifact is silently consumed as
-compiler input. Native C/ABI probes are generated in a temporary directory and
-their inputs and outputs are recorded without becoming repository sources.
+compiler input. Native ABI probes, when needed, are generated in a temporary
+directory and their inputs and outputs are recorded without becoming repository
+sources.
 
 ## Evidence lanes
 
@@ -31,7 +32,7 @@ their inputs and outputs are recorded without becoming repository sources.
 | --- | --- | --- |
 | Canonical language | [`language-spec.md`](language-spec.md), [`canonical-migration-manifest.md`](canonical-migration-manifest.md), and canonical parser fixtures are synchronized; the current documentation corpus contains eight `.tn` examples and they parse | Independent compiler B and C must consume the same canonical grammar and reject every obsolete spelling with equivalent structured diagnostics |
 | Rust bootstrap | `cargo test --workspace --all-targets` and focused syntax, HIR, typecheck, ownership, CLI, and MIR suites are the ordinary compiler baseline | The Rust bootstrap must build compiler A from the clean checkout, then the independent TypeNative compilers must reproduce the required artifacts and suites |
-| Redis source | The four canonical Redis sources pass ordinary compiler checks; the acceptance contract is in [`redis-acceptance.md`](redis-acceptance.md) | A native protocol/concurrency/sanitizer run must pass without using the legacy C Redis implementation as the application target |
+| Redis source | The four canonical Redis sources pass ordinary compiler checks; the acceptance contract is in [`redis-acceptance.md`](redis-acceptance.md) | Protected self-hosted compilers must independently reproduce the same native protocol/concurrency/sanitizer result |
 | Determinism | Existing semantic tests cover randomized discovery and hash-seed independence; canonical source scans and diagnostics are recorded | Repeat the complete discovery-order and hash-seed matrix for B and C, compare normalized diagnostics, and compare declared artifact digests |
 | Native safety | The runtime ABI boundary is explicitly documented in [`gate10-native-inventory.md`](gate10-native-inventory.md) | Run native products under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer on macOS ARM64, including async cleanup, mutexes, sockets, Redis, and FFI boundaries |
 | Protected self-hosting boundary | Protected paths are named and excluded from this pass | Complete the independent A-to-B-to-C sequence only in the dedicated self-hosting work, then attach its clean-checkout logs and artifact/source comparisons |

@@ -1,8 +1,26 @@
+
+@Layout("C")
+struct Pair {
+  public left: i32;
+  public right: i32;
+}
+@Layout("C")
+enum Kind {
+  Zero, Answer = 42,
+}
 extern "C" {
-  function tn_c_add(left: i32, right: i32): i32;
+  function tn_add(left: i32, right: i32): i32;
+  function tn_pair_value(pair: Pair): i32;
+  function tn_kind_value(kind: Kind): i32;
 }
 function main(): i32 {
   unsafe {
-    return tn_c_add(20i32, 22i32);
+    const pair: Pair = {
+      left: 19i32, right: 23i32,
+    };
+    if (tn_add(19i32, 23i32) !== 42i32 || tn_pair_value(pair) !== 42i32 || tn_kind_value(Kind.Answer) !== 42i32) {
+      return 1i32;
+    }
+    return 0i32;
   }
 }

@@ -1,4 +1,4 @@
-use crate::{Emit, Profile, Project};
+use crate::{Emit, LinkConfig, Profile, Project, ProjectConfig};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -90,10 +90,12 @@ pub fn build_project_with_timings(
     timings.record_duration("module-check", module_duration);
     timings.record_duration("ownership", ownership_duration);
     validate_exports(&program, project.config.emit)?;
-    let executable = if matches!(project.config.emit, Emit::SharedLibrary | Emit::NodeAddon) {
-        None
-    } else {
-        Some(executable_entry(&program)?)
+    let executable = match project.config.emit {
+        Emit::Executable => Some(executable_entry(&program)?),
+        Emit::SharedLibrary | Emit::NodeAddon => None,
+        Emit::Object | Emit::LlvmIr | Emit::Bitcode | Emit::Assembly => {
+            executable_entry(&program).ok()
+        }
     };
     let started = Instant::now();
     let mir = tn_typecheck::lower_mir_with_ownership(&program, &checked_bodies.bodies, &ownership);
@@ -302,6 +304,12 @@ pub fn build_project_with_timings(
                     effects: function_effects(&program, callable),
                 }),
             );
+        }
+    }
+    if project.config.emit != Emit::NodeAddon {
+        for (declaration, _) in exported_functions(&program) {
+            let callable = Callable::function(declaration.id);
+            layouts.exports.insert(callable, exported_name(declaration));
         }
     }
     let target = project.config.target.triple();
@@ -1211,6 +1219,23 @@ fn layouts(
     program: &Program,
     ownership: &tn_typecheck::OwnershipFacts,
 ) -> tn_codegen_llvm::Layouts {
+    let globals = program
+        .definitions
+        .iter()
+        .filter_map(|definition| {
+            let DefinitionData::Constant { ty, mutable_static } = &definition.data else {
+                return None;
+            };
+            Some((
+                definition.declaration,
+                tn_codegen_llvm::GlobalLayout {
+                    name: format!("tn_global_{}", definition.declaration.0),
+                    ty: ty.clone(),
+                    mutable_static: *mutable_static,
+                },
+            ))
+        })
+        .collect();
     let nominals = program
         .definitions
         .iter()
@@ -1304,6 +1329,7 @@ fn layouts(
         })
         .collect();
     tn_codegen_llvm::Layouts {
+        globals,
         nominals,
         witnesses: witness_layouts(program),
         interfaces: program
@@ -1769,15 +1795,20 @@ fn emit_executable(
         &object,
     )
     .map_err(|error| BuildError::Message(error.to_string()))?;
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/startup.c");
-    let runtime_support = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.c");
-    let redis_support = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/redis.c");
+    let runtime_support = temporary.path().join("runtime.o");
+    compile_support_object(project, runtime_source(), &runtime_support)?;
+    let startup_source = temporary.path().join("startup.tn");
+    std::fs::write(
+        &startup_source,
+        startup_source_text(&tn_codegen_llvm::symbol_for_instance(entry), mode),
+    )?;
+    let startup_object = temporary.path().join("startup.o");
+    compile_support_object(project, startup_source, &startup_object)?;
     let mut linker = Command::new("clang");
     linker
         .arg(&object)
-        .arg(runtime)
         .arg(runtime_support)
-        .arg(redis_support)
+        .arg(startup_object)
         .arg("-pthread")
         .arg("-o")
         .arg(output)
@@ -1858,7 +1889,8 @@ fn emit_shared_library(
     )
     .map_err(|error| BuildError::Message(error.to_string()))?;
 
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.c");
+    let runtime = temporary.path().join("runtime.o");
+    compile_support_object(project, runtime_source(), &runtime)?;
     let mut linker = Command::new("clang");
     linker.arg(&object).arg("-pthread");
     let wrapper_object = if emit == Emit::NodeAddon {
@@ -1934,6 +1966,54 @@ fn emit_shared_library(
     Ok(())
 }
 
+fn runtime_source() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.tn")
+}
+
+fn compile_support_object(
+    project: &Project,
+    source: PathBuf,
+    output: &Path,
+) -> Result<(), BuildError> {
+    let root = source.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let support = Project {
+        root,
+        entry: source.clone(),
+        config: ProjectConfig {
+            entry: source,
+            out_dir: PathBuf::from("build"),
+            target: project.config.target,
+            profile: project.config.profile,
+            emit: Emit::Object,
+            link: LinkConfig::default(),
+        },
+        config_path: None,
+    };
+    build_project_with_timings(&support, Some(output), false).map(|_| ())
+}
+
+fn startup_source_text(entry: &str, mode: EntryMode) -> String {
+    let preamble = format!(
+        "extern \"C\" {{\n  function tn_process_set_args(argc: i32, argv: * mut u8): void;\n  function {entry}"
+    );
+    match mode {
+        EntryMode::Void => format!(
+            "{preamble}(): void;\n}}\n@Export(\"main\")\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    {entry}();\n  }}\n  return 0i32;\n}}\n"
+        ),
+        EntryMode::Integer => format!(
+            "{preamble}(): i32;\n}}\n@Export(\"main\")\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    return {entry}();\n  }}\n}}\n"
+        ),
+        EntryMode::FallibleVoid | EntryMode::FallibleInteger => format!(
+            "{preamble}(): EntryResult;\n  function tn_runtime_free(pointer: * mut u8): void;\n}}\n@Layout(\"C\")\nstruct EntryResult {{\n  public failed: u64;\n  public payload: u64;\n}}\n@Export(\"main\")\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    let result = {entry}();\n    if (result.failed !== 0u64) {{\n      const errorField = & mut result.payload;\n      tn_runtime_free(*(errorField as * mut * mut u8));\n      return 1i32;\n    }}\n    {}\n  }}\n}}\n",
+            if matches!(mode, EntryMode::FallibleInteger) {
+                "const valueField = & mut result.payload;\n    return *(valueField as * mut i32);"
+            } else {
+                "return 0i32;"
+            }
+        ),
+    }
+}
+
 fn node_include_directory() -> Result<PathBuf, BuildError> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("NODE_INCLUDE_DIR") {
@@ -1956,7 +2036,7 @@ fn node_wrapper_source(program: &Program) -> Result<String, BuildError> {
     let functions = exported_functions(program);
     let classes = exported_classes(program);
     let mut output = String::from(
-        "#include <node_api.h>\n#include <stdint.h>\n#include <stdbool.h>\n#include <stdlib.h>\n#include <stddef.h>\n#include <string.h>\n\nextern void *tn_runtime_alloc(size_t size);\nextern void tn_runtime_free(void *pointer);\nextern void tn_runtime_promise_wait(void *promise);\nextern void *tn_runtime_async_result(void *promise);\nextern void *tn_runtime_async_raw_result(void *promise);\nextern int tn_runtime_promise_destroy(void *promise);\n\n",
+        "#include <node_api.h>\n#include <stdint.h>\n#include <stdbool.h>\n#include <stdlib.h>\n#include <stddef.h>\n#include <string.h>\n\nextern void *tn_runtime_alloc(size_t size);\nextern void tn_runtime_free(void *pointer);\nextern void tn_runtime_promise_wait(void *promise);\nextern void *tn_runtime_async_result(void *promise);\nextern void *tn_runtime_async_raw_result(void *promise);\nextern int tn_runtime_async_destroy(void *promise);\n\n",
     );
     output
         .push_str("typedef struct { uint64_t failed; uint64_t payload; } tn_node_abi_result;\n\n");
@@ -2547,16 +2627,16 @@ fn write_node_async_wrapper(
     let context = format!("tn_node_async_context_{index}");
     let execute = format!("tn_node_async_execute_{index}");
     let complete = format!("tn_node_async_complete_{index}");
-    output.push_str("  napi_deferred deferred;\n  napi_value promise;\n  status = napi_create_promise(env, &deferred, &promise);\n  if (status != napi_ok) { tn_runtime_promise_destroy(native_promise); return NULL; }\n");
+    output.push_str("  napi_deferred deferred;\n  napi_value promise;\n  status = napi_create_promise(env, &deferred, &promise);\n  if (status != napi_ok) { tn_runtime_async_destroy(native_promise); return NULL; }\n");
     writeln!(
         output,
-        "  {context} *context = ({context} *)malloc(sizeof(*context)); if (!context) {{ tn_runtime_promise_destroy(native_promise); napi_throw_error(env, NULL, \"async context allocation failed\"); return NULL; }} context->env = env; context->deferred = deferred; context->native_promise = native_promise;"
+        "  {context} *context = ({context} *)malloc(sizeof(*context)); if (!context) {{ tn_runtime_async_destroy(native_promise); napi_throw_error(env, NULL, \"async context allocation failed\"); return NULL; }} context->env = env; context->deferred = deferred; context->native_promise = native_promise;"
     )
     .map_err(write_error)?;
-    output.push_str("  napi_value resource_name; status = napi_create_string_utf8(env, \"TypeNative async\", NAPI_AUTO_LENGTH, &resource_name); if (status != napi_ok) { tn_runtime_promise_destroy(native_promise); free(context); return NULL; }\n");
+    output.push_str("  napi_value resource_name; status = napi_create_string_utf8(env, \"TypeNative async\", NAPI_AUTO_LENGTH, &resource_name); if (status != napi_ok) { tn_runtime_async_destroy(native_promise); free(context); return NULL; }\n");
     writeln!(
         output,
-        "  status = napi_create_async_work(env, NULL, resource_name, {execute}, {complete}, context, &context->work); if (status != napi_ok) {{ tn_runtime_promise_destroy(native_promise); free(context); return NULL; }} status = napi_queue_async_work(env, context->work); if (status != napi_ok) {{ napi_delete_async_work(env, context->work); tn_runtime_promise_destroy(native_promise); free(context); return NULL; }}"
+        "  status = napi_create_async_work(env, NULL, resource_name, {execute}, {complete}, context, &context->work); if (status != napi_ok) {{ tn_runtime_async_destroy(native_promise); free(context); return NULL; }} status = napi_queue_async_work(env, context->work); if (status != napi_ok) {{ napi_delete_async_work(env, context->work); tn_runtime_async_destroy(native_promise); free(context); return NULL; }}"
     )
     .map_err(write_error)?;
     write_node_parameter_cleanup(program, output, function)?;
@@ -2706,7 +2786,7 @@ fn write_node_async_support(
     )
     .map_err(write_error)?;
     output.push_str(
-            "  if (status != napi_ok) { napi_value message; napi_value error; if (napi_create_string_utf8(env, \"TypeNative async work failed\", NAPI_AUTO_LENGTH, &message) == napi_ok && napi_create_error(env, NULL, message, &error) == napi_ok) napi_reject_deferred(env, context->deferred, error); tn_runtime_promise_destroy(context->native_promise); napi_delete_async_work(env, context->work); tn_runtime_free(context); return; }\n",
+            "  if (status != napi_ok) { napi_value message; napi_value error; if (napi_create_string_utf8(env, \"TypeNative async work failed\", NAPI_AUTO_LENGTH, &message) == napi_ok && napi_create_error(env, NULL, message, &error) == napi_ok) napi_reject_deferred(env, context->deferred, error); tn_runtime_async_destroy(context->native_promise); napi_delete_async_work(env, context->work); tn_runtime_free(context); return; }\n",
         );
     let has_effects =
         matches!(&function.result, Type::Promise { effects, .. } if !effects.is_empty());
@@ -2718,7 +2798,7 @@ fn write_node_async_support(
         )
         .map_err(write_error)?;
         output.push_str(
-            "  if (native->failed) { napi_value message; napi_value error; if (napi_create_string_utf8(env, \"TypeNative recoverable error\", NAPI_AUTO_LENGTH, &message) == napi_ok && napi_create_error(env, NULL, message, &error) == napi_ok) napi_reject_deferred(env, context->deferred, error); tn_runtime_free(native->error); tn_runtime_promise_destroy(context->native_promise); napi_delete_async_work(env, context->work); tn_runtime_free(context); return; }\n",
+            "  if (native->failed) { napi_value message; napi_value error; if (napi_create_string_utf8(env, \"TypeNative recoverable error\", NAPI_AUTO_LENGTH, &message) == napi_ok && napi_create_error(env, NULL, message, &error) == napi_ok) napi_reject_deferred(env, context->deferred, error); tn_runtime_free(native->error); tn_runtime_async_destroy(context->native_promise); napi_delete_async_work(env, context->work); tn_runtime_free(context); return; }\n",
         );
         if *inner == Type::Primitive(PrimitiveType::Void) {
             output.push_str("  status = napi_get_undefined(env, &result);\n");
@@ -2731,7 +2811,7 @@ fn write_node_async_support(
             output.push_str(&generated);
         }
         output.push_str(
-            "  if (status == napi_ok) status = napi_resolve_deferred(env, context->deferred, result);\n  tn_runtime_promise_destroy(context->native_promise); context->native_promise = NULL;\n",
+            "  if (status == napi_ok) status = napi_resolve_deferred(env, context->deferred, result);\n  tn_runtime_async_destroy(context->native_promise); context->native_promise = NULL;\n",
         );
     } else {
         if *inner == Type::Primitive(PrimitiveType::Void) {
@@ -2751,12 +2831,12 @@ fn write_node_async_support(
             output.push_str(&generated);
         }
         output.push_str(
-            "  if (status == napi_ok) status = napi_resolve_deferred(env, context->deferred, result);\n  tn_runtime_promise_destroy(context->native_promise); context->native_promise = NULL;\n",
+            "  if (status == napi_ok) status = napi_resolve_deferred(env, context->deferred, result);\n  tn_runtime_async_destroy(context->native_promise); context->native_promise = NULL;\n",
         );
     }
     writeln!(
         output,
-        "  napi_delete_async_work(env, context->work); tn_runtime_promise_destroy(context->native_promise); context->native_promise = NULL; tn_runtime_free(context); return;\n  {context}_cleanup: tn_runtime_promise_destroy(context->native_promise); napi_delete_async_work(env, context->work); tn_runtime_free(context);\n}}\n\n"
+        "  napi_delete_async_work(env, context->work); tn_runtime_async_destroy(context->native_promise); context->native_promise = NULL; tn_runtime_free(context); return;\n  {context}_cleanup: tn_runtime_async_destroy(context->native_promise); napi_delete_async_work(env, context->work); tn_runtime_free(context);\n}}\n\n"
     )
     .map_err(write_error)?;
     Ok(())

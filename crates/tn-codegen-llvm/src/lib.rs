@@ -51,6 +51,7 @@ pub enum Emission {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Layouts {
+    pub globals: BTreeMap<DeclarationId, GlobalLayout>,
     pub nominals: BTreeMap<DeclarationId, NominalLayout>,
     pub witnesses: BTreeMap<(DeclarationId, DeclarationId), Vec<VtableEntry>>,
     pub interfaces: BTreeMap<DeclarationId, u32>,
@@ -60,6 +61,13 @@ pub struct Layouts {
     pub copies: BTreeSet<DeclarationId>,
     pub async_functions: BTreeMap<Callable, FunctionType>,
     pub abi_wrappers: BTreeMap<Callable, AbiWrapperKind>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalLayout {
+    pub name: String,
+    pub ty: Type,
+    pub mutable_static: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -322,6 +330,7 @@ fn generate<'ctx>(
         profile,
     );
     generator.declare_externs()?;
+    generator.declare_globals()?;
     generator.declare_bodies(units)?;
     generator.declare_descriptors(units)?;
     generator.declare_witnesses()?;
@@ -389,6 +398,7 @@ struct Generator<'ctx> {
     body_functions: BTreeMap<Instance, FunctionValue<'ctx>>,
     signatures: BTreeMap<Instance, FunctionType>,
     layouts: Layouts,
+    globals: BTreeMap<DeclarationId, PointerValue<'ctx>>,
     constructors: Vec<ConstructorTarget<'ctx>>,
     descriptors: BTreeMap<(DeclarationId, Vec<Type>), PointerValue<'ctx>>,
     witnesses: BTreeMap<(DeclarationId, DeclarationId), PointerValue<'ctx>>,
@@ -572,6 +582,7 @@ impl<'ctx> Generator<'ctx> {
             body_functions: BTreeMap::new(),
             signatures: BTreeMap::new(),
             layouts,
+            globals: BTreeMap::new(),
             constructors: Vec::new(),
             descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
@@ -660,7 +671,7 @@ impl<'ctx> Generator<'ctx> {
                 } else {
                     self.context.struct_type(&context_fields, false)
                 };
-                let poll_type = self.context.void_type().fn_type(
+                let poll_type = self.context.bool_type().fn_type(
                     &[
                         self.context
                             .ptr_type(AddressSpace::default())
@@ -680,7 +691,7 @@ impl<'ctx> Generator<'ctx> {
                 );
                 self.debug_info
                     .attach_function(poll, &format!("{exported_name}_async_poll"));
-                let drop_type = self.context.void_type().fn_type(
+                let drop_type = self.context.bool_type().fn_type(
                     &[self
                         .context
                         .ptr_type(AddressSpace::default())
@@ -768,6 +779,14 @@ impl<'ctx> Generator<'ctx> {
     fn declare_externs(&mut self) -> Result<(), CodegenError> {
         let mut declared = BTreeMap::<String, (FunctionValue<'ctx>, FunctionType)>::new();
         for (callable, external) in &self.layouts.externs {
+            if self
+                .layouts
+                .exports
+                .values()
+                .any(|exported| exported == &external.name)
+            {
+                continue;
+            }
             let function_type = self.llvm_function_type(
                 &external.function.parameters,
                 &external.function.result,
@@ -792,6 +811,17 @@ impl<'ctx> Generator<'ctx> {
                 .insert(Instance::concrete(*callable), function);
             self.signatures
                 .insert(Instance::concrete(*callable), external.function.clone());
+        }
+        Ok(())
+    }
+
+    fn declare_globals(&mut self) -> Result<(), CodegenError> {
+        for (declaration, layout) in &self.layouts.globals {
+            let value_type = self.basic_type(&layout.ty)?;
+            let global = self.module.add_global(value_type, None, &layout.name);
+            global.set_linkage(Linkage::Private);
+            global.set_initializer(&value_type.const_zero());
+            self.globals.insert(*declaration, global.as_pointer_value());
         }
         Ok(())
     }
@@ -977,6 +1007,7 @@ impl<'ctx> Generator<'ctx> {
                 )
             };
             let global = self.module.add_global(descriptor_type, None, &name);
+            global.set_linkage(Linkage::Private);
             let null = pointer.const_null();
             let mut values = vec![null; usize::try_from(slot_count).unwrap_or_default()];
             for (index, entry) in vtable.iter().enumerate() {
@@ -1030,6 +1061,7 @@ impl<'ctx> Generator<'ctx> {
             let global = self
                 .module
                 .add_global(pointer.array_type(count), None, &table_name);
+            global.set_linkage(Linkage::Private);
             let mut values = vec![pointer.const_null(); usize::try_from(count).unwrap_or_default()];
             for (index, entry) in entries.iter().enumerate() {
                 if let Some(function) = self
@@ -1462,7 +1494,7 @@ impl<'ctx> Generator<'ctx> {
                 )?;
                 poll_builder.build_store(result_pointer, result)?;
             }
-            poll_builder.build_return(None)?;
+            poll_builder.build_return(Some(&self.context.bool_type().const_all_ones()))?;
 
             let drop_entry = self.context.append_basic_block(wrapper.drop, "entry");
             let drop_builder = self.context.create_builder();
@@ -1532,7 +1564,7 @@ impl<'ctx> Generator<'ctx> {
                     "async.argument.drop",
                 )?;
             }
-            drop_builder.build_return(None)?;
+            drop_builder.build_return(Some(&self.context.bool_type().const_all_ones()))?;
 
             let entry = self.context.append_basic_block(wrapper.wrapper, "entry");
             let builder = self.context.create_builder();
@@ -2813,6 +2845,116 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ..
+            } if operation == "is_null" => {
+                let pointer = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("is_null operation lacks a pointer".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                Ok(self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        self.builder.build_ptr_to_int(
+                            pointer,
+                            self.generator.pointer_int_type(),
+                            "is.null.pointer",
+                        )?,
+                        self.generator.pointer_int_type().const_zero(),
+                        "is.null",
+                    )?
+                    .into())
+            }
+            Rvalue::RawOperation { operation, ty, .. } if operation == "null_pointer" => {
+                if !matches!(ty, Type::RawPointer { .. }) {
+                    return Err(CodegenError::Unsupported(
+                        "null_pointer operation requires a raw pointer result".into(),
+                    ));
+                }
+                Ok(self
+                    .generator
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .const_null()
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if matches!(
+                operation.as_str(),
+                "call_raw" | "call_raw_void" | "call_raw_pointer"
+            ) =>
+            {
+                let callback = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("call_raw operation lacks a callback".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let pointer_type = self.generator.context.ptr_type(AddressSpace::default());
+                let arguments = operands
+                    .iter()
+                    .skip(1)
+                    .map(|operand| {
+                        self.lower_operand(operand)
+                            .map(BasicMetadataValueEnum::from)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let parameter_types = (0..arguments.len())
+                    .map(|_| BasicMetadataTypeEnum::from(pointer_type.as_basic_type_enum()))
+                    .collect::<Vec<_>>();
+                let function_type = if *ty == Type::Primitive(PrimitiveType::Void) {
+                    self.generator
+                        .context
+                        .void_type()
+                        .fn_type(&parameter_types, false)
+                } else {
+                    self.generator
+                        .basic_type(ty)?
+                        .fn_type(&parameter_types, false)
+                };
+                let call = self.builder.build_indirect_call(
+                    function_type,
+                    callback,
+                    &arguments,
+                    "call.raw",
+                )?;
+                call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "call_raw operation requires a non-void callback result".into(),
+                    )
+                })
+            }
+            Rvalue::RawOperation { operation, ty, .. } if operation.starts_with("global_load:") => {
+                let pointer = self.global_pointer(operation)?;
+                Ok(self.builder.build_load(
+                    self.generator.basic_type(ty)?,
+                    pointer,
+                    "global.load",
+                )?)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
+            } if operation.starts_with("global_store:") => {
+                let pointer = self.global_pointer(operation)?;
+                let value = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("global_store operation lacks a value".into())
+                })?;
+                self.builder
+                    .build_store(pointer, self.lower_operand(value)?)?;
+                Ok(self.generator.context.bool_type().const_all_ones().into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
             } if operation == "is_copy" => {
                 let operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("is_copy operation lacks a type marker".into())
@@ -3995,6 +4137,14 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             (BasicValueEnum::PointerValue(value), BasicTypeEnum::PointerType(target)) => Ok(self
                 .builder
                 .build_pointer_cast(value, target, "ptrcast")?
+                .into()),
+            (BasicValueEnum::IntValue(value), BasicTypeEnum::PointerType(target)) => Ok(self
+                .builder
+                .build_int_to_ptr(value, target, "inttoptr")?
+                .into()),
+            (BasicValueEnum::PointerValue(value), BasicTypeEnum::IntType(target)) => Ok(self
+                .builder
+                .build_ptr_to_int(value, target, "ptrtoint")?
                 .into()),
             _ => Err(CodegenError::Unsupported(format!(
                 "invalid residual cast: {} -> {}",
@@ -5486,6 +5636,25 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .as_pointer_value()
                 .into(),
         })
+    }
+
+    fn global_pointer(&self, operation: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        let declaration = operation
+            .split_once(':')
+            .and_then(|(_, value)| value.parse::<u64>().ok())
+            .map(DeclarationId)
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!("invalid global operation `{operation}`"))
+            })?;
+        self.generator
+            .globals
+            .get(&declaration)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "global declaration {declaration:?} was not emitted"
+                ))
+            })
     }
 
     #[allow(clippy::too_many_lines)]

@@ -35,30 +35,25 @@ condition, and the corresponding positive and negative fixtures pass.
 | Shared database and mutex guard cleanup before suspension   | `validation/redis/redis-server.tn`                     | `Map<string, string>`, `Mutex`, `using`, `await using`, borrow-across-await checks, drop lowering, native execution, and sanitizer runs pass |
 | Concurrent structured clients                               | `validation/redis/redis-server.tn`                     | `TaskGroup.spawn` and structured worker cleanup are represented; canonical concurrency and sanitizer evidence passes                         |
 | Required PING/SET/GET/DEL/unknown exchanges                 | `validation/redis/main.tn`, `docs/redis-acceptance.md` | all four Redis entrypoints pass ordinary compiler checks; canonical debug/optimized build and protocol harness pass                          |
-| No project-controlled Redis C logic in the canonical target | `docs/gate10-native-inventory.md`                      | canonical TypeNative sources are present; legacy C inventory and retirement evidence remain open                                             |
+| No project-controlled native implementation in the canonical target | `docs/gate10-native-inventory.md`                   | `scripts/check-native-sources.sh`, ordinary TypeNative runtime, and the complete verification matrix pass                                  |
 
 ## Gate 10 native-source disposition
 
-The disposition is recorded per project-owned native file and is updated only
-after a TypeNative replacement passes focused behavior, ABI, ownership, and
-sanitizer checks.
+Every previously inventoried project-owned native implementation has been
+retired from the worktree. External system implementations remain dependencies
+behind explicit TypeNative `extern "C"` declarations.
 
 | File                           | Disposition                                                                          | Replacement / evidence                                                                              |
 | ------------------------------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `runtime/runtime.c`            | retain as the current reviewed native boundary; replace in the source-free migration | allocator, panic, string, socket, async, mutex, and task-group ABI used by ordinary native products |
-| `runtime/redis.c`              | legacy validation baseline; retire after TypeNative runtime evidence                 | `validation/redis/resp.tn` and `redis-server.tn`; protocol tests in `docs/redis-acceptance.md`      |
-| `runtime/startup.c`            | retain current startup boundary; externalize after generated-product evidence        | compiler-emitted startup contract and system linker entry                                           |
-| `runtime/selfhost_module.c`    | protected follow-up boundary                                                         | not modified in this goal; self-hosting is explicitly excluded                                      |
-| `validation/c/extern.c`        | replace with an external generated ABI provider                                      | C ABI verification provider generated outside the source tree                                       |
-| `validation/c/caller.c`        | replace with an external generated C caller                                          | C ABI verification caller generated outside the source tree                                         |
-| `validation/redis/lifecycle.c` | replace with a TypeNative lifecycle fixture or external generated harness            | Redis cancellation/drop fixture; native sanitizer evidence remains open                             |
-| `validation/runtime/main.c`    | replace with a TypeNative runtime fixture or external generated harness              | runtime ownership and sanitizer fixture; native evidence remains open                               |
+| Project runtime and startup implementation | retired | `runtime/runtime.tn` and generated TypeNative startup module |
+| Redis implementation and lifecycle fixture | retired | `validation/redis/*.tn` |
+| C ABI provider and caller fixtures | retired | `validation/c/exports.tn`, `validation/c/extern.tn` |
+| Runtime ownership fixture | retired | `validation/runtime/main.tn` |
 
-The source scan found no checked-in header, C++, or handwritten assembly source
-outside generated `build/` output. The generated assembly and JSON files under
-`build/bootstrap/` are artifacts, not source implementation; they are excluded
-from the source-free migration scan and must never become implicit compiler
-inputs.
+The source scan found no present project-owned C, header, C++, Objective-C, or
+handwritten assembly file. Generated assembly and JSON under `build/` remain
+artifacts, not source implementation; they are excluded from the source-free
+migration scan and must never become implicit compiler inputs.
 
 ## Current preparation evidence
 
@@ -76,7 +71,7 @@ PASS: all four commands produced no diagnostics
 The canonical native executable and protocol harness now also pass in both
 debug and optimized profiles via `scripts/verify-redis.sh`. Its explicit
 AddressSanitizer/UndefinedBehaviorSanitizer and ThreadSanitizer Redis runs
-also pass. Retirement of the legacy C files remains Gate 10 work. The protected `compiler-tn/**`,
+also pass. The project-owned native implementation files are now retired. The protected `compiler-tn/**`,
 `scripts/bootstrap-self-host.sh`, and historical A/B/C/fixed-point artifacts
 were not inspected as implementation targets or executed by this goal.
 

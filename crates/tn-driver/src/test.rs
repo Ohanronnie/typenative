@@ -192,7 +192,7 @@ fn run_one(project: &Project, program: &Program, test: &TestCase) -> Result<bool
             let call = if async_test {
                 "  const promise = ".to_owned()
                     + &test.name
-                    + "();\n  unsafe { tn_runtime_promise_wait(promise as *mut u8); tn_runtime_promise_destroy(promise as *mut u8); }\n"
+                    + "();\n  unsafe { tn_runtime_promise_wait(promise as *mut u8); tn_runtime_async_destroy(promise as *mut u8); }\n"
             } else if test.effects.is_empty() {
                 format!("  {}();\n", test.name)
             } else {
@@ -201,7 +201,7 @@ fn run_one(project: &Project, program: &Program, test: &TestCase) -> Result<bool
             if async_test {
                 source.insert_str(
                     0,
-                    "extern \"C\" { function tn_runtime_promise_wait(promise: *mut u8): void; function tn_runtime_promise_destroy(promise: *mut u8): i32; }\n",
+                    "extern \"C\" { function tn_runtime_promise_wait(promise: *mut u8): void; function tn_runtime_async_destroy(promise: *mut u8): i32; }\n",
                 );
             }
             let _ = write!(source, "function main(): void{effects} {{\n{call}}}\n");

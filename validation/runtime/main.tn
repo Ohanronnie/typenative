@@ -1,0 +1,77 @@
+import { Arc, isNull, rawAlloc, rawFree } from "std/alloc";
+import { run } from "std/async";
+import { Map } from "std/collections";
+import { currentDirectory, lookup } from "std/env";
+import { Mutex } from "std/sync";
+import { elapsed, monotonicNow } from "std/time";
+
+extern "C" {
+  function tn_file_open(path: * const u8, flags: i32, mode: i32): i32;
+  function tn_file_close(handle: i32): i32;
+  function tn_file_remove(path: * const u8): i32;
+}
+async function answer(): Promise<i32, never> {
+  return 42i32;
+}
+function checkFile(): bool {
+  unsafe {
+    const handle = tn_file_open("/tmp/typenative-runtime.tn" as * const u8, 577i32, 420i32);
+    if (handle<0i32) {
+      return false;
+    }
+    return tn_file_close(handle) === 0i32 && tn_file_remove("/tmp/typenative-runtime.tn" as * const u8) === 0i32;
+  }
+}
+function main(): i32 {
+  let values = new Map<i32, i32>({
+    capacity: 4usize,
+  });
+  let key: i32 = 16i32;
+  values.set(key, 42i32);
+  const stored = values.get( & key);
+  if (stored === undefined || stored! !== 42i32 || !values.contains( & key)) {
+    return 1i32;
+  }
+  if (!values.remove( & key) || values.length !== 0usize) {
+    return 2i32;
+  }
+  let owner = new Arc(42i32);
+  let clone = owner.clone();
+  if (!clone.alive) {
+    return 3i32;
+  }
+  let mutex = new Mutex<i32>(7i32);
+  {
+    using locked = mutex.lock();
+    if (!locked.locked) {
+      return 4i32;
+    }
+  }
+  if (mutex.value !== 7i32) {
+    return 5i32;
+  }
+  const answerResult: i32 = run(answer());
+  if (answerResult !== 42i32) {
+    return 6i32;
+  }
+  if (!checkFile()) {
+    return 7i32;
+  }
+  unsafe {
+    const directory = rawAlloc(4096usize);
+    if (currentDirectory(directory, 4096usize) !== 0i32 || *(directory as * const u8) === 0u8) {
+      rawFree(directory);
+      return 9i32;
+    }
+    rawFree(directory);
+  }
+  if (isNull(lookup("PATH"))) {
+    return 10i32;
+  }
+  const start = monotonicNow();
+  const finish = monotonicNow();
+  if (elapsed(start, finish).nanoseconds<0u64) {
+    return 11i32;
+  }
+  return 0i32;
+}

@@ -1,7 +1,19 @@
 # TypeNative Implementation Status
 
-This ledger records only checks that have actually run. A gate remains open until every acceptance
-criterion in `docs/implementation-plan.md` has evidence on macOS ARM64.
+This ledger records only checks that have actually run. Historical entries are
+preserved below; current Gate 10 status is recorded in
+[`gate10-native-inventory.md`](gate10-native-inventory.md).
+
+## Current Gate 10 status (2026-08-13)
+
+The ordinary hosted product no longer contains or requires project-owned C,
+C++, Objective-C, header, or handwritten-assembly implementation source.
+`runtime/runtime.tn` and generated TypeNative startup code provide the runtime
+and executable boundary, while explicit `extern "C"` declarations reach only
+external libc, pthread, operating-system, LLVM, and Node-API implementations.
+The TypeNative runtime, ABI, lifecycle, sanitizer, Redis, and source-scan checks
+are wired into `scripts/verify-all.sh`. The protected self-hosting paths remain
+outside this record.
 
 Support-target decision recorded on 2026-08-11:
 

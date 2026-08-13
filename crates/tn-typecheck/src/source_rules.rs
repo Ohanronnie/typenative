@@ -328,13 +328,23 @@ fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
         return false;
     };
     match operation.as_str() {
-        "size_of" => path.ends_with("std/alloc.tn") || path.ends_with("std/collections.tn"),
+        "size_of" => {
+            path.ends_with("std/alloc.tn")
+                || path.ends_with("std/collections.tn")
+                || path.ends_with("runtime/runtime.tn")
+        }
+        "is_null" | "null_pointer" | "store_raw" => {
+            path.ends_with("std/alloc.tn") || path.ends_with("runtime/runtime.tn")
+        }
+        "call_raw" | "call_raw_void" | "call_raw_pointer" => path.ends_with("runtime/runtime.tn"),
         "borrow_shared" => path.ends_with("std/alloc.tn") || path.ends_with("std/string.tn"),
         "borrow_mut" => path.ends_with("std/alloc.tn") || path.ends_with("std/sync.tn"),
-        "store_raw" | "arc_clone" => path.ends_with("std/alloc.tn"),
+        "borrow_element" => {
+            path.ends_with("std/collections.tn") || path.ends_with("runtime/runtime.tn")
+        }
+        "arc_clone" => path.ends_with("std/alloc.tn"),
         "is_string"
         | "is_copy"
-        | "borrow_element"
         | "element_initialized"
         | "move_element"
         | "store_element"

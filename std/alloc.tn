@@ -1,10 +1,10 @@
 import { Drop } from "std/core";
 extern "C" {
+  function calloc(count: usize, size: usize): * mut u8;
   function tn_runtime_alloc(size: usize): * mut u8;
   function tn_runtime_try_alloc(size: usize): * mut u8;
   function tn_runtime_realloc(pointer: * mut u8, size: usize): * mut u8;
   function tn_runtime_try_realloc(pointer: * mut u8, size: usize): * mut u8;
-  function tn_pointer_is_null(pointer: * const u8): i32;
   function tn_runtime_free(pointer: * mut u8): void;
   function tn_ref_alloc(size: usize): * mut u8;
   function tn_ref_try_alloc(size: usize): * mut u8;
@@ -44,6 +44,16 @@ function allocationError(): AllocError {
 @Intrinsic("size_of")
 function sizeOf<T>(): usize {
   return 0usize;
+}
+@Intrinsic("is_null")
+function isNullIntrinsic<T>(pointer: * const T): bool {
+  return false;
+}
+@Intrinsic("null_pointer")
+function nullPointerIntrinsic<T>(): * mut T {
+  unsafe {
+    return calloc(0usize, 0usize)as * mut T;
+  }
 }
 @Intrinsic("borrow_shared")
 function borrowShared<T>(pointer: * const T): & T {
@@ -126,9 +136,10 @@ export function tryRawRealloc(pointer: * mut u8, size: usize): * mut u8 {
   }
 }
 export function isNull(pointer: * const u8): bool {
-  unsafe {
-    return tn_pointer_is_null(pointer) !== 0i32;
-  }
+  return isNullIntrinsic<u8>(pointer);
+}
+export function nullPointer<T>(): * mut T {
+  return nullPointerIntrinsic<T>();
 }
 export function rawAddress<T>(value: & mut T): * mut T {
   unsafe {
@@ -163,7 +174,7 @@ export function rcAlloc<T>(size: usize): Rc<T> {
 export function rcAllocChecked<T>(size: usize): Rc<T > throws AllocError {
   unsafe {
     const pointer = tn_ref_try_alloc(size);
-    if (tn_pointer_is_null(pointer as * const u8) !== 0i32) {
+    if (isNull(pointer as * const u8)) {
       throw allocationError();
     }
     return {
