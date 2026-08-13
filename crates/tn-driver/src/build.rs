@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tn_diagnostics::Diagnostic;
-use tn_hir::{DeclarationId, DefinitionData, Namespace, PrimitiveType, Program, Type, Visibility};
+use tn_hir::{
+    DeclarationId, DefinitionData, ImportClause, Namespace, PrimitiveType, Program, Type,
+    Visibility,
+};
 use tn_mir::{Callable, GenericBody, Instance, MonomorphizedBody};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -641,7 +644,7 @@ fn node_c_type(program: &Program, ty: &Type) -> String {
                 .and_then(|declaration| declaration.name.as_deref());
             match (name, arguments.len()) {
                 (Some("Bytes"), 0) => "tn_node_bytes".into(),
-                (Some("Vec"), 1) => "tn_node_vec".into(),
+                (Some("Array"), 1) => "void *".into(),
                 _ => c_type(program, ty),
             }
         }
@@ -655,6 +658,10 @@ fn collect_node_compound_types(program: &Program, ty: &Type, types: &mut BTreeSe
             collect_node_compound_types(program, inner, types);
             Some(format!("tn_node_{}", node_type_key(program, ty)))
         }
+        Type::Reference { referent, .. } if nominal_is_node_array(program, referent) => {
+            collect_node_compound_types(program, referent, types);
+            Some("tn_node_array".into())
+        }
         Type::Nominal(declaration, arguments) => {
             for argument in arguments {
                 collect_node_compound_types(program, argument, types);
@@ -665,7 +672,7 @@ fn collect_node_compound_types(program: &Program, ty: &Type, types: &mut BTreeSe
                 .and_then(|declaration| declaration.name.as_deref());
             match declaration_name {
                 Some("Bytes") if arguments.is_empty() => Some("tn_node_bytes".into()),
-                Some("Vec") if arguments.len() == 1 => Some("tn_node_vec".into()),
+                Some("Array") if arguments.len() == 1 => Some("tn_node_array".into()),
                 _ => None,
             }
         }
@@ -693,6 +700,10 @@ fn write_node_type_definitions(
         } else if name == "tn_node_vec" {
             output.push_str(
                 "typedef struct { void *pointer; size_t length; size_t capacity; size_t elementSize; } tn_node_vec;\n",
+            );
+        } else if name == "tn_node_array" {
+            output.push_str(
+                "typedef struct { void *descriptor; void *pointer; void *initialized; size_t length; size_t capacity; size_t elementSize; } tn_node_array;\n",
             );
         } else if let Some(key) = name.strip_prefix("tn_node_optional_") {
             let inner = type_from_node_key(program, key).unwrap_or_else(|| "void *".into());
@@ -928,7 +939,10 @@ fn node_compatible(program: &Program, ty: &Type) -> bool {
             !matches!(primitive, PrimitiveType::Void | PrimitiveType::Never)
         }
         Type::String | Type::Str => true,
-        Type::Reference { referent, .. } => matches!(referent.as_ref(), Type::Str | Type::String),
+        Type::Reference { referent, .. } => {
+            matches!(referent.as_ref(), Type::Str | Type::String)
+                || nominal_is_node_array(program, referent)
+        }
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             node_compatible(program, inner)
         }
@@ -939,7 +953,7 @@ fn node_compatible(program: &Program, ty: &Type) -> bool {
                 .declaration(*declaration)
                 .and_then(|declaration| declaration.name.as_deref());
             matches!(name, Some("Bytes"))
-                || (name == Some("Vec")
+                || (name == Some("Array")
                     && arguments.len() == 1
                     && node_compatible(program, &arguments[0]))
         }
@@ -950,15 +964,29 @@ fn node_compatible(program: &Program, ty: &Type) -> bool {
 fn node_needs_indirect_abi(program: &Program, ty: &Type) -> bool {
     match ty {
         Type::Optional(_) | Type::Array(_, _) | Type::Slice(_) => true,
-        Type::Nominal(declaration, arguments) => {
+        Type::Reference { referent, .. } => nominal_is_node_array(program, referent),
+        Type::Nominal(declaration, _arguments) => {
             let name = program
                 .graph
                 .declaration(*declaration)
                 .and_then(|declaration| declaration.name.as_deref());
-            matches!(name, Some("Bytes")) || (name == Some("Vec") && arguments.len() == 1)
+            matches!(name, Some("Bytes"))
         }
         _ => false,
     }
+}
+
+fn nominal_is_node_array(program: &Program, ty: &Type) -> bool {
+    let Type::Nominal(declaration, arguments) = ty else {
+        return false;
+    };
+    arguments.len() == 1
+        && program
+            .graph
+            .declaration(*declaration)
+            .and_then(|declaration| declaration.name.as_deref())
+            == Some("Array")
+        && node_compatible(program, &arguments[0])
 }
 
 fn c_compatible(program: &Program, ty: &Type) -> bool {
@@ -1359,7 +1387,7 @@ fn async_function_layouts(
     let mut functions = std::collections::BTreeMap::new();
     for definition in &program.definitions {
         match &definition.data {
-            DefinitionData::Function(function) if function.is_async => {
+            DefinitionData::Function(function) if function.is_async && !function.is_generator => {
                 functions.insert(
                     Callable::function(definition.declaration),
                     function_type(function),
@@ -1372,7 +1400,7 @@ fn async_function_layouts(
             } => {
                 if let Some(method) = constructor
                     .as_ref()
-                    .filter(|method| method.function.is_async)
+                    .filter(|method| method.function.is_async && !method.function.is_generator)
                 {
                     functions.insert(
                         Callable {
@@ -1382,7 +1410,10 @@ fn async_function_layouts(
                         function_type(&method.function),
                     );
                 }
-                for method in methods.iter().filter(|method| method.function.is_async) {
+                for method in methods
+                    .iter()
+                    .filter(|method| method.function.is_async && !method.function.is_generator)
+                {
                     functions.insert(
                         Callable {
                             declaration: definition.declaration,
@@ -1393,7 +1424,10 @@ fn async_function_layouts(
                 }
             }
             DefinitionData::Implementation { methods, .. } => {
-                for method in methods.iter().filter(|method| method.function.is_async) {
+                for method in methods
+                    .iter()
+                    .filter(|method| method.function.is_async && !method.function.is_generator)
+                {
                     functions.insert(
                         Callable {
                             declaration: definition.declaration,
@@ -1439,7 +1473,7 @@ fn function_type(function: &tn_hir::Function) -> tn_hir::FunctionType {
                     .collect(),
             })
             .collect(),
-        is_async: function.is_async,
+        is_async: function.is_async && !function.is_generator,
         is_unsafe: function.is_unsafe,
     }
 }
@@ -1625,14 +1659,36 @@ fn witness_layouts(
                 witnesses.insert((*interface, *target), entries);
             }
             DefinitionData::Class { interfaces, .. } => {
-                for interface in interfaces {
-                    let Type::Nominal(interface, _) = interface else {
-                        continue;
-                    };
+                let mut interface_ids = interfaces
+                    .iter()
+                    .filter_map(|interface| match interface {
+                        Type::Nominal(interface, _) | Type::DynamicInterface(interface, _) => {
+                            Some(*interface)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(declaration) = program.graph.declaration(definition.declaration) {
+                    let module = declaration.module;
+                    for attribute in declaration
+                        .attributes
+                        .iter()
+                        .filter(|attribute| attribute.name == "Conform")
+                    {
+                        for name in &attribute.arguments {
+                            if let Some(interface) = resolve_interface_name(program, module, name) {
+                                interface_ids.push(interface);
+                            }
+                        }
+                    }
+                }
+                interface_ids.sort_unstable();
+                interface_ids.dedup();
+                for interface in interface_ids {
                     let Some(DefinitionData::Interface {
                         methods: interface_methods,
                     }) = program
-                        .definition(*interface)
+                        .definition(interface)
                         .map(|definition| &definition.data)
                     else {
                         continue;
@@ -1647,13 +1703,47 @@ fn witness_layouts(
                                 .cloned()
                         })
                         .collect::<Vec<_>>();
-                    witnesses.insert((*interface, definition.declaration), entries);
+                    witnesses.insert((interface, definition.declaration), entries);
                 }
             }
             _ => {}
         }
     }
     witnesses
+}
+
+fn resolve_interface_name(
+    program: &Program,
+    module_id: tn_hir::ModuleId,
+    name: &str,
+) -> Option<DeclarationId> {
+    let module = program.graph.module(module_id)?;
+    module
+        .declarations
+        .iter()
+        .find(|declaration| {
+            declaration.kind == tn_hir::DeclarationKind::Interface
+                && declaration.name.as_deref() == Some(name)
+        })
+        .map(|declaration| declaration.id)
+        .or_else(|| {
+            module.imports.iter().find_map(|import| {
+                let ImportClause::Named(names) = &import.clause else {
+                    return None;
+                };
+                let imported = names.iter().find(|item| item.local == name)?;
+                program
+                    .graph
+                    .module(import.target)?
+                    .declarations
+                    .iter()
+                    .find(|declaration| {
+                        declaration.kind == tn_hir::DeclarationKind::Interface
+                            && declaration.name.as_deref() == Some(imported.imported.as_str())
+                    })
+                    .map(|declaration| declaration.id)
+            })
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2342,7 +2432,7 @@ fn write_node_class_method_wrapper(
         .map_err(write_error)?;
         write_node_result_conversion(program, output, &method.function.result, "native_result")?;
     }
-    write_node_parameter_cleanup(output, &method.function)?;
+    write_node_parameter_cleanup(program, output, &method.function)?;
     output.push_str("  if (status != napi_ok) return NULL;\n  return result;\n}\n");
     Ok(())
 }
@@ -2423,6 +2513,7 @@ fn node_abi_payload_expression(ty: &Type) -> String {
 }
 
 fn write_node_parameter_cleanup(
+    program: &Program,
     output: &mut String,
     function: &tn_hir::Function,
 ) -> Result<(), BuildError> {
@@ -2430,12 +2521,21 @@ fn write_node_parameter_cleanup(
         if is_node_string(&parameter.ty) {
             writeln!(output, "  free(arg{index});").map_err(write_error)?;
         }
+        if let Type::Reference { referent, .. } = &parameter.ty
+            && nominal_is_node_array(program, referent)
+        {
+            writeln!(
+                output,
+                "  if (arg{index}) {{ tn_node_array *array_arg{index} = (tn_node_array *)arg{index}; tn_runtime_free(array_arg{index}->pointer); tn_runtime_free(array_arg{index}->initialized); tn_runtime_free(array_arg{index}); }}"
+            )
+            .map_err(write_error)?;
+        }
     }
     Ok(())
 }
 
 fn write_node_async_wrapper(
-    _program: &Program,
+    program: &Program,
     output: &mut String,
     index: usize,
     symbol: &str,
@@ -2459,7 +2559,7 @@ fn write_node_async_wrapper(
         "  status = napi_create_async_work(env, NULL, resource_name, {execute}, {complete}, context, &context->work); if (status != napi_ok) {{ tn_runtime_promise_destroy(native_promise); free(context); return NULL; }} status = napi_queue_async_work(env, context->work); if (status != napi_ok) {{ napi_delete_async_work(env, context->work); tn_runtime_promise_destroy(native_promise); free(context); return NULL; }}"
     )
     .map_err(write_error)?;
-    write_node_parameter_cleanup(output, function)?;
+    write_node_parameter_cleanup(program, output, function)?;
     output.push_str("  return promise;\n");
     Ok(())
 }
@@ -2567,7 +2667,7 @@ fn write_node_wrapper(
             output.push_str("  tn_runtime_free(native_result_pointer);\n");
         }
     }
-    write_node_parameter_cleanup(output, function)?;
+    write_node_parameter_cleanup(program, output, function)?;
     output.push_str("  return result;\n}\n\n");
     Ok(())
 }
@@ -2686,32 +2786,47 @@ fn write_node_argument_conversion(
         .map_err(write_error)?;
         return Ok(());
     }
-    if let Type::Nominal(declaration, arguments) = ty
-        && arguments.len() == 1
-        && program
-            .graph
-            .declaration(*declaration)
-            .and_then(|declaration| declaration.name.as_deref())
-            == Some("Vec")
-    {
+    let array_arguments = match ty {
+        Type::Nominal(declaration, arguments) if arguments.len() == 1 => Some(arguments),
+        Type::Reference { referent, .. } => match referent.as_ref() {
+            Type::Nominal(declaration, arguments) if arguments.len() == 1 => Some(arguments),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(arguments) = array_arguments {
+        let nominal_type = match ty {
+            Type::Reference { referent, .. } => referent.as_ref(),
+            _ => ty,
+        };
+        if !nominal_is_node_array(program, nominal_type) {
+            return Err(BuildError::Message(
+                "Node array conversion received a non-Array nominal".into(),
+            ));
+        }
         let inner = &arguments[0];
         let inner_c = node_c_type(program, inner);
         if !matches!(inner, Type::Primitive(_)) {
             return Err(BuildError::Message(
-                "Node Vec arguments currently require a primitive element type".into(),
+                "Node Array arguments currently require a primitive element type".into(),
             ));
         }
-        writeln!(output, "  {name}.elementSize = sizeof({inner_c});").map_err(write_error)?;
         writeln!(
             output,
-            "  bool {name}_is_array = false;\n  status = napi_is_array(env, {argv}, &{name}_is_array);\n  if (status != napi_ok || !{name}_is_array) {{ napi_throw_type_error(env, NULL, \"expected an Array\"); return NULL; }}\n  uint32_t {name}_array_length = 0;\n  status = napi_get_array_length(env, {argv}, &{name}_array_length);\n  if (status != napi_ok) return NULL;\n  {name}.length = {name}_array_length;\n  {name}.capacity = {name}.length;\n  {name}.pointer = tn_runtime_alloc({name}.length * sizeof({inner_c}));\n  if ({name}.length != 0 && !{name}.pointer) return NULL;\n  for (size_t index = 0; index < {name}.length; ++index) {{ napi_value element; status = napi_get_element(env, {argv}, index, &element); if (status != napi_ok) return NULL;"
+            "  tn_node_array *{name}_object = (tn_node_array *)tn_runtime_alloc(sizeof(tn_node_array)); if (!{name}_object) return NULL; {name}_object->descriptor = NULL; {name}_object->elementSize = sizeof({inner_c});"
         )
         .map_err(write_error)?;
+        writeln!(
+            output,
+            "  bool {name}_is_array = false;\n  status = napi_is_array(env, {argv}, &{name}_is_array);\n  if (status != napi_ok || !{name}_is_array) {{ napi_throw_type_error(env, NULL, \"expected an Array\"); return NULL; }}\n  uint32_t {name}_array_length = 0;\n  status = napi_get_array_length(env, {argv}, &{name}_array_length);\n  if (status != napi_ok) return NULL;\n  {name}_object->length = {name}_array_length;\n  {name}_object->capacity = {name}_object->length;\n  {name}_object->pointer = tn_runtime_alloc({name}_object->length * sizeof({inner_c}));\n  {name}_object->initialized = {name}_object->length == 0 ? NULL : tn_runtime_alloc({name}_object->length);\n  if (({name}_object->length != 0) && (!{name}_object->pointer || !{name}_object->initialized)) return NULL;\n  if ({name}_object->initialized) memset({name}_object->initialized, 0, {name}_object->length);\n  for (size_t index = 0; index < {name}_object->length; ++index) {{ napi_value element; status = napi_get_element(env, {argv}, index, &element); if (status != napi_ok) return NULL;"
+        )
+        .map_err(write_error)?;
+        writeln!(output, "  {name} = {name}_object;").map_err(write_error)?;
         write_node_scalar_argument_conversion(
             output,
             inner,
             "element",
-            &format!("(({inner_c} *){name}.pointer)[index]"),
+            &format!("(({inner_c} *){name}_object->pointer)[index]"),
         )?;
         output.push_str("  }\n");
         return Ok(());
@@ -2915,27 +3030,28 @@ fn write_node_result_conversion(
             .graph
             .declaration(*declaration)
             .and_then(|declaration| declaration.name.as_deref())
-            == Some("Vec")
+            == Some("Array")
     {
         let inner = &arguments[0];
         if !matches!(inner, Type::Primitive(_)) {
             return Err(BuildError::Message(
-                "Node Vec results currently require a primitive element type".into(),
+                "Node Array results currently require a primitive element type".into(),
             ));
         }
+        let array = format!("((tn_node_array *)({expression}))");
         output.push_str(
             "  status = napi_create_array(env, &result);\n  if (status != napi_ok) return NULL;\n",
         );
         writeln!(
             output,
-            "  for (size_t index = 0; index < {expression}.length; ++index) {{ napi_value element_value;"
+            "  for (size_t index = 0; index < {array}->length; ++index) {{ napi_value element_value;"
         )
         .map_err(write_error)?;
         let inner_c = node_c_type(program, inner);
         write_node_scalar_result_conversion(
             output,
             inner,
-            &format!("(({inner_c} *){expression}.pointer)[index]"),
+            &format!("(({inner_c} *){array}->pointer)[index]"),
             "element_value",
         )?;
         output.push_str("  status = napi_set_element(env, result, index, element_value); if (status != napi_ok) return NULL; }\n");

@@ -14,6 +14,7 @@ enum Command {
     Build(BuildArgs),
     Run(RunArgs),
     Check(CheckArgs),
+    Lint(LintArgs),
     Test(TestArgs),
     Fmt(FmtArgs),
     Doc(DocArgs),
@@ -68,6 +69,13 @@ struct CheckArgs {
 }
 
 #[derive(clap::Args)]
+struct LintArgs {
+    path: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
 struct TestArgs {
     path: Option<PathBuf>,
     filter: Option<String>,
@@ -115,6 +123,7 @@ fn main() -> std::process::ExitCode {
         Command::Build(args) => build(&args),
         Command::Run(args) => run(&args),
         Command::Check(args) => check(&args),
+        Command::Lint(args) => lint(&args),
         Command::Fmt(args) => fmt(&args),
         Command::Test(args) => test(&args),
         Command::Doc(args) => doc(&args),
@@ -336,6 +345,39 @@ fn check(args: &CheckArgs) -> std::process::ExitCode {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
+    }
+}
+
+fn lint(args: &LintArgs) -> std::process::ExitCode {
+    let project = match tn_driver::load_project(args.path.as_deref()) {
+        Ok(project) => project,
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    let output = tn_driver::lint_project(&project);
+    for diagnostic in &output.diagnostics {
+        if args.json {
+            match tn_diagnostics::render_json(diagnostic) {
+                Ok(rendered) => println!("{rendered}"),
+                Err(error) => {
+                    eprintln!("failed to serialize diagnostic: {error}");
+                    return std::process::ExitCode::from(2);
+                }
+            }
+        } else {
+            eprint!("{}", tn_diagnostics::render_text(diagnostic));
+        }
+    }
+    if output
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == tn_diagnostics::Severity::Error)
+    {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
     }
 }
 

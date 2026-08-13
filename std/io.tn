@@ -24,7 +24,8 @@ export interface Writer {
   mut writeAll(bytes: & Bytes): void throws IOError;
   mut flush(): void throws IOError;
 }
-@Conform(Writer)export struct Stdout {
+@Conform(Writer)
+export struct Stdout {
   public fd: i32;
   mut writeAll(bytes: & Bytes): void throws IOError {
     let status: i32 = 0i32;
@@ -45,7 +46,8 @@ export interface Writer {
     }
   }
 }
-@Conform(Writer)export struct Stderr {
+@Conform(Writer)
+export struct Stderr {
   public fd: i32;
   mut writeAll(bytes: & Bytes): void throws IOError {
     let status: i32 = 0i32;

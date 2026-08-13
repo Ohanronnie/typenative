@@ -251,6 +251,7 @@ fn lower_declaration(
         DeclarationKind::ExternBlock => {
             lower_extern(&mut cursor, declaration.id, resolver, diagnostics)
         }
+        DeclarationKind::Macro => return None,
     };
     let generics = cursor.definition_generics.clone();
     Some(Definition {
@@ -300,6 +301,7 @@ fn lower_function(
     if !method {
         cursor.eat(TokenKind::Function);
     }
+    let is_generator = !method && cursor.eat(TokenKind::Star);
     if method && cursor.eat(TokenKind::From) {
         // `from` is a contextual method name even though it is reserved in imports.
     } else {
@@ -349,6 +351,7 @@ fn lower_function(
         effects,
         generics,
         is_async,
+        is_generator,
         is_unsafe,
         body_start,
         body_end,
@@ -1223,6 +1226,7 @@ fn parse_constructor(
             effects,
             generics: Vec::new(),
             is_async: false,
+            is_generator: false,
             is_unsafe: false,
             body_start,
             body_end,

@@ -1,6 +1,7 @@
 import { Bytes } from "std/bytes";
 struct Failure {
 }
-@Export("echoBytes")function echoBytes(value: Bytes): Bytes throws Failure {
+@Export("echoBytes")
+function echoBytes(value: Bytes): Bytes throws Failure {
   return value;
 }

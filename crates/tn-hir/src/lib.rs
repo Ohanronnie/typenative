@@ -1,5 +1,6 @@
 //! Resolved `TypeNative` high-level intermediate representation.
 
+mod macros;
 mod module_graph;
 mod semantic;
 
@@ -46,6 +47,7 @@ pub enum DeclarationKind {
     Enum,
     Impl,
     ExternBlock,
+    Macro,
 }
 
 impl DeclarationKind {
@@ -55,7 +57,7 @@ impl DeclarationKind {
             Self::TypeAlias | Self::Struct | Self::Class | Self::Interface | Self::Enum => {
                 Some(Namespace::Type)
             }
-            Self::Impl | Self::ExternBlock => None,
+            Self::Impl | Self::ExternBlock | Self::Macro => None,
         }
     }
 }
@@ -239,6 +241,7 @@ pub struct Function {
     pub effects: Vec<DeclarationId>,
     pub generics: Vec<GenericParameter>,
     pub is_async: bool,
+    pub is_generator: bool,
     pub is_unsafe: bool,
     pub body_start: u32,
     pub body_end: u32,
@@ -478,11 +481,13 @@ pub enum HirStatementKind {
     Local(HirLocalId),
     Expression,
     Return,
+    Yield,
     Throw,
     If,
     While,
     For {
         binding: HirLocalId,
+        awaited: bool,
         witness: Option<Box<IterationWitness>>,
     },
     Try,
@@ -496,13 +501,19 @@ pub enum HirStatementKind {
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct IterationWitness {
-    pub into_iterator_implementation: DeclarationId,
-    pub into_iterator_method: MemberId,
-    pub iterator_implementation: DeclarationId,
-    pub next_method: MemberId,
-    pub iterator_type: Type,
-    pub item_type: Type,
+pub enum IterationWitness {
+    Declared {
+        into_iterator_implementation: DeclarationId,
+        into_iterator_method: MemberId,
+        iterator_implementation: DeclarationId,
+        next_method: MemberId,
+        iterator_type: Type,
+        item_type: Type,
+    },
+    Generator {
+        item_type: Type,
+        asynchronous: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

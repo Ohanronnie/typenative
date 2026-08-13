@@ -12,22 +12,26 @@ extern "C" {
 export struct Utf8Error {
   public offset: usize;
 }
-@Intrinsic("borrow_shared")function borrowShared<T>(pointer: * const T): & T {
+@Intrinsic("borrow_shared")
+function borrowShared<T>(pointer: * const T): & T {
   unsafe {
     return & * pointer;
   }
 }
-@Intrinsic("slice_from_raw_parts")function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
+@Intrinsic("slice_from_raw_parts")
+function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
   unsafe {
     return & *(pointer as * const[T]);
   }
 }
-@Intrinsic("usize")struct PlatformUnsigned {
+@Intrinsic("usize")
+struct PlatformUnsigned {
   public static parseAscii(value: Bytes): usize throws ParseIntegerError {
     return try parseAscii(value);
   }
 }
-@Intrinsic("string")struct OwnedString {
+@Intrinsic("string")
+struct OwnedString {
   public static from(text: & str): string {
     return fromStatic(text);
   }
@@ -106,14 +110,10 @@ function parseAscii(value: Bytes): usize throws ParseIntegerError {
   let parsed: usize = 0usize;
   let offset: usize = 0usize;
   let status: i32 = 0i32;
-  unsafe {
-    {
-      const output = & mut parsed;
-      const errorOutput = & mut offset;
-      status = tn_parse_ascii(value.pointer, value.length, output as * mut usize, errorOutput as * mut usize);
-    }
-  }
-  if (status !== 0i32) {
+  unsafe {{const output = & mut parsed;
+  const errorOutput = & mut offset;
+  status = tn_parse_ascii(value.pointer, value.length, output as * mut usize, errorOutput as * mut usize);
+  }}if (status !== 0i32) {
     throw integerError(offset);
   }
   return parsed;

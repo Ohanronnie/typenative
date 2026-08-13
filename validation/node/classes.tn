@@ -1,7 +1,8 @@
 extern "C" {
   function tn_runtime_free_count(): usize;
 }
-@Export("freeCount")function freeCount(): usize {
+@Export("freeCount")
+function freeCount(): usize {
   unsafe {
     return tn_runtime_free_count();
   }

@@ -1,0 +1,46 @@
+{
+  "service": "typenative-benchmark",
+  "version": 7,
+  "enabled": true,
+  "limits": {
+    "connections": 4096,
+    "timeoutMs": 1250,
+    "ratios": [0.125, -3.5, 6.022e23, 0, 42]
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "cached": false,
+      "tags": ["system", "public"]
+    },
+    {
+      "method": "POST",
+      "path": "/compile",
+      "cached": false,
+      "tags": ["compiler", "native"],
+      "headers": {
+        "content-type": "application/json",
+        "x-trace": "bench\\u002dtrace"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/artifacts/:id",
+      "cached": true,
+      "tags": ["storage", "public"]
+    }
+  ],
+  "workers": [
+    { "id": 1, "name": "alpha", "active": true, "jobs": 128 },
+    { "id": 2, "name": "beta", "active": false, "jobs": 64 },
+    { "id": 3, "name": "gamma", "active": true, "jobs": 256 }
+  ],
+  "metadata": {
+    "region": "local",
+    "description": "JSON parser throughput fixture with escaped quote: \\\"ok\\\"",
+    "nullable": null,
+    "unicode": "\\u03bb",
+    "nested": { "a": { "b": { "c": [1, 2, 3, 4, 5, { "done": true }] } } }
+  }
+}

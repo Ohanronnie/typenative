@@ -169,6 +169,7 @@ fn discover_instances(
     Ok(discovered)
 }
 
+#[allow(clippy::match_same_arms)]
 fn visit_rvalue(
     body: &Body,
     value: &Rvalue,
@@ -177,10 +178,25 @@ fn visit_rvalue(
     discovered: &mut BTreeSet<Instance>,
 ) -> Result<(), MonomorphizationError> {
     match value {
-        Rvalue::Use(operand)
-        | Rvalue::Unary { operand, .. }
-        | Rvalue::Cast { operand, .. }
-        | Rvalue::TypeTest { operand, .. } => {
+        Rvalue::Use(operand) | Rvalue::Unary { operand, .. } | Rvalue::TypeTest { operand, .. } => {
+            visit_operand(operand, registry, drop_implementations, discovered)
+        }
+        Rvalue::Cast {
+            operand,
+            ty,
+            kind: crate::CastKind::InterfaceCoercion,
+        } => {
+            visit_operand(operand, registry, drop_implementations, discovered)?;
+            let source = match operand {
+                Operand::Copy(place) | Operand::Move(place) => place_type(body, place),
+                Operand::Constant(constant) => Some(constant.ty()),
+            };
+            if let Some(source) = source {
+                discover_interface_target_methods(&source, ty, registry, discovered)?;
+            }
+            Ok(())
+        }
+        Rvalue::Cast { operand, .. } => {
             visit_operand(operand, registry, drop_implementations, discovered)
         }
         Rvalue::CheckedBinary { left, right, .. } => {
@@ -235,6 +251,72 @@ fn visit_rvalue(
             )
         }
         Rvalue::Length(_) | Rvalue::WitnessLookup { .. } => Ok(()),
+    }
+}
+
+fn discover_interface_target_methods(
+    source: &Type,
+    _interface: &Type,
+    registry: &BTreeMap<Callable, &GenericBody>,
+    discovered: &mut BTreeSet<Instance>,
+) -> Result<(), MonomorphizationError> {
+    let Type::Nominal(declaration, _) = source else {
+        return Ok(());
+    };
+    if contains_generic(source) {
+        return Ok(());
+    }
+    for (callable, generic) in registry {
+        if callable.declaration != *declaration || callable.member.is_none() {
+            continue;
+        }
+        let parameters = generic
+            .body
+            .locals
+            .iter()
+            .filter(|local| {
+                local.argument && !matches!(local.name.as_deref(), Some("self" | "this"))
+            })
+            .map(|local| local.ty.clone())
+            .collect();
+        let signature = Type::Function(FunctionType {
+            parameters,
+            result: Box::new(generic.body.return_type.clone()),
+            effects: generic.body.effects.clone(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: false,
+        });
+        discover_callable(*callable, &signature, Some(source), registry, discovered)?;
+    }
+    Ok(())
+}
+
+fn contains_generic(ty: &Type) -> bool {
+    match ty {
+        Type::Generic(_) => true,
+        Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
+            arguments.iter().any(contains_generic)
+        }
+        Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+            contains_generic(inner)
+        }
+        Type::Promise { result, .. }
+        | Type::Reference {
+            referent: result, ..
+        } => contains_generic(result),
+        Type::RawPointer { pointee, .. } => contains_generic(pointee),
+        Type::Tuple(elements) | Type::Template(elements) => elements.iter().any(contains_generic),
+        Type::Function(function) => {
+            function.parameters.iter().any(contains_generic) || contains_generic(&function.result)
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::Lifetime(_)
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => false,
     }
 }
 
@@ -298,6 +380,9 @@ fn visit_terminator(
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if type_arguments.iter().any(contains_generic) {
+                    continue;
+                }
                 discovered.insert(Instance {
                     callable: implementation.callable,
                     type_arguments,
@@ -480,6 +565,9 @@ fn discover_callable(
                     parameter: parameter.clone(),
                 }
             })?);
+        }
+        if type_arguments.iter().any(contains_generic) {
+            return Ok(());
         }
         discovered.insert(Instance {
             callable,

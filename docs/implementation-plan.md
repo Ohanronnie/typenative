@@ -384,6 +384,13 @@ This is the controlled canonical-design convergence gate for the approved
 TypeNative surface. It must not leave the implementation accepting two competing
 spellings or semantics.
 
+Ordinary Rust-bootstrap completion note (2026-08-13): the canonical collection,
+generator, async-generator, declaration-macro, capability-decorator, formatter,
+linter, documentation, LSP, CLI, Node-API, and Redis evidence is recorded in
+[`implementation-status.md`](implementation-status.md). The protected
+`compiler-tn/**` migration and independent compiler A/B/C validation remain
+later gates and are not prerequisites hidden inside this checkpoint.
+
 ### Deliverables
 
 - Update the language specification, compiler architecture, design audit,

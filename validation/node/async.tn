@@ -5,13 +5,16 @@ function failure(): Failure {
   return {
   };
 }
-@Export("immediate")async function immediate(value: i32): Promise<i32, never> {
+@Export("immediate")
+async function immediate(value: i32): Promise<i32, never> {
   return value + 1i32;
 }
-@Export("asyncEcho")async function asyncEcho(value: Bytes): Promise<Bytes, never> {
+@Export("asyncEcho")
+async function asyncEcho(value: Bytes): Promise<Bytes, never> {
   return value;
 }
-@Export("asyncFail")async function asyncFail(value: i32): Promise<i32, Failure> {
+@Export("asyncFail")
+async function asyncFail(value: i32): Promise<i32, Failure> {
   if (value >= 0i32) {
     throw failure();
   }

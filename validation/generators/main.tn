@@ -1,0 +1,12 @@
+import { Iterable } from "std/core";
+function* numbers(): Iterable<i32> {
+  yield 16i32;
+  yield 26i32;
+}
+function main(): i32 {
+  let result: i32 = 0i32;
+  for (const value of numbers()) {
+    result = result + value;
+  }
+  return result;
+}

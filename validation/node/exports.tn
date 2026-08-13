@@ -1,16 +1,20 @@
 import { Bytes } from "std/bytes";
 import { Array } from "std/collections";
 
-@Export("optional")function optional(value: i32 | undefined): i32 | undefined {
+@Export("optional")
+function optional(value: i32 | undefined): i32 | undefined {
   return value;
 }
-@Export("bytesLength")function bytesLength(value: Bytes): usize {
+@Export("bytesLength")
+function bytesLength(value: Bytes): usize {
   return value.length;
 }
-@Export("vectorLength")function vectorLength(value: Array<i32 >): usize {
+@Export("vectorLength")
+function vectorLength(value: & Array<i32 >): usize {
   return value.length;
 }
-@Export("fixedMiddle")function fixedMiddle(value:[i32;
+@Export("fixedMiddle")
+function fixedMiddle(value:[i32;
 3]): i32 {
   return value[1];
 }

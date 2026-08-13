@@ -1,0 +1,41 @@
+interface Marker {
+}
+interface Send {
+}
+interface Sync {
+}
+@Copy struct Copyable {
+  public value: i32;
+}
+@Clone struct Cloneable {
+  public value: string;
+}
+@Drop struct Droppable {
+  public mut drop(): void {
+  }
+}
+@Conform(Marker)
+struct Conforming {
+}
+@Conform(Send, unsafe)
+struct Sendable {
+  public pointer: * mut i32;
+}
+@Conform(Sync, unsafe)
+struct Syncable {
+  public pointer: * mut i32;
+}
+@Sealed interface Closed {
+}
+@Layout("C")
+struct Pair {
+  public left: i32;
+  public right: i32;
+}
+@Export("decorator_answer")
+function answer(): i32 {
+  return 42i32;
+}
+function main(): i32 {
+  return answer();
+}

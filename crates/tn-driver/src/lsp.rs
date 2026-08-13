@@ -8,6 +8,7 @@ use lsp_types::{
     },
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tn_diagnostics::Severity;
 use tn_syntax::{IncrementalDocument, TextEdit};
 
@@ -108,7 +109,7 @@ fn publish(
     version: i32,
     document: &IncrementalDocument,
 ) -> LspResult<()> {
-    let diagnostics = document
+    let mut diagnostics: Vec<LspDiagnostic> = document
         .parse()
         .diagnostics()
         .iter()
@@ -134,6 +135,9 @@ fn publish(
             }
         })
         .collect();
+    if diagnostics.is_empty() {
+        diagnostics.extend(semantic_diagnostics(document.source()));
+    }
     let notification = lsp_server::Notification::new(
         lsp_types::notification::PublishDiagnostics::METHOD.into(),
         PublishDiagnosticsParams::new(uri.clone(), diagnostics, Some(version)),
@@ -142,6 +146,55 @@ fn publish(
         .sender
         .send(Message::Notification(notification))?;
     Ok(())
+}
+
+fn semantic_diagnostics(source: &str) -> Vec<LspDiagnostic> {
+    let Ok(directory) = tempfile::tempdir() else {
+        return Vec::new();
+    };
+    let entry = directory.path().join("main.tn");
+    if std::fs::write(&entry, source).is_err() {
+        return Vec::new();
+    }
+    let project = crate::Project {
+        root: directory.path().to_path_buf(),
+        entry: entry.clone(),
+        config: crate::ProjectConfig {
+            entry: PathBuf::from("main.tn"),
+            out_dir: PathBuf::from("build"),
+            target: crate::Target::Aarch64AppleDarwin,
+            profile: crate::Profile::Debug,
+            emit: crate::Emit::Executable,
+            link: crate::LinkConfig::default(),
+        },
+        config_path: None,
+    };
+    crate::check_project(&project)
+        .diagnostics
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.primary.span.byte_end as usize <= source.len()
+                && diagnostic.primary.span.byte_start <= diagnostic.primary.span.byte_end
+        })
+        .map(|diagnostic| {
+            let start = position(source, diagnostic.primary.span.byte_start as usize);
+            let end = position(source, diagnostic.primary.span.byte_end as usize);
+            LspDiagnostic {
+                range: Range::new(start, end),
+                severity: Some(match diagnostic.severity {
+                    Severity::Error => DiagnosticSeverity::ERROR,
+                    Severity::Warning => DiagnosticSeverity::WARNING,
+                    Severity::Note => DiagnosticSeverity::INFORMATION,
+                }),
+                code: Some(lsp_types::NumberOrString::String(
+                    diagnostic.condition.as_str().into(),
+                )),
+                source: Some("tn".into()),
+                message: diagnostic.message,
+                ..LspDiagnostic::default()
+            }
+        })
+        .collect()
 }
 
 fn byte_offset(source: &str, target: Position) -> LspResult<usize> {
@@ -193,5 +246,17 @@ mod tests {
         assert_eq!(byte_offset(source, Position::new(0, 3)).unwrap(), 5);
         assert_eq!(position(source, 5), Position::new(0, 3));
         assert!(byte_offset(source, Position::new(0, 2)).is_err());
+    }
+
+    #[test]
+    fn semantic_document_diagnostics_use_the_compiler_pipeline() {
+        let diagnostics = semantic_diagnostics("@Unknown\nfunction main(): void {}\n");
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code
+                == Some(lsp_types::NumberOrString::String(
+                    "TYPE_UNKNOWN_ATTRIBUTE".into()
+                ))),
+            "{diagnostics:?}"
+        );
     }
 }

@@ -1,0 +1,267 @@
+import { Bytes } from "std/bytes";
+import { argument, argumentCount } from "std/process";
+
+extern "C" {
+  function strlen(bytes: * const u8): usize;
+  function atoi(bytes: * const u8): i32;
+}
+class JsonParser {
+  private input: Bytes;
+  private offset: usize;
+  private checksum: usize;
+  public constructor(input: Bytes) {
+    this.input = input;
+    this.offset = 0usize;
+    this.checksum = 0usize;
+  }
+  private current(): u8 {
+    return this.input.get(this.offset)!;
+  }
+  private isDigit(value: u8): bool {
+    return value >= 48u8 && value <= 57u8;
+  }
+  private isHexDigit(value: u8): bool {
+    return this.isDigit(value) ||(value >= 65u8 && value <= 70u8) ||(value >= 97u8 && value <= 102u8);
+  }
+  private mut skipWhitespace(): void {
+    while (this.offset<this.input.length) {
+      const value = this.current();
+      if (value !== 32u8 && value !== 10u8 && value !== 13u8 && value !== 9u8) {
+        return;
+      }
+      this.offset += 1usize;
+    }
+  }
+  private mut consume(expected: u8): bool {
+    if (this.offset >= this.input.length || this.current() !== expected) {
+      return false;
+    }
+    this.offset += 1usize;
+    return true;
+  }
+  private mut parseString(): bool {
+    if (!this.consume(34u8)) {
+      return false;
+    }
+    while (this.offset<this.input.length) {
+      const value = this.current();
+      this.offset += 1usize;
+      if (value === 34u8) {
+        return true;
+      }
+      if (value<32u8) {
+        return false;
+      }
+      this.checksum += 1usize;
+      if (value === 92u8) {
+        if (this.offset >= this.input.length) {
+          return false;
+        }
+        const escaped = this.current();
+        this.offset += 1usize;
+        this.checksum += 1usize;
+        if (escaped === 117u8) {
+          let digits: usize = 0usize;
+          while (digits<4usize) {
+            if (this.offset >= this.input.length || !this.isHexDigit(this.current())) {
+              return false;
+            }
+            this.checksum += 1usize;
+            this.offset += 1usize;
+            digits += 1usize;
+          }
+        } else if (escaped !== 34u8 && escaped !== 92u8 && escaped !== 47u8 && escaped !== 98u8 && escaped !== 102u8 && escaped !== 110u8 && escaped !== 114u8 && escaped !== 116u8) {
+          return false;
+        }
+      }
+    }
+    return false;
+  }
+  private mut parseTrue(): bool {
+    if (this.consume(116u8) && this.consume(114u8) && this.consume(117u8) && this.consume(101u8)) {
+      this.checksum += 4usize;
+      return true;
+    }
+    return false;
+  }
+  private mut parseFalse(): bool {
+    if (this.consume(102u8) && this.consume(97u8) && this.consume(108u8) && this.consume(115u8) && this.consume(101u8)) {
+      this.checksum += 5usize;
+      return true;
+    }
+    return false;
+  }
+  private mut parseNull(): bool {
+    if (this.consume(110u8) && this.consume(117u8) && this.consume(108u8) && this.consume(108u8)) {
+      this.checksum += 4usize;
+      return true;
+    }
+    return false;
+  }
+  private mut parseNumber(): bool {
+    const start = this.offset;
+    if (this.offset<this.input.length && this.current() === 45u8) {
+      this.offset += 1usize;
+    }
+    if (this.offset >= this.input.length) {
+      return false;
+    }
+    if (this.current() === 48u8) {
+      this.checksum += 1usize;
+      this.offset += 1usize;
+    } else {
+      if (this.current() < 49u8 || this.current() > 57u8) {
+        return false;
+      }
+      while (this.offset<this.input.length && this.isDigit(this.current())) {
+        this.checksum += 1usize;
+        this.offset += 1usize;
+      }
+    }
+    if (this.offset<this.input.length && this.current() === 46u8) {
+      this.offset += 1usize;
+      if (this.offset >= this.input.length || !this.isDigit(this.current())) {
+        return false;
+      }
+      while (this.offset<this.input.length && this.isDigit(this.current())) {
+        this.checksum += 1usize;
+        this.offset += 1usize;
+      }
+    }
+    if (this.offset<this.input.length &&(this.current() === 101u8 || this.current() === 69u8)) {
+      this.offset += 1usize;
+      if (this.offset<this.input.length &&(this.current() === 43u8 || this.current() === 45u8)) {
+        this.offset += 1usize;
+      }
+      if (this.offset >= this.input.length || !this.isDigit(this.current())) {
+        return false;
+      }
+      while (this.offset<this.input.length && this.isDigit(this.current())) {
+        this.checksum += 1usize;
+        this.offset += 1usize;
+      }
+    }
+    return this.offset > start;
+  }
+  private mut parseArray(): bool {
+    if (!this.consume(91u8)) {
+      return false;
+    }
+    this.skipWhitespace();
+    if (this.consume(93u8)) {
+      return true;
+    }
+    while (true) {
+      if (!this.parseValue()) {
+        return false;
+      }
+      this.skipWhitespace();
+      if (this.consume(93u8)) {
+        return true;
+      }
+      if (!this.consume(44u8)) {
+        return false;
+      }
+      this.skipWhitespace();
+    }
+    return false;
+  }
+  private mut parseObject(): bool {
+    if (!this.consume(123u8)) {
+      return false;
+    }
+    this.skipWhitespace();
+    if (this.consume(125u8)) {
+      return true;
+    }
+    while (true) {
+      if (!this.parseString()) {
+        return false;
+      }
+      this.skipWhitespace();
+      if (!this.consume(58u8)) {
+        return false;
+      }
+      this.skipWhitespace();
+      if (!this.parseValue()) {
+        return false;
+      }
+      this.skipWhitespace();
+      if (this.consume(125u8)) {
+        return true;
+      }
+      if (!this.consume(44u8)) {
+        return false;
+      }
+      this.skipWhitespace();
+    }
+    return false;
+  }
+  private mut parseValue(): bool {
+    this.skipWhitespace();
+    if (this.offset >= this.input.length) {
+      return false;
+    }
+    const value = this.current();
+    if (value === 34u8) {
+      return this.parseString();
+    }
+    if (value === 123u8) {
+      return this.parseObject();
+    }
+    if (value === 91u8) {
+      return this.parseArray();
+    }
+    if (value === 116u8) {
+      return this.parseTrue();
+    }
+    if (value === 102u8) {
+      return this.parseFalse();
+    }
+    if (value === 110u8) {
+      return this.parseNull();
+    }
+    return this.parseNumber();
+  }
+  public mut parseMany(iterations: i32): usize {
+    let iteration: i32 = 0i32;
+    let total: usize = 0usize;
+    while (iteration<iterations) {
+      this.offset = 0usize;
+      this.checksum = 0usize;
+      const valid = this.parseValue();
+      this.skipWhitespace();
+      if (!valid || this.offset !== this.input.length) {
+        return 0usize;
+      }
+      total += this.checksum + this.offset;
+      iteration += 1i32;
+    }
+    return total;
+  }
+}
+@Export("parseMany")
+function parseMany(input: Bytes, iterations: i32): usize {
+  let parser = new JsonParser(input);
+  return parser.parseMany(iterations);
+}
+function main(): i32 {
+  if (argumentCount() < 3i32) {
+    return 2i32;
+  }
+  unsafe {
+    const inputPointer = argument(1i32);
+    const iterationPointer = argument(2i32);
+    const input: Bytes = {
+      pointer: inputPointer, length: strlen(inputPointer),
+    };
+    const iterations = atoi(iterationPointer);
+    if (iterations <= 0i32) {
+      return 3i32;
+    }
+    if (parseMany(input, iterations) === 0usize) {
+      return 4i32;
+    }
+  }
+  return 0i32;
+}

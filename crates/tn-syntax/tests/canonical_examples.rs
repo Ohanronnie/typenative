@@ -48,5 +48,5 @@ fn every_canonical_tn_example_parses_in_its_documented_context() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 8, "canonical TypeNative example count changed");
+    assert_eq!(checked, 9, "canonical TypeNative example count changed");
 }

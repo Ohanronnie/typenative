@@ -4,7 +4,8 @@ import { AsyncDisposable, ParseIntegerError } from "std/core";
 import { NetworkError, TcpStream } from "std/net";
 import { Utf8Error } from "std/string";
 
-@Conform(Error)export enum RedisError {
+@Conform(Error)
+export enum RedisError {
   BindFailed, ConnectionFailed, InvalidFrame, InvalidLength, InvalidUtf8, FrameTooLarge, UnexpectedEnd,
 }
 export struct Command {
@@ -193,7 +194,8 @@ function writeAll(stream: & TcpStream, buffer: & BytesMut,): void throws RedisEr
   return;
 }
 @Sealed
-@Conform(AsyncDisposable)export class RespConnection {
+@Conform(AsyncDisposable)
+export class RespConnection {
   private stream: TcpStream;
   private input: BytesMut;
   public constructor(stream: TcpStream) {

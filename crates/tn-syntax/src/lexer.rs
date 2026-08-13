@@ -79,6 +79,8 @@ pub enum TokenKind {
     Lifetime,
     #[token("match")]
     Match,
+    #[token("macro")]
+    Macro,
     #[token("mod")]
     Mod,
     #[token("move")]
@@ -143,6 +145,8 @@ pub enum TokenKind {
     Where,
     #[token("while")]
     While,
+    #[token("yield")]
+    Yield,
     #[token("extension")]
     Extension,
 

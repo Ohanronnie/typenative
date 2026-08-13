@@ -178,6 +178,23 @@ The formatter prints from the CST and a syntax-kind rule table. Its contract is:
 The language server reparses only changed files and reuses immutable green-tree
 subtrees.
 
+### 4.4 Typed declaration macros
+
+The bootstrap compiler expands local `macro` templates in a dedicated boundary
+between lexing and module scanning. Parameters are declared as `identifier`,
+`type`, or `literal`; `@Expand(name, ...)` can add members and target-level
+conformance attributes to one nominal declaration. Placeholder substitution is
+token-based (`{{parameter}}`), so source text cannot be evaluated as host code.
+
+The expander is deterministic and has no filesystem, network, environment,
+clock, randomness, native ABI, or ownership-marker capability. It rejects
+forbidden tokens, wrong argument categories, duplicate names, unknown
+parameters, and member collisions at the original macro span. The resulting
+source is parsed again and flows through the same resolver, signature checker,
+body checker, ownership analysis, MIR, and ABI validation as handwritten code.
+Macro definitions are local to a module; this keeps expansion order independent
+of module discovery and makes repeated expansion byte-for-byte reproducible.
+
 ## 5. Driver and query model
 
 The driver models compilation as revisioned, memoized queries rather than a
@@ -197,6 +214,7 @@ Required query groups are:
 - reachable monomorphized instances;
 - LLVM module fragments and link inputs; and
 - documentation and language-server projections.
+- deterministic declaration-macro expansion before module scanning.
 
 The on-disk incremental cache includes the compiler build identity, target,
 profile, configuration digest, LLVM major, and source-content digests. A mismatch

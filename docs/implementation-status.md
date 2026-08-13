@@ -32,12 +32,39 @@ work. The current source and evidence records are:
   diagnostic, determinism, and sanitizer prerequisites without claiming the
   independent compiler gate.
 
-The current documentation corpus contains eight `.tn` examples, and the
-canonical example test parses all eight. The four Redis TypeNative entrypoints
+The current documentation corpus contains nine `.tn` examples, and the
+canonical example test parses all nine. The four Redis TypeNative entrypoints
 pass ordinary `tn check --json` with no diagnostics. The canonical Redis
 executable now also passes the protocol, concurrency, and canonical sanitizer
 harnesses; native-source retirement and independent self-hosting remain open
 acceptance work.
+
+## Ordinary Gate 9 convergence checkpoint (2026-08-13)
+
+The post-collection bootstrap checkpoint adds the remaining ordinary language
+and tooling boundaries without touching the protected self-hosting tree:
+
+- synchronous and asynchronous generators parse and format canonically;
+  `yield`, `for of`, and `for await of` carry typed iterator witnesses through
+  HIR and lower to declared `ArrayIterator`/`AsyncArrayIterator` protocols;
+  native debug and optimized fixtures return 42 and 16 respectively;
+- `macro` and `@Expand(...)` provide typed, deterministic declaration templates
+  with token placeholders, source-span diagnostics, member-collision checks,
+  and a sandbox that rejects native, environment, timing, randomness, and
+  compiler-owned ownership/ABI capabilities; generated members re-enter the
+  ordinary parser and semantic pipeline;
+- direct decorator fixtures cover `@Copy`, `@Clone`, `@Drop`, `@Send`, `@Sync`,
+  `@Conform`, `@Sealed`, `@Layout`, `@Export`, and rejected unknown, duplicate,
+  misplaced, unsafe, and forged forms;
+- `tn lint` is a first-class CLI command. It reuses project semantic checks and
+  resolved imports, then reports trailing-whitespace and unused-import warnings
+  as structured diagnostics. The formatter, docs generator, LSP, test runner,
+  and Node declaration generator continue to consume the shared syntax/HIR
+  model.
+- the repeatable JSON benchmark validates matching checksums and malformed-input
+  rejection for the optimized executable, Node-API addon, handwritten Node
+  parser, and `JSON.parse` baseline; the recorded addon sample reaches
+  130.38 MiB/s versus 50.69 MiB/s for the handwritten parser.
 
 Ordinary verification completed on 2026-08-12:
 
@@ -84,6 +111,34 @@ PASS: redis-canonical-thread-sanitizers=pass
 The harness targets `validation/redis/main-alt.tn`; it does not run the legacy
 `runtime/redis.c` application. Native-source retirement and the independent
 self-hosting gate remain open.
+
+Final ordinary Gate 9 verification completed on 2026-08-13:
+
+```text
+cargo fmt --all -- --check
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+PASS: workspace formatting, tests, clippy, and documentation warnings
+scripts/check-toolchain.sh
+PASS: LLVM 22.1.8 / aarch64-apple-darwin
+scripts/verify-design.sh
+PASS: links, terminology, source hashes, and canonical examples
+scripts/verify-cli.sh
+scripts/verify-stdlib.sh
+scripts/verify-runtime.sh
+scripts/verify-debug-info.sh
+scripts/verify-c-abi.sh
+scripts/verify-node.sh
+scripts/verify-redis.sh
+scripts/run-sanitizers.sh
+PASS: CLI, standard library, runtime, DWARF, C ABI, Node-API, Redis, ASan/UBSan, and TSan
+(cd fuzz && cargo +nightly fuzz run lexer -- -runs=10000 -max_len=4096 -timeout=5)
+(cd fuzz && cargo +nightly fuzz run parser -- -runs=10000 -max_len=4096 -timeout=5)
+PASS: both grammar fuzz targets completed 10,000 runs
+BENCH_ITERATIONS=20 BENCH_SAMPLES=5 benchmarks/json-parser/run.sh
+PASS: checksum and malformed-input checks; results recorded in benchmarks/json-parser/results.json
+```
 
 The Gate zero and earlier matrix paragraphs below preserve historical evidence
 from the previous document corpus. Their former fifteen-example count and
@@ -1121,18 +1176,11 @@ Current evidence:
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions
   are being rerun after the convergence changes.
 
-Remaining scope:
-
-- Canonicalize `Promise<T, E>`, synchronous `throws`, `T | undefined`, `!`, typed
-  `try`/`catch`, direct capability decorators, `@Conform`, `@Drop`, `@Intrinsic`,
-  `@Sealed`, `using`, generators, async generators, and typed user macros.
-- Finish growable collection iteration and borrowing through the canonical
-  iterator protocol.
-- Remove obsolete `Result`, `Option`, `match`, `impl`, `extension`, `record`,
-  `where`, `dyn`, collection, module, and compatibility spellings from every
-  compiler layer and fixture.
-- Re-run parser, formatter, semantic, ownership, MIR, native, hosted, and
-  bootstrap differential inventories after the canonical documents are updated.
+The ordinary Gate 9 implementation items covered by this checkpoint are now
+complete. Remaining work is explicitly outside this goal: retirement of
+project-owned native sources (Gate 10), migration of the protected
+`compiler-tn/**` tree, and independent compiler A/B/C evidence (Gates 11 and
+12). Those paths are not modified or invoked by this checkpoint.
 
 This gate cannot be completed until Gates 3–8 are complete and the canonical
 documents, audit, grammar, implementation, and fixtures agree.
@@ -1280,6 +1328,7 @@ checks, but its B/C artifacts were Rust-driver-built and therefore cannot be use
 self-hosting evidence. The current independent-order attempt fails at A→B as recorded above. The
 full Linux compiler/hosted matrix recorded above is historical evidence only and is not an active
 support requirement. Gate eight remains open because `compiler-tn` is not yet an independent
-full LLVM-backed compiler. Gate 9 is currently active in the ordinary bootstrap
-path with preparation evidence recorded; Gates 10–12 remain open, and no final
-independent self-hosting result is claimed.
+full LLVM-backed compiler. The ordinary Rust-bootstrap portion of Gate 9 is complete for the
+canonical source surface; Gates 10–12 remain open for native-source retirement, protected
+`compiler-tn/**` migration, and independent self-hosting. No final independent self-hosting
+result is claimed.

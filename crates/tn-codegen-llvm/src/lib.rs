@@ -3242,7 +3242,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "drop.elements.address",
                     )?
                 };
-                self.lower_drop_value_at_pointer(element_pointer, &element_type)?;
+                if !self.is_copy_type(&element_type) {
+                    self.lower_drop_value_at_pointer(element_pointer, &element_type)?;
+                }
                 self.builder.build_store(
                     initialized_address,
                     self.generator.context.i8_type().const_zero(),

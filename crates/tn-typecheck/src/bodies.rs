@@ -227,7 +227,10 @@ fn check_one(
     } else {
         &function.result
     };
-    if *result != Type::Primitive(PrimitiveType::Void) && !guaranteed_sequence(&tokens) {
+    if !function.is_generator
+        && *result != Type::Primitive(PrimitiveType::Void)
+        && !guaranteed_sequence(&tokens)
+    {
         diagnostics.push(Diagnostic::error(
             ConditionId::new("TYPE_MISSING_RETURN").expect("static condition is valid"),
             format!("not every control-flow path returns {result:?}"),
@@ -402,6 +405,7 @@ impl BodyChecker<'_> {
             TokenKind::LeftBrace => self.block(),
             TokenKind::Const | TokenKind::Let => self.local_declaration(),
             TokenKind::Return => self.return_statement(),
+            TokenKind::Yield => self.yield_statement(),
             TokenKind::Throw => self.throw_statement(),
             TokenKind::If => self.if_statement(),
             TokenKind::While => self.while_statement(),
@@ -551,7 +555,10 @@ impl BodyChecker<'_> {
 
     fn return_statement(&mut self) {
         let token = self.bump().cloned();
-        let expected_result = if self.function.is_async {
+        let generator_completion = Type::Primitive(PrimitiveType::Void);
+        let expected_result = if self.function.is_generator {
+            &generator_completion
+        } else if self.function.is_async {
             match &self.function.result {
                 Type::Promise { result, .. } => result.as_ref(),
                 result => result,
@@ -578,6 +585,57 @@ impl BodyChecker<'_> {
                 &token,
                 "return a value compatible with the declaration result",
             );
+        }
+        self.eat(TokenKind::Semicolon);
+    }
+
+    fn yield_statement(&mut self) {
+        let token = self.bump().cloned();
+        let protocol = if self.function.is_async {
+            "AsyncIterable"
+        } else {
+            "Iterable"
+        };
+        let item = match &self.function.result {
+            Type::Nominal(declaration, arguments)
+            | Type::DynamicInterface(declaration, arguments)
+                if declaration_name(self.program, *declaration) == Some(protocol)
+                    && arguments.len() == 1 =>
+            {
+                arguments.first()
+            }
+            _ => None,
+        };
+        if !self.function.is_generator
+            && let Some(token) = token.as_ref()
+        {
+            self.error(
+                "TYPE_YIELD_OUTSIDE_GENERATOR",
+                "yield is valid only in a generator declaration",
+                token,
+                "add `*` after `function` or remove the yield statement",
+            );
+        } else if item.is_none()
+            && let Some(token) = token.as_ref()
+        {
+            self.error(
+                "TYPE_INVALID_GENERATOR_RESULT",
+                format!("generator result must be {protocol}<Item>"),
+                token,
+                "declare the generator's yielded item type",
+            );
+        }
+        if self.kind() == Some(TokenKind::Semicolon) {
+            if let Some(token) = token.as_ref() {
+                self.error(
+                    "TYPE_YIELD_VALUE_REQUIRED",
+                    "yield requires a value",
+                    token,
+                    "provide a value compatible with the generator item type",
+                );
+            }
+        } else {
+            self.expression(0, item);
         }
         self.eat(TokenKind::Semicolon);
     }
@@ -631,6 +689,18 @@ impl BodyChecker<'_> {
 
     fn for_statement(&mut self) {
         self.bump();
+        let awaited = self.eat(TokenKind::Await);
+        if awaited
+            && !self.function.is_async
+            && let Some(token) = self.tokens.get(self.index.saturating_sub(1)).cloned()
+        {
+            self.error(
+                "TYPE_AWAIT_OUTSIDE_ASYNC",
+                "for await is valid only in an async declaration",
+                &token,
+                "mark the enclosing function async",
+            );
+        }
         self.eat(TokenKind::LeftParen);
         self.eat(TokenKind::Const);
         let binding = self.bump().cloned();
@@ -644,7 +714,7 @@ impl BodyChecker<'_> {
             let iteration = iterable
                 .as_ref()
                 .map_or(Err(IterationError::NotIterable), |iterable| {
-                    for_iteration(self.program, &iterable.ty)
+                    for_iteration(self.program, &iterable.ty, awaited)
                 });
             let (item, witness) = iteration.unwrap_or_else(|error| {
                 match error {
@@ -1105,7 +1175,7 @@ impl BodyChecker<'_> {
                         bounds: parameter.bounds.clone(),
                     })
                     .collect(),
-                is_async: function.is_async,
+                is_async: function.is_async && !function.is_generator,
                 is_unsafe: function.is_unsafe,
             }));
             expression.callable = Some(CallableIdentity::Function(*declaration));
@@ -1164,6 +1234,7 @@ impl BodyChecker<'_> {
                             effects: Vec::new(),
                             generics: Vec::new(),
                             is_async: false,
+                            is_generator: false,
                             is_unsafe: false,
                             body_start: 0,
                             body_end: 0,
@@ -2883,6 +2954,7 @@ impl BodyChecker<'_> {
                 HirStatementKind::Local(new_local.expect("local declaration creates HIR local"))
             }
             TokenKind::Return => HirStatementKind::Return,
+            TokenKind::Yield => HirStatementKind::Yield,
             TokenKind::Throw => HirStatementKind::Throw,
             TokenKind::If => HirStatementKind::If,
             TokenKind::While => HirStatementKind::While,
@@ -2890,6 +2962,10 @@ impl BodyChecker<'_> {
                 let binding = new_local.expect("for binding creates HIR local");
                 HirStatementKind::For {
                     binding,
+                    awaited: self
+                        .tokens
+                        .get(start + 1)
+                        .is_some_and(|token| token.kind == TokenKind::Await),
                     witness: self.iteration_witnesses.remove(&binding).map(Box::new),
                 }
             }
@@ -3160,6 +3236,7 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
     functions
 }
 
+#[allow(clippy::too_many_lines)]
 fn guaranteed_sequence(tokens: &[Token]) -> bool {
     let mut index = 0_usize;
     while index < tokens.len() {
@@ -3252,6 +3329,15 @@ fn guaranteed_sequence(tokens: &[Token]) -> bool {
                 let (_, end) = statement_range(tokens, index);
                 index = end.max(index + 1);
             }
+        }
+    }
+    let mut depth = 0_u32;
+    for token in tokens {
+        match token.kind {
+            TokenKind::LeftBrace => depth = depth.saturating_add(1),
+            TokenKind::RightBrace => depth = depth.saturating_sub(1),
+            TokenKind::Return | TokenKind::Throw if depth == 0 => return true,
+            _ => {}
         }
     }
     false
@@ -4337,7 +4423,22 @@ fn iteration_implementation<'program>(
 fn for_iteration(
     program: &Program,
     iterable: &Type,
+    awaited: bool,
 ) -> Result<(Type, Option<IterationWitness>), IterationError> {
+    if let Type::DynamicInterface(interface, arguments) = iterable {
+        let expected = if awaited { "AsyncIterable" } else { "Iterable" };
+        if declaration_name(program, *interface) == Some(expected)
+            && let [item] = arguments.as_slice()
+        {
+            return Ok((
+                item.clone(),
+                Some(IterationWitness::Generator {
+                    item_type: item.clone(),
+                    asynchronous: awaited,
+                }),
+            ));
+        }
+    }
     match iterable {
         Type::Array(element, _) | Type::Slice(element) => {
             return Ok((element.as_ref().clone(), None));
@@ -4348,7 +4449,7 @@ fn for_iteration(
                 Type::Array(_, _) | Type::Slice(_) | Type::Str
             ) =>
         {
-            return for_iteration(program, referent);
+            return for_iteration(program, referent, awaited);
         }
         Type::Str => return Ok((Type::Primitive(PrimitiveType::Char), None)),
         _ => {}
@@ -4413,7 +4514,7 @@ fn for_iteration(
     }
     Ok((
         item_type.clone(),
-        Some(IterationWitness {
+        Some(IterationWitness::Declared {
             into_iterator_implementation: into_definition.declaration,
             into_iterator_method: into_method.id,
             iterator_implementation: iterator_definition.declaration,
@@ -5026,7 +5127,7 @@ fn function_type(function: &Function) -> Type {
                 bounds: parameter.bounds.clone(),
             })
             .collect(),
-        is_async: function.is_async,
+        is_async: function.is_async && !function.is_generator,
         is_unsafe: function.is_unsafe,
     })
 }

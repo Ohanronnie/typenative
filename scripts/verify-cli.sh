@@ -23,10 +23,10 @@ esac
 cat >"$work/main.tn" <<'EOF'
 import { argumentCount } from "std/process";
 
-@test
+@Test
 function passes(): void {}
 
-@export("cli_answer")
+@Export("cli_answer")
 function exported(): i32 {
   return 42i32;
 }

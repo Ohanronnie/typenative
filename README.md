@@ -95,6 +95,7 @@ The public command is `tn`:
 tn build
 tn run
 tn check
+tn lint
 tn test
 tn fmt
 tn doc

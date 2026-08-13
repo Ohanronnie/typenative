@@ -1,0 +1,17 @@
+import { run } from "std/async";
+import { AsyncIterable } from "std/core";
+
+async function* events(): AsyncIterable<i32> {
+  yield 7i32;
+  yield 9i32;
+}
+async function consume(): Promise<i32, never> {
+  let result: i32 = 0i32;
+  for await (const value of events()) {
+    result = result + value;
+  }
+  return result;
+}
+function main(): i32 {
+  return run(consume());
+}

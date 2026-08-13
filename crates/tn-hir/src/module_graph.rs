@@ -27,6 +27,10 @@ pub fn load_module_graph(
     if string_prelude.is_file() {
         pending.push_back(normalize_existing(&string_prelude)?);
     }
+    let collections_prelude = standard_library.join("collections.tn");
+    if collections_prelude.is_file() {
+        pending.push_back(normalize_existing(&collections_prelude)?);
+    }
     let mut discovered = BTreeSet::new();
     let mut raw_modules = BTreeMap::new();
     let mut diagnostics = Vec::new();
@@ -37,10 +41,17 @@ pub fn load_module_graph(
         }
         let bytes = std::fs::read(&path)?;
         let file = path.to_string_lossy();
-        let parsed = parse(&file, &bytes);
-        diagnostics.extend_from_slice(parsed.diagnostics());
         let lexed = lex(&file, &bytes);
-        if lexed.source.is_empty() && !bytes.is_empty() {
+        let expanded = crate::macros::expand_source(&file, lexed.source, &lexed.tokens);
+        if !expanded.diagnostics.is_empty() {
+            diagnostics.extend(expanded.diagnostics);
+            continue;
+        }
+        let effective_bytes = expanded.source.as_bytes();
+        let parsed = parse(&file, effective_bytes);
+        diagnostics.extend_from_slice(parsed.diagnostics());
+        let lexed = lex(&file, effective_bytes);
+        if lexed.source.is_empty() && !effective_bytes.is_empty() {
             continue;
         }
         let raw = scan_module(&path, lexed.source, &lexed.tokens);
@@ -400,6 +411,7 @@ const fn declaration_kind(kind: TokenKind) -> Option<DeclarationKind> {
         TokenKind::Enum => Some(DeclarationKind::Enum),
         TokenKind::Impl => Some(DeclarationKind::Impl),
         TokenKind::Extern => Some(DeclarationKind::ExternBlock),
+        TokenKind::Macro => Some(DeclarationKind::Macro),
         _ => None,
     }
 }

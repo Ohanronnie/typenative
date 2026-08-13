@@ -440,6 +440,52 @@ function contextless(): void {
 }
 
 #[test]
+fn types_generator_yields_against_declared_iterable_items() {
+    let (program, checked) = checked_with_workspace_standard_library(
+        r#"
+import { AsyncIterable, Iterable } from "std/core";
+function* numbers(): Iterable<i32> {
+  yield 1i32;
+  yield 2i32;
+}
+async function* events(): AsyncIterable<i32> {
+  yield 3i32;
+}
+function invalid(): void {
+  yield 4i32;
+}
+"#,
+    );
+    let diagnostics = checked
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.condition.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| **condition == "TYPE_YIELD_OUTSIDE_GENERATOR")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+    let generators = program
+        .definitions
+        .iter()
+        .filter_map(|definition| match &definition.data {
+            tn_hir::DefinitionData::Function(function) if function.is_generator => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !diagnostics.contains(&"TYPE_INVALID_GENERATOR_RESULT"),
+        "{diagnostics:?} {generators:?}"
+    );
+    assert_eq!(generators.len(), 2);
+    assert!(generators.iter().any(|function| function.is_async));
+}
+
+#[test]
 fn selects_builtin_and_explicit_operator_interfaces() {
     let diagnostics = conditions(
         r"

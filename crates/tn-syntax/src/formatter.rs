@@ -87,6 +87,7 @@ struct Writer {
     line_start: bool,
     pending_space: bool,
     inline_braces: Vec<bool>,
+    placeholder_mode: u8,
 }
 
 impl Writer {
@@ -118,6 +119,16 @@ impl Writer {
                 }
             }
             TokenKind::LeftBrace => {
+                if next == Some(TokenKind::LeftBrace) && self.placeholder_mode == 0 {
+                    self.placeholder_mode = 1;
+                    self.write("{");
+                    return;
+                }
+                if previous == Some(TokenKind::LeftBrace) && self.placeholder_mode == 1 {
+                    self.placeholder_mode = 2;
+                    self.write("{");
+                    return;
+                }
                 let inline = previous == Some(TokenKind::Import);
                 self.inline_braces.push(inline);
                 if inline {
@@ -139,6 +150,16 @@ impl Writer {
                 self.newline();
             }
             TokenKind::RightBrace => {
+                if next == Some(TokenKind::RightBrace) && self.placeholder_mode == 2 {
+                    self.placeholder_mode = 3;
+                    self.write("}");
+                    return;
+                }
+                if previous == Some(TokenKind::RightBrace) && self.placeholder_mode == 3 {
+                    self.placeholder_mode = 0;
+                    self.write("}");
+                    return;
+                }
                 if self.inline_braces.pop().unwrap_or(false) {
                     if previous == Some(TokenKind::LeftBrace) {
                         self.trim_space();
@@ -193,21 +214,42 @@ impl Writer {
                 self.write(":");
                 self.pending_space = true;
             }
-            TokenKind::Dot
+            kind @ (TokenKind::Dot
             | TokenKind::QuestionDot
             | TokenKind::RightParen
-            | TokenKind::RightBracket => {
+            | TokenKind::RightBracket) => {
                 self.trim_space();
                 self.write(text);
+                if kind == TokenKind::RightParen
+                    && matches!(
+                        next,
+                        Some(
+                            TokenKind::Export
+                                | TokenKind::Async
+                                | TokenKind::Unsafe
+                                | TokenKind::Abstract
+                                | TokenKind::Final
+                                | TokenKind::Function
+                                | TokenKind::Struct
+                                | TokenKind::Class
+                                | TokenKind::Interface
+                                | TokenKind::Enum
+                        )
+                    )
+                {
+                    self.newline();
+                }
             }
             TokenKind::LeftParen => {
                 if matches!(
                     previous,
                     Some(
                         TokenKind::If
+                            | TokenKind::Await
                             | TokenKind::While
                             | TokenKind::For
                             | TokenKind::Match
+                            | TokenKind::Macro
                             | TokenKind::Catch
                     )
                 ) {
@@ -228,6 +270,11 @@ impl Writer {
                     self.trim_space();
                 }
                 self.write(text);
+            }
+            TokenKind::Star if previous == Some(TokenKind::Function) => {
+                self.trim_space();
+                self.write("*");
+                self.pending_space = true;
             }
             kind if is_operator(kind) => {
                 self.space();
@@ -396,6 +443,7 @@ fn needs_word_separator(kind: TokenKind) -> bool {
             | TokenKind::Let
             | TokenKind::Lifetime
             | TokenKind::Match
+            | TokenKind::Macro
             | TokenKind::Mod
             | TokenKind::Move
             | TokenKind::Mut
@@ -424,6 +472,7 @@ fn needs_word_separator(kind: TokenKind) -> bool {
             | TokenKind::Using
             | TokenKind::Where
             | TokenKind::While
+            | TokenKind::Yield
     )
 }
 
@@ -548,6 +597,45 @@ function main(): void {
         assert_eq!(
             formatted.output,
             format("nested-generics.tn", formatted.output.as_bytes()).output
+        );
+    }
+
+    #[test]
+    fn formats_generator_markers_yields_and_async_iteration() {
+        let formatted = format(
+            "generators.tn",
+            b"async function*events():AsyncIterable<i32>{yield 1i32;for await(const value of events()){value;}}",
+        );
+        assert!(formatted.is_success(), "{:?}", formatted.diagnostics);
+        assert!(formatted.output.contains("async function* events()"));
+        assert!(formatted.output.contains("yield 1i32;"));
+        assert!(
+            formatted
+                .output
+                .contains("for await (const value of events())")
+        );
+    }
+
+    #[test]
+    fn formats_typed_declaration_macros_without_rewriting_placeholders() {
+        let formatted = format(
+            "macros.tn",
+            b"macro getter(name:identifier,field:identifier,value:type){public {{name}}():{{value}}{return this.{{field}};}} @Expand(getter,getValue,value,i32)struct Counter{public value:i32;}",
+        );
+        assert!(formatted.is_success(), "{:?}", formatted.diagnostics);
+        assert!(formatted.output.contains("{{name}}"));
+        assert!(formatted.output.contains("{{value}}"));
+        assert!(formatted.output.contains("{{field}}"));
+        assert!(
+            formatted
+                .output
+                .contains("@Expand(getter, getValue, value, i32)\nstruct Counter"),
+            "{}",
+            formatted.output
+        );
+        assert_eq!(
+            formatted.output,
+            format("macros.tn", formatted.output.as_bytes()).output
         );
     }
 }

@@ -1,0 +1,45 @@
+{
+  "generatedAt": "2026-08-13T13:13:41.855Z",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "v24.14.0",
+    "fixtureBytes": 1141,
+    "iterations": 20,
+    "samples": 5
+  },
+  "results": [
+    {
+      "name": "TypeNative executable (process wall)",
+      "medianMilliseconds": 4.2985,
+      "minMilliseconds": 3.796167,
+      "maxMilliseconds": 5.029333,
+      "throughputMiBPerSecond": 5.0628935443505,
+      "checksum": "validated-by-exit-status"
+    },
+    {
+      "name": "TypeNative .node addon",
+      "medianMilliseconds": 0.166916,
+      "minMilliseconds": 0.159667,
+      "maxMilliseconds": 0.21725,
+      "throughputMiBPerSecond": 130.38203587667226,
+      "checksum": "33820"
+    },
+    {
+      "name": "Node.js handwritten parser",
+      "medianMilliseconds": 0.429291,
+      "minMilliseconds": 0.376833,
+      "maxMilliseconds": 2.932167,
+      "throughputMiBPerSecond": 50.69486176134749,
+      "checksum": "33820"
+    },
+    {
+      "name": "Node.js JSON.parse",
+      "medianMilliseconds": 0.084083,
+      "minMilliseconds": 0.08075,
+      "maxMilliseconds": 0.131958,
+      "throughputMiBPerSecond": 258.8257781048562,
+      "checksum": "not-comparable"
+    }
+  ]
+}

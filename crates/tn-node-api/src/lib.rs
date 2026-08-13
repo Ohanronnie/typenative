@@ -43,6 +43,7 @@ pub fn typescript_type(program: &Program, ty: &Type, result: bool) -> Result<Str
         {
             Ok("string".into())
         }
+        Type::Reference { referent, .. } => typescript_type(program, referent, result),
         Type::Optional(inner) => Ok(format!(
             "{} | undefined",
             typescript_type(program, inner, result)?
@@ -62,7 +63,7 @@ pub fn typescript_type(program: &Program, ty: &Type, result: bool) -> Result<Str
                 .and_then(|declaration| declaration.name.as_deref());
             if name == Some("Bytes") {
                 Ok("Uint8Array".into())
-            } else if name == Some("Vec") && arguments.len() == 1 {
+            } else if name == Some("Array") && arguments.len() == 1 {
                 Ok(format!(
                     "Array<{}>",
                     typescript_type(program, &arguments[0], false)?

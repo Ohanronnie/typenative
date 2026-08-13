@@ -13,6 +13,21 @@ export interface Error {
 export interface AsyncDisposable {
   move async dispose(): Promise<void, never>;
 }
+export interface Iterator<Item> {
+  mut next(): Item | undefined;
+}
+export interface IntoIterator<Item, Iter extends Iterator<Item> > {
+  move intoIterator(): Iter;
+}
+export interface Iterable<Item> {
+  mut next(): Item | undefined;
+}
+export interface AsyncIterator<Item> {
+  mut async next(): Promise<Item | undefined, never>;
+}
+export interface AsyncIterable<Item> {
+  mut async next(): Promise<Item | undefined, never>;
+}
 export struct ParseIntegerError {
   public offset: usize;
 }

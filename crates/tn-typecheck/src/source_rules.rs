@@ -193,6 +193,7 @@ fn c_abi_type(program: &Program, ty: &Type) -> bool {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_declaration_attributes(
     program: &Program,
     module: &tn_hir::Module,
@@ -202,7 +203,18 @@ fn check_declaration_attributes(
         let Some(definition) = program.definition(declaration.id) else {
             continue;
         };
+        let mut seen = BTreeMap::<&str, &tn_hir::Attribute>::new();
         for attribute in &declaration.attributes {
+            if attribute.name != "Conform"
+                && seen.insert(attribute.name.as_str(), attribute).is_some()
+            {
+                diagnostics.push(diag(
+                    "TYPE_DUPLICATE_ATTRIBUTE",
+                    format!("attribute `@{}` is declared more than once", attribute.name),
+                    &attribute.span,
+                    "remove the duplicate compiler-owned attribute",
+                ));
+            }
             let valid = match attribute.name.as_str() {
                 "Test" => match &definition.data {
                     DefinitionData::Function(function) => {
@@ -255,6 +267,7 @@ fn check_declaration_attributes(
                     _ => false,
                 },
                 "Inline" => matches!(definition.data, DefinitionData::Function(_)),
+                "Expand" => false,
                 _ => true,
             };
             if !valid {
@@ -282,6 +295,28 @@ fn check_declaration_attributes(
                     "`@Test` does not accept arguments",
                     &attribute.span,
                     "remove the attribute arguments",
+                ));
+            }
+            if matches!(
+                attribute.name.as_str(),
+                "Copy" | "Clone" | "Drop" | "Send" | "Sync" | "Sealed" | "Inline"
+            ) && !attribute.arguments.is_empty()
+            {
+                diagnostics.push(diag(
+                    "TYPE_INVALID_ATTRIBUTE_ARGUMENTS",
+                    format!("`@{}` does not accept arguments", attribute.name),
+                    &attribute.span,
+                    "remove the attribute arguments",
+                ));
+            }
+            if attribute.name == "Layout"
+                && !matches!(attribute.arguments.as_slice(), [layout] if layout == "C" || layout == "u8")
+            {
+                diagnostics.push(diag(
+                    "TYPE_INVALID_LAYOUT_ATTRIBUTE",
+                    "`@Layout` accepts exactly `\"C\"` or `\"u8\"`",
+                    &attribute.span,
+                    "choose a supported stable layout",
                 ));
             }
         }
@@ -330,6 +365,7 @@ fn check_attributes(module: &tn_hir::Module, tokens: &[Token], diagnostics: &mut
         "Intrinsic",
         "Inline",
         "Test",
+        "Expand",
     ];
     for (index, token) in significant.iter().enumerate() {
         if token.kind != TokenKind::At {

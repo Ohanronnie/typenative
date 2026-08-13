@@ -131,7 +131,7 @@ fn lower_one(
             result => result.clone(),
         }
     } else {
-        function_result
+        function_result.clone()
     };
     let mut generics = function
         .generics
@@ -168,6 +168,13 @@ fn lower_one(
         loop_targets: Vec::new(),
         error_contexts: Vec::new(),
         ownership_facts: ownership_facts.clone(),
+        generator_item_type: function
+            .is_generator
+            .then(|| generator_item_type(program, &function_result, function.is_async))
+            .flatten(),
+        generator_async: function.is_async,
+        generator_buffer: None,
+        generator_finish_block: None,
     };
     let argument_count = function.parameters.len() + usize::from(member.is_some());
     let mut argument_locals = hir.locals.iter().take(argument_count).collect::<Vec<_>>();
@@ -219,6 +226,26 @@ fn specialize_owner_result(program: &Program, declaration: DeclarationId, result
     result
 }
 
+fn generator_item_type(program: &Program, result: &Type, asynchronous: bool) -> Option<Type> {
+    let expected = if asynchronous {
+        "AsyncIterable"
+    } else {
+        "Iterable"
+    };
+    let (Type::Nominal(declaration, arguments) | Type::DynamicInterface(declaration, arguments)) =
+        result
+    else {
+        return None;
+    };
+    (program
+        .graph
+        .declaration(*declaration)
+        .and_then(|declaration| declaration.name.as_deref())
+        == Some(expected))
+    .then(|| arguments.first().cloned())
+    .flatten()
+}
+
 #[derive(Default)]
 struct OpenBlock {
     statements: Vec<Statement>,
@@ -247,11 +274,205 @@ struct OwnershipMirLowerer<'a> {
     loop_targets: Vec<(BasicBlockId, BasicBlockId)>,
     error_contexts: Vec<ErrorContext>,
     ownership_facts: OwnershipFacts,
+    generator_item_type: Option<Type>,
+    generator_async: bool,
+    generator_buffer: Option<LocalId>,
+    generator_finish_block: Option<usize>,
 }
 
 impl OwnershipMirLowerer<'_> {
     fn lower(&mut self) {
+        if self.generator_item_type.is_some() {
+            self.start_generator();
+        }
         self.lower_sequence(None);
+        if let Some(finish) = self.generator_finish_block {
+            if self.current != finish && self.blocks[self.current].terminator.is_none() {
+                self.terminate(
+                    TerminatorKind::Goto(Self::block_id(finish)),
+                    self.locals.first().map_or_else(
+                        || SourceSpan::new("<generator>", 0..0, ""),
+                        |local| local.span.clone(),
+                    ),
+                );
+            }
+            self.current = finish;
+            self.finish_generator();
+        }
+    }
+
+    fn start_generator(&mut self) {
+        let Some(item_type) = self.generator_item_type.clone() else {
+            return;
+        };
+        let Some(token) = self.tokens.first().copied() else {
+            return;
+        };
+        let Some(array) = self.nominal_named("Array") else {
+            return;
+        };
+        let Some(options) = self.nominal_named("ArrayOptions") else {
+            return;
+        };
+        let array_type = Type::Nominal(array, vec![item_type.clone()]);
+        let options_type = Type::Nominal(options, Vec::new());
+        let buffer = self.add_local(
+            "$generator_buffer".into(),
+            array_type.clone(),
+            true,
+            false,
+            self.span(token),
+        );
+        self.generator_buffer = Some(buffer);
+        self.statement(StatementKind::StorageLive(buffer), self.span(token));
+        let options_local = self.temporary(options_type.clone(), self.span(token));
+        self.statement(StatementKind::StorageLive(options_local), self.span(token));
+        self.statement(
+            StatementKind::Assign(
+                Place::local(options_local),
+                Box::new(Rvalue::Aggregate {
+                    ty: options_type.clone(),
+                    variant: None,
+                    fields: vec![Operand::Constant(tn_mir::Constant::Integer {
+                        value: 0,
+                        ty: Type::Primitive(PrimitiveType::Usize),
+                    })],
+                    field_types: vec![Type::Primitive(PrimitiveType::Usize)],
+                }),
+            ),
+            self.span(token),
+        );
+        let Some(DefinitionData::Class { constructor, .. }) = self
+            .program
+            .definition(array)
+            .map(|definition| &definition.data)
+        else {
+            return;
+        };
+        let Some(constructor) = constructor else {
+            return;
+        };
+        let signature = tn_hir::FunctionType {
+            parameters: vec![options_type],
+            result: Box::new(array_type.clone()),
+            effects: constructor.function.effects.clone(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: constructor.function.is_unsafe,
+        };
+        let function = Operand::Constant(tn_mir::Constant::Constructor {
+            owner: array,
+            member: Some(constructor.id),
+            ty: Type::Function(signature.clone()),
+        });
+        if let Some((value, _)) = self.emit_call(
+            function,
+            None,
+            &signature,
+            vec![Operand::Move(Place::local(options_local))],
+            0,
+        ) {
+            self.statement(
+                StatementKind::Assign(Place::local(buffer), Box::new(Rvalue::Use(value))),
+                self.span(token),
+            );
+        }
+        self.generator_finish_block = Some(self.new_block());
+    }
+
+    fn finish_generator(&mut self) {
+        let Some(item_type) = self.generator_item_type.clone() else {
+            return;
+        };
+        let Some(token) = self.tokens.first().copied() else {
+            self.terminate(
+                TerminatorKind::Unreachable,
+                SourceSpan::new("<generator>", 0..0, ""),
+            );
+            return;
+        };
+        let Some(buffer) = self.generator_buffer else {
+            self.terminate(TerminatorKind::Unreachable, self.span(token));
+            return;
+        };
+        let iterator_name = if self.generator_async {
+            "AsyncArrayIterator"
+        } else {
+            "ArrayIterator"
+        };
+        let Some(iterator) = self.nominal_named(iterator_name) else {
+            self.terminate(TerminatorKind::Unreachable, self.span(token));
+            return;
+        };
+        let iterator_type = Type::Nominal(iterator, vec![item_type.clone()]);
+        let Some(DefinitionData::Class { constructor, .. }) = self
+            .program
+            .definition(iterator)
+            .map(|definition| &definition.data)
+        else {
+            self.terminate(TerminatorKind::Unreachable, self.span(token));
+            return;
+        };
+        let Some(constructor) = constructor else {
+            self.terminate(TerminatorKind::Unreachable, self.span(token));
+            return;
+        };
+        let array_type = self.locals[buffer.0 as usize].ty.clone();
+        let signature = tn_hir::FunctionType {
+            parameters: vec![array_type],
+            result: Box::new(iterator_type.clone()),
+            effects: constructor.function.effects.clone(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: constructor.function.is_unsafe,
+        };
+        let function = Operand::Constant(tn_mir::Constant::Constructor {
+            owner: iterator,
+            member: Some(constructor.id),
+            ty: Type::Function(signature.clone()),
+        });
+        let Some((iterator_value, _)) = self.emit_call(
+            function,
+            None,
+            &signature,
+            vec![Operand::Move(Place::local(buffer))],
+            0,
+        ) else {
+            self.terminate(TerminatorKind::Unreachable, self.span(token));
+            return;
+        };
+        let result = self.temporary(self.return_type.clone(), self.span(token));
+        self.statement(StatementKind::StorageLive(result), self.span(token));
+        self.statement(
+            StatementKind::Assign(
+                Place::local(result),
+                Box::new(Rvalue::Cast {
+                    operand: iterator_value,
+                    ty: self.return_type.clone(),
+                    kind: CastKind::InterfaceCoercion,
+                }),
+            ),
+            self.span(token),
+        );
+        self.terminate(
+            TerminatorKind::Return(Some(Operand::Move(Place::local(result)))),
+            self.span(token),
+        );
+    }
+
+    fn nominal_named(&self, name: &str) -> Option<DeclarationId> {
+        self.program
+            .graph
+            .modules
+            .iter()
+            .flat_map(|module| &module.declarations)
+            .find_map(|declaration| {
+                (matches!(
+                    declaration.kind,
+                    tn_hir::DeclarationKind::Class | tn_hir::DeclarationKind::Struct
+                ) && declaration.name.as_deref() == Some(name))
+                .then_some(declaration.id)
+            })
     }
 
     fn lower_sequence(&mut self, end: Option<TokenKind>) {
@@ -284,6 +505,7 @@ impl OwnershipMirLowerer<'_> {
             Some(TokenKind::If) => self.lower_if(),
             Some(TokenKind::While) => self.lower_while(),
             Some(TokenKind::For) => self.lower_for(),
+            Some(TokenKind::Yield) => self.lower_yield(),
             Some(TokenKind::Switch | TokenKind::Identifier | TokenKind::This) => {
                 self.lower_expression_statement();
             }
@@ -324,6 +546,73 @@ impl OwnershipMirLowerer<'_> {
             Some(_) => self.index += 1,
             None => {}
         }
+    }
+
+    fn lower_yield(&mut self) {
+        let token = self.tokens[self.index];
+        let end = self.statement_end(self.index);
+        let Some(item_type) = self.generator_item_type.clone() else {
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        };
+        let Some(buffer) = self.generator_buffer else {
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        };
+        let Some((value, _value_type)) =
+            self.lower_expression_range(self.index + 1, end, Some(&item_type))
+        else {
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        };
+        let Type::Nominal(array, arguments) = self.locals[buffer.0 as usize].ty.clone() else {
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        };
+        let Some(DefinitionData::Class { methods, .. }) = self
+            .program
+            .definition(array)
+            .map(|definition| &definition.data)
+        else {
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        };
+        let Some(push) = methods.iter().find(|method| method.name == "push") else {
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        };
+        let signature = tn_hir::FunctionType {
+            parameters: vec![arguments.first().cloned().unwrap_or(item_type)],
+            result: Box::new(Type::Primitive(PrimitiveType::Void)),
+            effects: push.function.effects.clone(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: push.function.is_unsafe,
+        };
+        let function_type = Type::Function(signature.clone());
+        let method = self.temporary(function_type.clone(), self.span(token));
+        self.statement(StatementKind::StorageLive(method), self.span(token));
+        self.statement(
+            StatementKind::Assign(
+                Place::local(method),
+                Box::new(Rvalue::DirectMethod {
+                    object: Place::local(buffer),
+                    implementation: array,
+                    member: push.id,
+                    receiver: ReceiverMode::Mutable,
+                    ty: function_type,
+                }),
+            ),
+            self.span(token),
+        );
+        let _ = self.emit_call(
+            Operand::Move(Place::local(method)),
+            Some(Operand::Copy(Place::local(buffer))),
+            &signature,
+            vec![value],
+            self.index,
+        );
+        self.index = end + usize::from(end < self.tokens.len());
     }
 
     fn lower_if(&mut self) {
@@ -432,13 +721,20 @@ impl OwnershipMirLowerer<'_> {
     #[allow(clippy::too_many_lines)]
     fn lower_for(&mut self) {
         let token = self.tokens[self.index];
+        let left_paren = self.index
+            + 1
+            + usize::from(
+                self.tokens
+                    .get(self.index + 1)
+                    .is_some_and(|token| token.kind == TokenKind::Await),
+            );
         let Some(header_end) =
-            self.matching_token(self.index + 1, TokenKind::LeftParen, TokenKind::RightParen)
+            self.matching_token(left_paren, TokenKind::LeftParen, TokenKind::RightParen)
         else {
             self.index += 1;
             return;
         };
-        let binding_index = self.index + 3;
+        let binding_index = left_paren + 2;
         let Some(binding_token) = self.tokens.get(binding_index).copied() else {
             self.index = header_end + 1;
             return;
@@ -600,10 +896,40 @@ impl OwnershipMirLowerer<'_> {
         iterable_type: Type,
         witness: &IterationWitness,
     ) {
+        if let IterationWitness::Generator {
+            item_type,
+            asynchronous,
+        } = witness
+        {
+            self.lower_generator_for(
+                token,
+                binding_token,
+                header_end,
+                iterable_start,
+                iterable,
+                iterable_type,
+                item_type,
+                *asynchronous,
+            );
+            return;
+        }
+        let IterationWitness::Declared {
+            into_iterator_implementation,
+            into_iterator_method,
+            iterator_implementation,
+            next_method: next_member,
+            iterator_type,
+            item_type,
+        } = witness
+        else {
+            self.index = header_end + 1;
+            self.lower_statement();
+            return;
+        };
         let iterable = self.materialize_operand(iterable, iterable_type, token);
         let into_signature = tn_hir::FunctionType {
             parameters: Vec::new(),
-            result: Box::new(witness.iterator_type.clone()),
+            result: Box::new(iterator_type.clone()),
             effects: Vec::new(),
             generics: Vec::new(),
             is_async: false,
@@ -617,8 +943,8 @@ impl OwnershipMirLowerer<'_> {
                 Place::local(into_method),
                 Box::new(Rvalue::DirectMethod {
                     object: iterable.clone(),
-                    implementation: witness.into_iterator_implementation,
-                    member: witness.into_iterator_method,
+                    implementation: *into_iterator_implementation,
+                    member: *into_iterator_method,
                     receiver: ReceiverMode::Move,
                     ty: into_type,
                 }),
@@ -636,10 +962,10 @@ impl OwnershipMirLowerer<'_> {
             self.lower_statement();
             return;
         };
-        let iterator = self.materialize_operand(iterator, witness.iterator_type.clone(), token);
+        let iterator = self.materialize_operand(iterator, iterator_type.clone(), token);
         let binding = self.add_local(
             self.text(binding_token).to_owned(),
-            witness.item_type.clone(),
+            item_type.clone(),
             false,
             false,
             self.span(binding_token),
@@ -654,7 +980,7 @@ impl OwnershipMirLowerer<'_> {
             self.span(token),
         );
         self.current = condition_block;
-        let optional_item = Type::Optional(Box::new(witness.item_type.clone()));
+        let optional_item = Type::Optional(Box::new(item_type.clone()));
         let next_signature = tn_hir::FunctionType {
             parameters: Vec::new(),
             result: Box::new(optional_item.clone()),
@@ -671,8 +997,8 @@ impl OwnershipMirLowerer<'_> {
                 Place::local(next_method),
                 Box::new(Rvalue::DirectMethod {
                     object: iterator.clone(),
-                    implementation: witness.iterator_implementation,
-                    member: witness.next_method,
+                    implementation: *iterator_implementation,
+                    member: *next_member,
                     receiver: ReceiverMode::Mutable,
                     ty: next_type,
                 }),
@@ -706,6 +1032,164 @@ impl OwnershipMirLowerer<'_> {
             self.span(binding_token),
         );
         let mut payload = next;
+        payload.projection.push(tn_mir::Projection::Downcast(1));
+        self.statement(
+            StatementKind::Assign(
+                Place::local(binding),
+                Box::new(Rvalue::Use(Operand::Move(payload))),
+            ),
+            self.span(binding_token),
+        );
+        self.index = header_end + 1;
+        self.loop_targets
+            .push((Self::block_id(condition_block), Self::block_id(exit_block)));
+        self.lower_statement();
+        self.loop_targets.pop();
+        if self.blocks[self.current].terminator.is_none() {
+            self.terminate(
+                TerminatorKind::Goto(Self::block_id(condition_block)),
+                self.span(token),
+            );
+        }
+        self.current = exit_block;
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        clippy::too_many_arguments,
+        clippy::too_many_lines
+    )]
+    fn lower_generator_for(
+        &mut self,
+        token: &Token,
+        binding_token: &Token,
+        header_end: usize,
+        iterable_start: usize,
+        iterable: Operand,
+        iterable_type: Type,
+        item_type: &Type,
+        asynchronous: bool,
+    ) {
+        let Type::DynamicInterface(interface, _) = iterable_type.clone() else {
+            self.index = header_end + 1;
+            self.lower_statement();
+            return;
+        };
+        let Some(DefinitionData::Interface { methods }) = self
+            .program
+            .definition(interface)
+            .map(|definition| &definition.data)
+        else {
+            self.index = header_end + 1;
+            self.lower_statement();
+            return;
+        };
+        let Some(next_member) = methods.iter().find(|method| method.name == "next") else {
+            self.index = header_end + 1;
+            self.lower_statement();
+            return;
+        };
+        let Some(slot) = self.interface_witness_slot(interface, next_member.id) else {
+            self.index = header_end + 1;
+            self.lower_statement();
+            return;
+        };
+        let iterable = self.materialize_operand(iterable, iterable_type.clone(), token);
+        let binding = self.add_local(
+            self.text(binding_token).to_owned(),
+            item_type.clone(),
+            false,
+            false,
+            self.span(binding_token),
+        );
+        self.bind_hir_local(binding_token, binding);
+        let condition_block = self.new_block();
+        let resume_block = self.new_block();
+        let body_block = self.new_block();
+        let exit_block = self.new_block();
+        self.terminate(
+            TerminatorKind::Goto(Self::block_id(condition_block)),
+            self.span(token),
+        );
+        self.current = condition_block;
+        let optional_item = Type::Optional(Box::new(item_type.clone()));
+        let next_result = if asynchronous {
+            Type::Promise {
+                result: Box::new(optional_item.clone()),
+                effects: Vec::new(),
+            }
+        } else {
+            optional_item.clone()
+        };
+        let next_signature = tn_hir::FunctionType {
+            parameters: Vec::new(),
+            result: Box::new(next_result.clone()),
+            effects: Vec::new(),
+            generics: Vec::new(),
+            is_async: asynchronous,
+            is_unsafe: next_member.function.is_unsafe,
+        };
+        let next_type = Type::Function(next_signature.clone());
+        let next_method = self.temporary(next_type.clone(), self.span(token));
+        self.statement(StatementKind::StorageLive(next_method), self.span(token));
+        self.statement(
+            StatementKind::Assign(
+                Place::local(next_method),
+                Box::new(Rvalue::WitnessLookup {
+                    object: iterable.clone(),
+                    interface,
+                    slot,
+                    receiver: ReceiverMode::Mutable,
+                    ty: next_type,
+                }),
+            ),
+            self.span(token),
+        );
+        let Some((next, _)) = self.emit_call(
+            Operand::Move(Place::local(next_method)),
+            Some(Operand::Copy(iterable.clone())),
+            &next_signature,
+            Vec::new(),
+            iterable_start,
+        ) else {
+            self.index = header_end + 1;
+            self.lower_statement();
+            return;
+        };
+        let next = self.materialize_operand(next, next_result, token);
+        let optional = if asynchronous {
+            let value = self.temporary(optional_item.clone(), self.span(token));
+            self.statement(StatementKind::StorageLive(value), self.span(token));
+            self.terminate(
+                TerminatorKind::Suspend {
+                    value: Operand::Move(next),
+                    destination: Some(Place::local(value)),
+                    error_destination: None,
+                    resume: Self::block_id(resume_block),
+                    error: None,
+                    cancel: Self::block_id(exit_block),
+                },
+                self.span(token),
+            );
+            self.current = resume_block;
+            Place::local(value)
+        } else {
+            next
+        };
+        self.terminate(
+            TerminatorKind::Switch {
+                value: Operand::Copy(optional.clone()),
+                targets: vec![(1, Self::block_id(body_block))],
+                otherwise: Self::block_id(exit_block),
+            },
+            self.span(token),
+        );
+        self.current = body_block;
+        self.statement(
+            StatementKind::StorageLive(binding),
+            self.span(binding_token),
+        );
+        let mut payload = optional;
         payload.projection.push(tn_mir::Projection::Downcast(1));
         self.statement(
             StatementKind::Assign(
@@ -1376,6 +1860,14 @@ impl OwnershipMirLowerer<'_> {
     fn lower_return(&mut self) {
         let token = self.tokens[self.index];
         let end = self.statement_end(self.index);
+        if let Some(finish) = self.generator_finish_block {
+            self.terminate(
+                TerminatorKind::Goto(Self::block_id(finish)),
+                self.span(token),
+            );
+            self.index = end + usize::from(end < self.tokens.len());
+            return;
+        }
         let expected = self.return_type.clone();
         let lowered = self.lower_expression_range(self.index + 1, end, Some(&expected));
         let mut operand = lowered.as_ref().map(|(operand, _)| operand.clone());
@@ -2547,6 +3039,10 @@ impl OwnershipMirLowerer<'_> {
             loop_targets: std::mem::take(&mut self.loop_targets),
             error_contexts: std::mem::take(&mut self.error_contexts),
             ownership_facts: self.ownership_facts.clone(),
+            generator_item_type: self.generator_item_type.clone(),
+            generator_async: self.generator_async,
+            generator_buffer: self.generator_buffer,
+            generator_finish_block: self.generator_finish_block,
         };
         let lowered = nested.lower_expression_range(0, expression_end, expected);
         self.locals = nested.locals;
@@ -2560,6 +3056,10 @@ impl OwnershipMirLowerer<'_> {
         self.next_region = nested.next_region;
         self.loop_targets = nested.loop_targets;
         self.error_contexts = nested.error_contexts;
+        self.generator_item_type = nested.generator_item_type;
+        self.generator_async = nested.generator_async;
+        self.generator_buffer = nested.generator_buffer;
+        self.generator_finish_block = nested.generator_finish_block;
         lowered
     }
 
@@ -2650,6 +3150,10 @@ impl OwnershipMirLowerer<'_> {
             loop_targets: Vec::new(),
             error_contexts: Vec::new(),
             ownership_facts: self.ownership_facts.clone(),
+            generator_item_type: None,
+            generator_async: false,
+            generator_buffer: None,
+            generator_finish_block: None,
         };
         for capture in &closure.captures {
             let local = nested.add_local(

@@ -59,6 +59,7 @@ function caller(value: string): void {
   move value;
   value;
 }
+
 ",
     )
     .expect("semantic fixture");
@@ -85,6 +86,49 @@ function caller(value: string): void {
     assert!(conditions.contains(&"TYPE_MISSING_TRY".into()));
     assert!(conditions.contains(&"TYPE_AWAIT_OUTSIDE_ASYNC".into()));
     assert!(conditions.contains(&"OWNERSHIP_USE_AFTER_MOVE".into()));
+}
+
+#[test]
+fn lint_runs_canonical_sources_and_reports_hygiene_warnings() {
+    let canonical = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args(["lint", "../../validation/generators/main.tn", "--json"])
+        .output()
+        .expect("tn lint canonical source runs");
+    assert!(
+        canonical.status.success(),
+        "{}",
+        String::from_utf8_lossy(&canonical.stderr)
+    );
+    assert!(canonical.stdout.is_empty());
+
+    let directory = tempfile::tempdir().expect("temporary lint project");
+    let source = directory.path().join("main.tn");
+    std::fs::write(
+        &source,
+        "import { Range } from \"std/core\";\nfunction main(): void { }  \n",
+    )
+    .expect("lint source fixture");
+    let output = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args([
+            "lint",
+            source.to_str().expect("UTF-8 source path"),
+            "--json",
+        ])
+        .output()
+        .expect("tn lint fixture runs");
+    assert!(output.status.success());
+    let conditions = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON lint diagnostic"))
+        .map(|record| {
+            record["condition"]
+                .as_str()
+                .expect("condition string")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert!(conditions.contains(&"LINT_TRAILING_WHITESPACE".into()));
+    assert!(conditions.contains(&"LINT_UNUSED_IMPORT".into()));
 }
 
 #[test]

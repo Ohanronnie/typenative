@@ -39,6 +39,7 @@ ast_node!(InterfaceDeclaration, SyntaxKind::INTERFACE_DECLARATION);
 ast_node!(EnumDeclaration, SyntaxKind::ENUM_DECLARATION);
 ast_node!(ImplDeclaration, SyntaxKind::IMPL_DECLARATION);
 ast_node!(ExternBlock, SyntaxKind::EXTERN_BLOCK);
+ast_node!(MacroDeclaration, SyntaxKind::MACRO_DECLARATION);
 ast_node!(FieldDeclaration, SyntaxKind::FIELD_DECLARATION);
 ast_node!(MethodDeclaration, SyntaxKind::METHOD_DECLARATION);
 ast_node!(ConstructorDeclaration, SyntaxKind::CONSTRUCTOR_DECLARATION);
@@ -71,6 +72,7 @@ impl SourceFile {
                     | SyntaxKind::ENUM_DECLARATION
                     | SyntaxKind::IMPL_DECLARATION
                     | SyntaxKind::EXTERN_BLOCK
+                    | SyntaxKind::MACRO_DECLARATION
             )
         })
     }

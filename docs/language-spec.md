@@ -68,7 +68,7 @@ declaration       = const_declaration | static_declaration
                   | function_declaration | type_alias_declaration
                   | struct_declaration | class_declaration
                   | interface_declaration | enum_declaration
-                  | extern_block ;
+                  | extern_block | macro_declaration ;
 
 attribute         = "@" attribute_name [ "(" [ attribute_arguments ] ")" ] ;
 attribute_name    = identifier | "export" ;
@@ -120,6 +120,11 @@ enum_variant       = identifier
 extern_block       = "extern" string_literal "{" { extern_function } "}" ;
 extern_function    = { attribute } "function" identifier
                      extern_parameter_list ":" type ";" ;
+macro_declaration  = "macro" identifier "(" [ macro_parameters ] ")"
+                     "{" declaration_template "}" ;
+macro_parameters   = macro_parameter { "," macro_parameter } [ "," ] ;
+macro_parameter    = identifier ":" ( "identifier" | "type" | "literal" ) ;
+declaration_template = lossless_token_tree ;
 
 field_declaration  = [ "static" [ "mut" ] ] [ "readonly" ] identifier
                      [ "?" ] ":" type [ "=" expression ] ";" ;
@@ -469,10 +474,27 @@ Borrowed outputs are rejected; class wrappers run `Drop` exactly once.
 
 Compiler-owned attributes are `@Copy`, `@Clone`, `@Drop`, `@Send`, `@Sync`,
 `@Conform`, `@Sealed`, `@Layout("C")`, `@Export`, `@Intrinsic`, `@Inline`, and
-`@Test`. Unknown or incorrectly targeted attributes are errors. Typed declaration
-macros may expand only deterministic AST-level declarations in a sandbox with
-no filesystem, network, environment, or unsafe ABI bypass. Expanded code goes
-through ordinary name, type, ownership, effect, and ABI checks.
+`@Test`. Unknown or incorrectly targeted attributes are errors. `macro` declares
+a local, typed declaration template and `@Expand(name, ...)` applies it to a
+struct, class, interface, or enum. The three argument categories are
+`identifier`, `type`, and `literal`; placeholders use `{{parameter}}` inside the
+template. A template may add members and target-level conformance attributes.
+Expansion is deterministic and sandboxed: it has no filesystem, network,
+environment, clock, randomness, native ABI, or ownership-marker access. The
+expanded source is parsed and then goes through ordinary name, type, ownership,
+effect, unsafe, and ABI checks. Macro diagnostics point to the original
+definition or application.
+
+```tn
+macro getter(name: identifier, field: identifier, value: type) {
+  public {{name}}(): {{value}} { return this.{{field}}; }
+}
+
+@Expand(getter, getValue, value, i32)
+struct Counter {
+  public value: i32;
+}
+```
 
 ```tn
 @Layout("C")
@@ -505,7 +527,7 @@ uses fallible `std/io` writers.
 Default layouts are compiler-private. `@Layout("C")` fixes target C field order
 and alignment; packed fields require explicit unaligned operations. The only
 supported target is `aarch64-apple-darwin`. The public command is `tn` with
-`build`, `run`, `check`, `test`, `fmt`, `doc`, and `lsp` subcommands. Projects
+`build`, `run`, `check`, `lint`, `test`, `fmt`, `doc`, and `lsp` subcommands. Projects
 use `typenative.json` and have no package-registry or dependency fields.
 
 An executable has exactly one safe synchronous `main(): void` or `main(): i32`,

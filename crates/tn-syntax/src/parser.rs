@@ -22,6 +22,7 @@ impl SyntaxKind {
     pub const ENUM_DECLARATION: Self = Self(1_011);
     pub const IMPL_DECLARATION: Self = Self(1_012);
     pub const EXTERN_BLOCK: Self = Self(1_013);
+    pub const MACRO_DECLARATION: Self = Self(1_030);
     pub const FIELD_DECLARATION: Self = Self(1_014);
     pub const METHOD_DECLARATION: Self = Self(1_015);
     pub const CONSTRUCTOR_DECLARATION: Self = Self(1_016);
@@ -269,6 +270,7 @@ impl Parser<'_, '_> {
                 self.excluded_construct(&name);
             }
             Some(TokenKind::Extern) => self.extern_block(),
+            Some(TokenKind::Macro) => self.macro_declaration(),
             _ => self.error_and_recover(
                 "SYNTAX_EXPECTED_DECLARATION",
                 "expected a declaration",
@@ -286,6 +288,42 @@ impl Parser<'_, '_> {
                 ],
             ),
         }
+    }
+
+    fn macro_declaration(&mut self) {
+        self.start(SyntaxKind::MACRO_DECLARATION);
+        self.expect(TokenKind::Macro);
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::LeftParen);
+        if !self.at(TokenKind::RightParen) {
+            loop {
+                self.expect(TokenKind::Identifier);
+                self.expect(TokenKind::Colon);
+                if !self.eat(TokenKind::Identifier) {
+                    self.expect(TokenKind::Type);
+                }
+                if !self.eat(TokenKind::Comma) || self.at(TokenKind::RightParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RightParen);
+        self.expect(TokenKind::LeftBrace);
+        let mut depth = 1_u32;
+        while let Some(kind) = self.current() {
+            self.bump();
+            match kind {
+                TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.finish();
     }
 
     fn const_declaration(&mut self) {
@@ -330,6 +368,7 @@ impl Parser<'_, '_> {
         self.eat(TokenKind::Unsafe);
         self.eat(TokenKind::Async);
         self.expect(TokenKind::Function);
+        self.eat(TokenKind::Star);
         self.expect(TokenKind::Identifier);
         self.generic_parameters();
         self.parameter_list();
@@ -846,6 +885,7 @@ impl Parser<'_, '_> {
         self.finish();
     }
 
+    #[allow(clippy::too_many_lines)]
     fn statement(&mut self) {
         self.start(SyntaxKind::STATEMENT);
         match self.current() {
@@ -860,7 +900,7 @@ impl Parser<'_, '_> {
                 self.expression();
                 self.expect(TokenKind::Semicolon);
             }
-            Some(TokenKind::Return) => {
+            Some(TokenKind::Return | TokenKind::Yield) => {
                 self.bump();
                 if !self.at(TokenKind::Semicolon) {
                     self.expression();
@@ -887,6 +927,7 @@ impl Parser<'_, '_> {
             }
             Some(TokenKind::For) => {
                 self.bump();
+                self.eat(TokenKind::Await);
                 self.expect(TokenKind::LeftParen);
                 if !self.eat(TokenKind::Const) {
                     self.expect(TokenKind::Let);
@@ -1587,6 +1628,15 @@ function main(): void {
         assert_parses(
             "function tuple(value: i32): (i32, bool) { return (value, true); }\n\
              function closure(): (i32, bool) => i32 { return (value: i32, flag: bool): i32 => value; }\n",
+        );
+    }
+
+    #[test]
+    fn parses_sync_and_async_generator_syntax() {
+        assert_parses(
+            "function* numbers(): Iterable<i32> { yield 1i32; }\n\
+             async function* events(): AsyncIterable<i32> { yield 2i32; }\n\
+             async function consume(values: AsyncIterable<i32>): Promise<void, never> { for await (const value of values) { value; } }\n",
         );
     }
 

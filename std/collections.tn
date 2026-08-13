@@ -1,5 +1,5 @@
 import { AllocError, rawAlloc, rawFree } from "std/alloc";
-import { Drop } from "std/core";
+import { AsyncIterable, Drop, IntoIterator, Iterable, Iterator } from "std/core";
 
 extern "C" {
   function tn_null_pointer(): * mut u8;
@@ -28,41 +28,44 @@ export interface Equal<Rhs> {
 }
 export interface Ord {
 }
-export interface Iterator<Item> {
-  mut next(): Item | undefined;
-}
-export interface IntoIterator<Item, Iter extends Iterator<Item> > {
-  move intoIterator(): Iter;
-}
-@Intrinsic("size_of")function sizeOf<T>(): usize {
+@Intrinsic("size_of")
+function sizeOf<T>(): usize {
   return 0usize;
 }
-@Intrinsic("is_string")function isString<T>(): bool {
+@Intrinsic("is_string")
+function isString<T>(): bool {
   return false;
 }
-@Intrinsic("is_copy")function isCopy<T>(): bool {
+@Intrinsic("is_copy")
+function isCopy<T>(): bool {
   return false;
 }
-@Intrinsic("element_initialized")function elementInitialized(pointer: * const u8, index: usize): bool {
+@Intrinsic("element_initialized")
+function elementInitialized(pointer: * const u8, index: usize): bool {
   return false;
 }
-@Intrinsic("move_element")function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
+@Intrinsic("move_element")
+function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
   unsafe {
     return * pointer;
   }
 }
-@Intrinsic("store_element")function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
+@Intrinsic("store_element")
+function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
   return false;
 }
-@Intrinsic("drop_initialized_elements")function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
+@Intrinsic("drop_initialized_elements")
+function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
   return false;
 }
-@Intrinsic("borrow_element")function borrowElement<T>(pointer: * const T, index: usize): & T {
+@Intrinsic("borrow_element")
+function borrowElement<T>(pointer: * const T, index: usize): & T {
   unsafe {
     return & * pointer;
   }
 }
-@Intrinsic("slice_from_raw_parts")function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
+@Intrinsic("slice_from_raw_parts")
+function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
   unsafe {
     return & *(pointer as * const[T]);
   }
@@ -76,7 +79,8 @@ export struct ArrayOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class Array<T> {
+@Conform(IntoIterator)
+export class Array<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -297,7 +301,8 @@ export struct ArrayOptions {
     return new ArrayIterator<T>(move this);
   }
 }
-@Conform(Iterator)export class ArrayIterator<T> {
+@Conform(Iterator, Iterable)
+export class ArrayIterator<T> {
   private collection: Array<T>;
   private index: usize;
   public constructor(collection: Array<T >) {
@@ -313,11 +318,29 @@ export struct ArrayOptions {
     return output;
   }
 }
+@Conform(AsyncIterable)
+export class AsyncArrayIterator<T> {
+  private collection: Array<T>;
+  private index: usize;
+  public constructor(collection: Array<T >) {
+    this.collection = move collection;
+    this.index = 0usize;
+  }
+  mut async next(): Promise<T | undefined, never> {
+    if (this.index >= this.collection.length) {
+      return undefined;
+    }
+    const output = this.collection.get(this.index);
+    this.index = this.index + 1usize;
+    return output;
+  }
+}
 export struct QueueOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class Queue<T> {
+@Conform(IntoIterator)
+export class Queue<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -491,7 +514,8 @@ export struct QueueOptions {
     return new QueueIterator<T>(move this);
   }
 }
-@Conform(Iterator)export class QueueIterator<T> {
+@Conform(Iterator)
+export class QueueIterator<T> {
   private collection: Queue<T>;
   public constructor(collection: Queue<T >) {
     this.collection = move collection;
@@ -504,7 +528,8 @@ export struct DequeOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class Deque<T> {
+@Conform(IntoIterator)
+export class Deque<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -736,7 +761,8 @@ export struct DequeOptions {
     return new DequeIterator<T>(move this);
   }
 }
-@Conform(Iterator)export class DequeIterator<T> {
+@Conform(Iterator)
+export class DequeIterator<T> {
   private collection: Deque<T>;
   public constructor(collection: Deque<T >) {
     this.collection = move collection;
@@ -749,7 +775,8 @@ export struct HeapOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class Heap<T extends Ord> {
+@Conform(IntoIterator)
+export class Heap<T extends Ord> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -970,7 +997,8 @@ export struct HeapOptions {
     return new HeapIterator<T>(move this);
   }
 }
-@Conform(Iterator)export class HeapIterator<T extends Ord> {
+@Conform(Iterator)
+export class HeapIterator<T extends Ord> {
   private collection: Heap<T>;
   public constructor(collection: Heap<T >) {
     this.collection = move collection;
@@ -987,7 +1015,8 @@ export struct MapEntry<K, V> {
   public value: V;
 }
 @Drop
-@Conform(IntoIterator)export class Map<K extends Equal<K > & Hash, V> {
+@Conform(IntoIterator)
+export class Map<K extends Equal<K > & Hash, V> {
   private handle: * mut u8;
   public readonly length: usize;
   private keySize: usize;
@@ -1081,7 +1110,8 @@ export struct MapEntry<K, V> {
   }
 }
 @Drop
-@Conform(Iterator)class MapIterator<K extends Equal<K > & Hash, V> {
+@Conform(Iterator)
+class MapIterator<K extends Equal<K > & Hash, V> {
   private handle: * mut u8;
   private keySize: usize;
   private valueSize: usize;
@@ -1120,7 +1150,8 @@ export struct SetOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class Set<T extends Equal<T > & Hash> {
+@Conform(IntoIterator)
+export class Set<T extends Equal<T > & Hash> {
   private handle: * mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
@@ -1195,7 +1226,8 @@ export struct SetOptions {
   }
 }
 @Drop
-@Conform(Iterator)class SetIterator<T extends Equal<T > & Hash> {
+@Conform(Iterator)
+class SetIterator<T extends Equal<T > & Hash> {
   private handle: * mut u8;
   private elementSize: usize;
   private cursor: usize;
@@ -1226,7 +1258,8 @@ export struct OrderedMapOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class OrderedMap<K extends Equal<K > & Hash, V> {
+@Conform(IntoIterator)
+export class OrderedMap<K extends Equal<K > & Hash, V> {
   private handle: * mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
@@ -1320,7 +1353,8 @@ export struct OrderedMapOptions {
   }
 }
 @Drop
-@Conform(Iterator)class OrderedMapIterator<K extends Equal<K > & Hash, V> {
+@Conform(Iterator)
+class OrderedMapIterator<K extends Equal<K > & Hash, V> {
   private handle: * mut u8;
   private keySize: usize;
   private valueSize: usize;
@@ -1359,7 +1393,8 @@ export struct OrderedSetOptions {
   public capacity: usize;
 }
 @Drop
-@Conform(IntoIterator)export class OrderedSet<T extends Equal<T > & Hash> {
+@Conform(IntoIterator)
+export class OrderedSet<T extends Equal<T > & Hash> {
   private handle: * mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
@@ -1434,7 +1469,8 @@ export struct OrderedSetOptions {
   }
 }
 @Drop
-@Conform(Iterator)class OrderedSetIterator<T extends Equal<T > & Hash> {
+@Conform(Iterator)
+class OrderedSetIterator<T extends Equal<T > & Hash> {
   private handle: * mut u8;
   private elementSize: usize;
   private cursor: usize;

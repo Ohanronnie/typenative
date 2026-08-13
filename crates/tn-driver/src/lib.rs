@@ -2,6 +2,7 @@
 
 mod build;
 mod docs;
+mod lint;
 mod lsp;
 mod project;
 mod test;
@@ -12,6 +13,7 @@ use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
 
 pub use build::{BuildError, BuildOutput, build_project, build_project_with_timings};
 pub use docs::generate_docs;
+pub use lint::lint_project;
 pub use lsp::run_lsp;
 pub use project::{
     Emit, LinkConfig, Profile, Project, ProjectConfig, Target, UnsupportedHost, load_project,

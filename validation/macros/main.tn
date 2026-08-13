@@ -1,0 +1,15 @@
+macro getter(name: identifier, field: identifier, value: type) {
+  public {{name}}(): {{value}} {
+    return this.{{field}};
+  }
+}
+@Expand(getter, getValue, value, i32)
+struct Counter {
+  public value: i32;
+}
+function main(): i32 {
+  const counter: Counter = {
+    value: 35i32
+  };
+  return counter.getValue() + 7i32;
+}

@@ -608,7 +608,10 @@ fn check_function(
     for parameter in &function.parameters {
         reject_void(&parameter.ty, &parameter.span, diagnostics);
     }
-    if function.is_async && !matches!(function.result, Type::Promise { .. }) {
+    if function.is_async
+        && !function.is_generator
+        && !matches!(function.result, Type::Promise { .. })
+    {
         declaration_diagnostic(
             program,
             declaration,
@@ -1254,6 +1257,19 @@ fn interface_type_matches(
         (Type::Optional(actual), Type::Optional(expected))
         | (Type::Slice(actual), Type::Slice(expected)) => {
             interface_type_matches(actual, expected, definitions, generic_arguments)
+        }
+        (
+            Type::Promise {
+                result: actual,
+                effects: actual_effects,
+            },
+            Type::Promise {
+                result: expected,
+                effects: expected_effects,
+            },
+        ) => {
+            actual_effects == expected_effects
+                && interface_type_matches(actual, expected, definitions, generic_arguments)
         }
         (Type::Array(actual, actual_length), Type::Array(expected, expected_length))
             if actual_length == expected_length =>

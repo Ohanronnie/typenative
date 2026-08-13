@@ -1,0 +1,30 @@
+interface Send {
+}
+interface Sync {
+}
+@Unknown struct UnknownAttribute {
+}
+@Copy class InvalidCopy {
+}
+@Conform(Send)
+struct MissingUnsafeSend {
+}
+@Conform(Sync)
+struct MissingUnsafeSync {
+}
+@Layout("C")
+class InvalidLayout {
+}
+@Sealed
+@Sealed interface DuplicateSealed {
+}
+@Layout("packed")
+struct InvalidLayoutArgument {
+}
+@Export("too", "many")
+function InvalidExport(): void {
+}
+@Intrinsic("size_of")
+function ForgedIntrinsic<T>(): usize {
+  return 0usize;
+}

@@ -417,6 +417,7 @@ fn type_display(program: &Program, ty: &Type) -> String {
                     })
                     .collect(),
                 is_async: function.is_async,
+                is_generator: false,
                 is_unsafe: function.is_unsafe,
                 body_start: 0,
                 body_end: 0,
