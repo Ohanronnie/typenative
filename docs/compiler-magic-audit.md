@@ -55,7 +55,8 @@ These strings never participate in source resolution: `size_of`, `is_string`,
 `arc_clone`, `string_from_static`, and `slice_from_raw_parts`. Each is produced
 by typed MIR lowering and consumed by LLVM lowering. `string_from_static` is the
 explicit contextual literal-to-owned conversion; `slice_from_raw_parts` is the
-fat borrowed-slice constructor. `borrow_element` derives a typed shared
+fat borrowed-slice constructor used privately by string and collection views.
+`borrow_element` derives a typed shared
 reference from an already bounds-checked standard-library storage slot; it is
 restricted to `std/collections` because safe TypeNative cannot express the
 required raw-pointer offset while preserving the borrow's referent type.

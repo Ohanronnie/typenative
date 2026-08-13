@@ -1,4 +1,4 @@
-import { AllocError, isNull, rawAlloc, rawFree, rawRealloc, tryRawAlloc, tryRawRealloc } from "std/alloc";
+import { AllocError, rawAlloc, rawFree } from "std/alloc";
 import { Drop } from "std/core";
 
 extern "C" {
@@ -53,6 +53,11 @@ export interface Ord {
 @Intrinsic("borrow_element")function borrowElement<T>(pointer: * const T, index: usize): & T {
   unsafe {
     return & * pointer;
+  }
+}
+@Intrinsic("slice_from_raw_parts")function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
+  unsafe {
+    return & *(pointer as * const[T]);
   }
 }
 function allocationError(): AllocError {
@@ -275,11 +280,9 @@ export struct ArrayOptions {
     }
     this.length = 0usize;
   }
-  public slice(): Slice<T> {
+  public slice(): &[T] {
     unsafe {
-      return {
-        pointer: this.pointer as * const T, length: this.length, elementSize: this.elementSize
-      };
+      return sliceFromRawParts<T>(this.pointer as * const T, this.length);
     }
   }
 }
@@ -1225,36 +1228,6 @@ export struct OrderedSetOptions {
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
-    }
-  }
-}
-export struct Slice<T> {
-  public pointer: * const T;
-  public length: usize;
-  public elementSize: usize;
-  public get(index: usize): T | undefined {
-    if (index >= this.length) {
-      return undefined;
-    }
-    unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
-      if (tn_bytes_copy_at(this.pointer as * const u8, this.length * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
-        rawFree(output as * mut u8);
-        return undefined;
-      }
-      const value = * output;
-      rawFree(output as * mut u8);
-      return value;
-    }
-  }
-}
-@Drop export struct FixedArray<T, N> {
-  public pointer: * mut T;
-  public length: usize;
-  public elementSize: usize;
-  mut drop(): void {
-    unsafe {
-      rawFree(this.pointer as * mut u8);
     }
   }
 }

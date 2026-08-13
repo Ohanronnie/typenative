@@ -122,14 +122,11 @@ function main(): i32 {
     }
     {
       const slice = array.slice();
-      if (slice.length !== 1usize) {
-        return 18i32;
+      let observed: i32 = 0i32;
+      for (const item of slice) {
+        observed = observed + item;
       }
-      const output = slice.get(0usize);
-      if (output === undefined) {
-        return 19i32;
-      }
-      sliceOutput = output!;
+      sliceOutput = observed;
     }
     {
       const output = array.pop();

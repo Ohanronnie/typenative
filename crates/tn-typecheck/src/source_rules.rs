@@ -304,7 +304,9 @@ fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
         | "move_element"
         | "store_element"
         | "drop_initialized_elements" => path.ends_with("std/collections.tn"),
-        "slice_from_raw_parts" => path.ends_with("std/string.tn"),
+        "slice_from_raw_parts" => {
+            path.ends_with("std/string.tn") || path.ends_with("std/collections.tn")
+        }
         _ => false,
     }
 }

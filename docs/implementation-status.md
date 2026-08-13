@@ -1074,6 +1074,11 @@ Current evidence:
   access. The private `borrow_element` operation preserves the concrete
   referent through MIR and LLVM; a regression fixes dereference lowering so an
   enclosing boolean expression cannot replace the pointee type;
+- `Array.slice()` now returns the language's native fat `&[T]` view. The old
+  exported raw-pointer `Slice<T>` descriptor and pseudo-generic
+  `FixedArray<T, N>` allocation wrapper are removed: fixed arrays are the
+  built-in `[T; N]` value type, while borrowed slices use bounds-checked native
+  indexing and `for ... of` without exposing element sizes or storage pointers;
 - `Heap<T extends Ord>` is now an ordinary owning min-heap class with private
   storage, automatic growth, `reserve`, `shrinkToFit`, `push`, `peek`, `pop`,
   and `clear`. Copy and non-copy paths preserve initialization state and exact
@@ -1107,9 +1112,8 @@ Remaining scope:
 - Canonicalize `Promise<T, E>`, synchronous `throws`, `T | undefined`, `!`, typed
   `try`/`catch`, direct capability decorators, `@Conform`, `@Drop`, `@Intrinsic`,
   `@Sealed`, `using`, generators, async generators, and typed user macros.
-- Complete the remaining collection surface: fixed arrays and fully opaque
-  borrowed slices; finish collection iteration and borrowing together with the
-  canonical iterator protocol.
+- Finish growable collection iteration and borrowing through the canonical
+  iterator protocol.
 - Remove obsolete `Result`, `Option`, `match`, `impl`, `extension`, `record`,
   `where`, `dyn`, collection, module, and compatibility spellings from every
   compiler layer and fixture.
