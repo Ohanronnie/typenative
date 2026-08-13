@@ -259,6 +259,30 @@ function classes(value: Base): void {
 }
 
 #[test]
+fn readonly_fields_are_mutable_only_through_their_declaring_type() {
+    let diagnostics = conditions(
+        r"
+class Counter {
+  public readonly value: i32;
+  public constructor() { this.value = 0; }
+  public mut increment(): void { this.value = this.value + 1; }
+}
+function invalid(counter: Counter): void {
+  counter.value = 2;
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_READONLY_FIELD_ASSIGNMENT")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn checks_closed_patterns_bindings_guards_and_unreachable_arms() {
     let diagnostics = conditions(
         r"

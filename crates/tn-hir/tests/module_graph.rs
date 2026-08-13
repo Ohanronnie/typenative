@@ -240,6 +240,25 @@ fn rejects_package_specifiers_missing_exports_and_overload_sets() {
 }
 
 #[test]
+fn removed_procedural_queue_api_is_not_importable() {
+    let directory = tempfile::tempdir().expect("temporary module graph");
+    let root = directory.path();
+    let standard_library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
+    write(
+        &root.join("main.tn"),
+        "import { queueAllocate } from \"std/collections\";\nfunction main(): void {}\n",
+    );
+    let error = load_module_graph(root, &root.join("main.tn"), &standard_library)
+        .expect_err("removed procedural queue API must not resolve");
+    assert!(
+        error
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.condition.as_str() == "RESOLVE_MISSING_EXPORT")
+    );
+}
+
+#[test]
 fn retains_interface_and_lifetime_generic_arguments() {
     let directory = tempfile::tempdir().expect("temporary HIR program");
     let root = directory.path();

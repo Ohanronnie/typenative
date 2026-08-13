@@ -2367,7 +2367,7 @@ impl BodyChecker<'_> {
         let Some(right) = right else {
             return value_type(Type::Error);
         };
-        if matches!(
+        let assignment = matches!(
             operator,
             TokenKind::Equal
                 | TokenKind::PlusEqual
@@ -2380,8 +2380,19 @@ impl BodyChecker<'_> {
                 | TokenKind::CaretEqual
                 | TokenKind::ShiftLeftEqual
                 | TokenKind::ShiftRightEqual
-        ) && let Some(place) = left.place.as_deref()
+        );
+        if assignment
+            && let Some(ResolvedValue::Member(member)) = left.resolution.as_ref()
+            && readonly_field_owner(self.program, *member).is_some_and(|owner| owner != self.owner)
         {
+            self.error(
+                "TYPE_READONLY_FIELD_ASSIGNMENT",
+                "readonly fields cannot be assigned outside their declaring type",
+                token,
+                "mutate the value through a declared method",
+            );
+        }
+        if assignment && let Some(place) = left.place.as_deref() {
             self.upgrade_capture(place);
         }
         let operands_match = compatible(self.program, &right.ty, &left.ty)
@@ -4735,6 +4746,20 @@ struct ResolvedMember {
     visibility: Visibility,
     ty: Type,
     callable: Option<CallableIdentity>,
+}
+
+fn readonly_field_owner(program: &Program, member: MemberId) -> Option<DeclarationId> {
+    program.definitions.iter().find_map(|definition| {
+        let (DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. }) =
+            &definition.data
+        else {
+            return None;
+        };
+        fields
+            .iter()
+            .any(|field| field.id == member && field.readonly)
+            .then_some(definition.declaration)
+    })
 }
 
 fn resolve_member(program: &Program, owner: DeclarationId, name: &str) -> Option<ResolvedMember> {

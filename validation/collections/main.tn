@@ -1,4 +1,4 @@
-import { Array, dequeAllocate, dequePop, dequePopBack, dequePush, dequePushFront, heapAllocate, heapPop, heapPush, mapAllocate, mapContains, mapGet, mapInsert, mapLength, mapRemove, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert, queueAllocate, queuePop, queuePush, setAllocate, setContains, setInsert, setLength, setRemove } from "std/collections";
+import { Array, Queue, dequeAllocate, dequePop, dequePopBack, dequePush, dequePushFront, heapAllocate, heapPop, heapPush, mapAllocate, mapContains, mapGet, mapInsert, mapLength, mapRemove, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert, setAllocate, setContains, setInsert, setLength, setRemove } from "std/collections";
 function main(): i32 {
   let key: i32 = 16i32;
   let value: i32 = 42i32;
@@ -9,6 +9,7 @@ function main(): i32 {
   let canonicalArrayPopOutput: i32 = 0i32;
   let canonicalQueuePopOutput: i32 = 0i32;
   let canonicalQueueSecondOutput: i32 = 0i32;
+  let canonicalQueueThirdOutput: i32 = 0i32;
   let canonicalDequePopOutput: i32 = 0i32;
   let canonicalDequeBackOutput: i32 = 0i32;
   let canonicalHeapPopOutput: i32 = 0i32;
@@ -17,7 +18,12 @@ function main(): i32 {
   let array = new Array<i32>({
     capacity: 4usize,
   });
-  let queue = queueAllocate<i32>(4usize, 2usize);
+  let queue = new Queue<i32>({
+    capacity: 2usize,
+  });
+  let textQueue = new Queue<string>({
+    capacity: 1usize,
+  });
   let deque = dequeAllocate<i32>(4usize, 2usize);
   let heap = heapAllocate<i32>(4usize, 2usize);
   let canonical = mapAllocate<i32, i32>(4usize, 4usize);
@@ -27,14 +33,8 @@ function main(): i32 {
   let map = mapAllocate<i32, i32>(4usize, 4usize);
   unsafe {
     array.push(value);
-    {
-      const valueRef = & value;
-      queuePush<i32>( & mut queue, valueRef as * const u8);
-    }
-    {
-      const keyRef = & key;
-      queuePush<i32>( & mut queue, keyRef as * const u8);
-    }
+    queue.push(value);
+    queue.push(key);
     {
       const valueRef = & value;
       dequePush<i32>( & mut deque, valueRef as * const u8);
@@ -105,16 +105,50 @@ function main(): i32 {
       canonicalArrayPopOutput = output!;
     }
     {
-      const outputRef = & mut canonicalQueuePopOutput;
-      if (!queuePop<i32>( & mut queue, outputRef as * mut u8)) {
+      const output = queue.pop();
+      if (output === undefined) {
         return 7i32;
       }
+      canonicalQueuePopOutput = output!;
+    }
+    queue.push(7i32);
+    queue.reserve(6usize);
+    if (queue.capacity<6usize || queue.length !== 2usize) {
+      return 22i32;
     }
     {
-      const outputRef = & mut canonicalQueueSecondOutput;
-      if (!queuePop<i32>( & mut queue, outputRef as * mut u8)) {
+      const output = queue.pop();
+      if (output === undefined) {
         return 12i32;
       }
+      canonicalQueueSecondOutput = output!;
+    }
+    {
+      const output = queue.pop();
+      if (output === undefined) {
+        return 23i32;
+      }
+      canonicalQueueThirdOutput = output!;
+    }
+    queue.shrinkToFit();
+    if (queue.capacity !== 0usize || queue.length !== 0usize) {
+      return 24i32;
+    }
+    textQueue.push("a");
+    textQueue.push("b");
+    {
+      const output = textQueue.pop();
+      if (output === undefined) {
+        return 25i32;
+      }
+      const bytes = output!.bytes();
+      if (bytes[0usize] !== 97u8) {
+        return 26i32;
+      }
+    }
+    textQueue.clear();
+    if (textQueue.length !== 0usize) {
+      return 27i32;
     }
     {
       const outputRef = & mut canonicalDequePopOutput;
@@ -238,6 +272,9 @@ function main(): i32 {
   }
   if (canonicalQueueSecondOutput !== key) {
     return 37i32;
+  }
+  if (canonicalQueueThirdOutput !== 7i32) {
+    return 43i32;
   }
   if (canonicalDequePopOutput !== key) {
     return 38i32;
