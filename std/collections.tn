@@ -608,12 +608,12 @@ export struct DequeOptions {
 export struct MapOptions {
   public capacity: usize;
 }
-@Drop export class Map<K, V> {
-  public handle: * mut u8;
-  public length: usize;
-  public keySize: usize;
-  public valueSize: usize;
-  public capacity: usize;
+@Drop export class Map<K extends Equal<K > & Hash, V> {
+  private handle: * mut u8;
+  public readonly length: usize;
+  private keySize: usize;
+  private valueSize: usize;
+  public readonly capacity: usize;
   public constructor(options: MapOptions) {
     const keySize = sizeOf<K>();
     const valueSize = sizeOf<V>();
@@ -625,18 +625,20 @@ export struct MapOptions {
     if (isString<V>()) {
       stringValues = 1;
     }
-    unsafe {
-      this.handle = tn_map_create_ex(keySize, valueSize, 0, stringKeys, stringValues, options.capacity,);
-    }
+    this.length = 0usize;
     this.keySize = keySize;
     this.valueSize = valueSize;
     this.capacity = options.capacity;
-    this.length = 0;
+    unsafe {
+      this.handle = tn_map_create_ex(keySize, valueSize, 0, stringKeys, stringValues, options.capacity,);
+      this.capacity = tn_map_capacity(this.handle);
+    }
   }
   public mut set(key: K, value: V): bool {
     unsafe {
       const status = tn_map_insert(this.handle,( & key)as * const u8,( & value)as * const u8);
       this.length = tn_map_length(this.handle);
+      this.capacity = tn_map_capacity(this.handle);
       return status === 0;
     }
   }
@@ -669,6 +671,22 @@ export struct MapOptions {
       tn_map_clear(this.handle);
     }
     this.length = 0;
+  }
+  public mut reserve(minimumCapacity: usize): void throws AllocError {
+    unsafe {
+      if (tn_map_reserve(this.handle, minimumCapacity) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
+  }
+  public mut shrinkToFit(): void throws AllocError {
+    unsafe {
+      if (tn_map_shrink_to_fit(this.handle) !== 0i32) {
+        throw allocationError();
+      }
+      this.capacity = tn_map_capacity(this.handle);
+    }
   }
   mut drop(): void {
     unsafe {
@@ -881,61 +899,6 @@ export function heapPeek<T>(heap: & Heap<T>, value: * mut u8): bool {
   }
   unsafe {
     return tn_bytes_copy_at(heap.pointer as * const u8, heap.capacity * heap.elementSize,(heap.length - 1usize) * heap.elementSize, heap.elementSize, value) === 0i32;
-  }
-}
-function mapAllocateRaw<K, V>(keySize: usize, valueSize: usize): Map<K, V> {
-  return new Map<K, V>({
-    capacity: 16,
-  });
-}
-export function mapAllocate<K extends Equal<K > & Hash, V>(keySize: usize, valueSize: usize): Map<K, V> {
-  return mapAllocateRaw<K, V>(keySize, valueSize);
-}
-export function mapAllocateChecked<K extends Equal<K > & Hash, V>(keySize: usize, valueSize: usize): Map<K, V > throws AllocError {
-  const map = mapAllocateRaw<K, V>(keySize, valueSize);
-  unsafe {
-    if (isNull(map.handle as * const u8)) {
-      throw allocationError();
-    }
-  }
-  return map;
-}
-export function mapInsert<K extends Equal<K > & Hash, V>(map: & mut Map<K, V>, key: * const K, value: * const V): bool {
-  unsafe {
-    const status = tn_map_insert(map.handle, key as * const u8, value as * const u8);
-    map.length = tn_map_length(map.handle);
-    return status === 0i32;
-  }
-}
-export function mapGet<K extends Equal<K > & Hash, V>(map: & Map<K, V>, key: * const K, value: * mut V): bool {
-  unsafe {
-    return tn_map_get(map.handle, key as * const u8, value as * mut u8) === 1i32;
-  }
-}
-export function mapContains<K extends Equal<K > & Hash, V>(map: & Map<K, V>, key: * const K): bool {
-  unsafe {
-    return tn_map_contains(map.handle, key as * const u8) === 1i32;
-  }
-}
-export function mapRemove<K extends Equal<K > & Hash, V>(map: & mut Map<K, V>, key: * const K): bool {
-  unsafe {
-    const removed = tn_map_remove(map.handle, key as * const u8) === 1i32;
-    map.length = tn_map_length(map.handle);
-    return removed;
-  }
-}
-export function mapClear<K extends Equal<K > & Hash, V>(map: & mut Map<K, V >): void {
-  unsafe {
-    tn_map_clear(map.handle);
-    map.length = 0usize;
-  }
-}
-export function mapLength<K extends Equal<K > & Hash, V>(map: & Map<K, V >): usize {
-  return map.length;
-}
-export function mapNext<K extends Equal<K > & Hash, V>(map: & Map<K, V>, cursor: & mut usize, key: * mut K, value: * mut V): bool {
-  unsafe {
-    return tn_map_next(map.handle, cursor as * mut usize, key as * mut u8, value as * mut u8) === 1i32;
   }
 }
 export function orderedMapAllocate<K, V>(keySize: usize, valueSize: usize): OrderedMap<K, V> {

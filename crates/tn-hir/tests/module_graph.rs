@@ -246,7 +246,7 @@ fn removed_procedural_collection_apis_are_not_importable() {
     let standard_library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
     write(
         &root.join("main.tn"),
-        "import { dequeAllocate, queueAllocate, setAllocate } from \"std/collections\";\nfunction main(): void {}\n",
+        "import { dequeAllocate, mapAllocate, queueAllocate, setAllocate } from \"std/collections\";\nfunction main(): void {}\n",
     );
     let error = load_module_graph(root, &root.join("main.tn"), &standard_library)
         .expect_err("removed procedural collection APIs must not resolve");
@@ -256,7 +256,7 @@ fn removed_procedural_collection_apis_are_not_importable() {
             .iter()
             .filter(|diagnostic| diagnostic.condition.as_str() == "RESOLVE_MISSING_EXPORT")
             .count(),
-        3
+        4
     );
 }
 

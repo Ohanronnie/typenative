@@ -1072,12 +1072,13 @@ Current evidence:
 - readonly field assignment is rejected outside the declaring type with
   `TYPE_READONLY_FIELD_ASSIGNMENT`, while constructors and declared methods can
   maintain their own public read-only state;
-- `Set<T>` now has an ordinary capacity constructor and declared `insert`,
-  `contains`, `remove`, `reserve`, `shrinkToFit`, and `clear` methods over a
-  private runtime handle. Its length and actual runtime capacity are read-only,
-  its procedural `set*` export family is absent, primitive and owned-string
-  keys pass native debug/optimized tests, and construction rejects nominal key
-  types without explicit `Equal<T>` and `Hash` conformance. Nominal generic
+- `Map<K, V>` and `Set<T>` now have ordinary capacity constructors and declared
+  `get`/`set`, `insert`, `contains`, `remove`, `reserve`, `shrinkToFit`, and
+  `clear` methods as appropriate over private runtime handles. Their lengths
+  and actual runtime capacities are read-only, their procedural `map*` and
+  `set*` export families are absent, primitive and owned-string keys pass native
+  debug/optimized tests, and construction rejects nominal key types without
+  explicit `Equal<T>` and `Hash` conformance. Explicit nominal generic
   arguments are now checked against declaration bounds at `new` expressions;
 - the reusable native map storage boundary exposes capacity, reserve, and
   shrink operations with locking, checked allocation, and focused C runtime
@@ -1094,9 +1095,8 @@ Remaining scope:
   `try`/`catch`, direct capability decorators, `@Conform`, `@Drop`, `@Intrinsic`,
   `@Sealed`, `using`, generators, async generators, and typed user macros.
 - Complete the remaining collection surface: fixed arrays, slices,
-  `Map<K, V>`, `OrderedMap<K, V>`, `OrderedSet<T>`, and `Heap<T>`; finish
-  Queue/Deque/Set iteration and borrowing together with the canonical iterator
-  protocol.
+  `OrderedMap<K, V>`, `OrderedSet<T>`, and `Heap<T>`; finish Map/Set/Queue/Deque
+  iteration and borrowing together with the canonical iterator protocol.
 - Remove obsolete `Result`, `Option`, `match`, `impl`, `extension`, `record`,
   `where`, `dyn`, collection, module, and compatibility spellings from every
   compiler layer and fixture.

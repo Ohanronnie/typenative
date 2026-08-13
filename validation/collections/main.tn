@@ -1,5 +1,5 @@
 import { AllocError } from "std/alloc";
-import { Array, Deque, Queue, Set, heapAllocate, heapPop, heapPush, mapAllocate, mapContains, mapGet, mapInsert, mapLength, mapRemove, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert } from "std/collections";
+import { Array, Deque, Map, Queue, Set, heapAllocate, heapPop, heapPush, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert } from "std/collections";
 
 function main(): i32 {
   let key: i32 = 16i32;
@@ -33,7 +33,9 @@ function main(): i32 {
     capacity: 1usize,
   });
   let heap = heapAllocate<i32>(4usize, 2usize);
-  let canonical = mapAllocate<i32, i32>(4usize, 4usize);
+  let canonical = new Map<i32, i32>({
+    capacity: 4usize,
+  });
   let canonicalSetValue = new Set<i32>({
     capacity: 4usize,
   });
@@ -42,7 +44,9 @@ function main(): i32 {
   });
   let ordered = orderedMapAllocate<i32, i32>(4usize, 4usize);
   let orderedValues = orderedSetAllocate<i32>(4usize);
-  let map = mapAllocate<i32, i32>(4usize, 4usize);
+  let map = new Map<i32, i32>({
+    capacity: 4usize,
+  });
   unsafe {
     array.push(value);
     queue.push(value);
@@ -57,11 +61,15 @@ function main(): i32 {
       const keyRef = & key;
       heapPush<i32>( & mut heap, keyRef as * const u8);
     }
-    {
-      const keyRef = & key;
-      const valueRef = & value;
-      mapInsert<i32, i32>( & mut canonical, keyRef as * const i32, valueRef as * const i32);
+    try {
+      try canonical.reserve(64usize);
+    } catch (error: AllocError) {
+      return 49i32;
     }
+    if (canonical.capacity<64usize) {
+      return 50i32;
+    }
+    canonical.set(key, value);
     {
       const keyRef = & key;
       const valueRef = & value;
@@ -88,11 +96,11 @@ function main(): i32 {
       }
     }
     {
-      const keyRef = & key;
-      const outputRef = & mut canonicalMapOutput;
-      if (!mapGet<i32, i32>( & canonical, keyRef as * const i32, outputRef as * mut i32)) {
+      const output = canonical.get( & key);
+      if (output === undefined) {
         return 4i32;
       }
+      canonicalMapOutput = output!;
     }
     {
       const output = array.get(0usize);
@@ -209,34 +217,32 @@ function main(): i32 {
       }
     }
     {
-      let present = false;
-      {
-        const keyRef = & key;
-        present = mapContains<i32, i32>( & canonical, keyRef as * const i32);
-      }
-      if (!present) {
+      if (!canonical.contains( & key)) {
         return 15i32;
       }
     }
     {
-      if (mapLength<i32, i32>( & canonical) !== 1usize) {
+      if (canonical.length !== 1usize) {
         return 15i32;
       }
     }
     {
-      let removed = false;
-      {
-        const keyRef = & key;
-        removed = mapRemove<i32, i32>( & mut canonical, keyRef as * const i32);
-      }
-      if (!removed) {
+      if (!canonical.remove( & key)) {
         return 16i32;
       }
     }
     {
-      if (mapLength<i32, i32>( & canonical) !== 0usize) {
+      if (canonical.length !== 0usize) {
         return 16i32;
       }
+    }
+    try {
+      try canonical.shrinkToFit();
+    } catch (error: AllocError) {
+      return 51i32;
+    }
+    if (canonical.capacity !== 8usize) {
+      return 52i32;
     }
     {
       const keyRef = & key;
@@ -266,28 +272,20 @@ function main(): i32 {
     if (canonicalSetValue.capacity !== 8usize) {
       return 48i32;
     }
+    map.set(key, value);
     {
-      const keyRef = & key;
-      const valueRef = & value;
-      mapInsert<i32, i32>( & mut map, keyRef as * const i32, valueRef as * const i32);
-    }
-    {
-      const keyRef = & key;
-      if (!mapContains<i32, i32>( & map, keyRef as * const i32)) {
+      if (!map.contains( & key)) {
         return 1i32;
       }
     }
     {
-      const keyRef = & key;
-      const outputRef = & mut legacyMapOutput;
-      if (!mapGet<i32, i32>( & map, keyRef as * const i32, outputRef as * mut i32)) {
+      const output = map.get( & key);
+      if (output === undefined) {
         return 2i32;
       }
+      legacyMapOutput = output!;
     }
-    {
-      const keyRef = & key;
-      mapRemove<i32, i32>( & mut map, keyRef as * const i32);
-    }
+    map.remove( & key);
   }
   if (canonicalMapOutput !== value) {
     return 31i32;
