@@ -1,0 +1,15 @@
+function echo(value: string): string {
+  return value;
+}
+function make(): string {
+  const name: string = "ronnie";
+  const guest = echo("guest");
+  if (name !== "ronnie" || guest !== "guest") {
+    return "failed";
+  }
+  return "done";
+}
+function main(): i32 {
+  const result = make();
+  return result === "done"?42i32: 1i32;
+}

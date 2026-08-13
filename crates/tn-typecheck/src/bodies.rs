@@ -841,7 +841,7 @@ impl BodyChecker<'_> {
                 self.record_hir_expression(start, &left);
                 continue;
             }
-            let right = self.expression(right_power, Some(&left.ty));
+            let right = self.expression(right_power, binary_right_expected(operator, &left.ty));
             left = self.binary(operator, left, right, &operator_token);
             self.record_hir_expression(start, &left);
         }
@@ -984,11 +984,15 @@ impl BodyChecker<'_> {
             }
             TokenKind::StringLiteral => {
                 self.bump();
-                Some(value_type(Type::Reference {
-                    mutable: false,
-                    lifetime: "static".into(),
-                    referent: Box::new(Type::Str),
-                }))
+                if expected.is_some_and(expected_owned_string) {
+                    Some(value_type(Type::String))
+                } else {
+                    Some(value_type(Type::Reference {
+                        mutable: false,
+                        lifetime: "static".into(),
+                        referent: Box::new(Type::Str),
+                    }))
+                }
             }
             TokenKind::TemplateLiteral => self.template_literal(),
             TokenKind::Undefined => {
@@ -3496,6 +3500,10 @@ fn hir_expression_kind(tokens: &[Token], expression: &ExpressionType) -> HirExpr
         return HirExpressionKind::Error;
     }
     let first = tokens.first().map(|token| token.kind);
+    if first == Some(TokenKind::StringLiteral) && tokens.len() == 1 && expression.ty == Type::String
+    {
+        return HirExpressionKind::Conversion(tn_hir::HirConversionKind::StringLiteralToOwned);
+    }
     if tokens.iter().any(|token| token.kind == TokenKind::FatArrow) {
         return HirExpressionKind::Closure;
     }
@@ -3566,6 +3574,14 @@ fn hir_expression_kind(tokens: &[Token], expression: &ExpressionType) -> HirExpr
         }
         _ if expression.resolution.is_some() => HirExpressionKind::Value,
         _ => HirExpressionKind::Error,
+    }
+}
+
+fn expected_owned_string(expected: &Type) -> bool {
+    match expected {
+        Type::String => true,
+        Type::Optional(inner) => matches!(inner.as_ref(), Type::String),
+        _ => false,
     }
 }
 
@@ -3673,17 +3689,29 @@ fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
 }
 
 fn string_comparison_compatible(left: &Type, right: &Type) -> bool {
-    fn string_like(ty: &Type) -> bool {
-        match ty {
-            Type::String | Type::Str => true,
-            Type::Reference { referent, .. } => {
-                matches!(referent.as_ref(), Type::Str | Type::String)
-            }
-            _ => false,
-        }
-    }
+    is_string_like(left) && is_string_like(right)
+}
 
-    string_like(left) && string_like(right)
+fn binary_right_expected(operator: TokenKind, left: &Type) -> Option<&Type> {
+    if matches!(
+        operator,
+        TokenKind::EqualEqualEqual | TokenKind::BangEqualEqual
+    ) && is_string_like(left)
+    {
+        None
+    } else {
+        Some(left)
+    }
+}
+
+fn is_string_like(ty: &Type) -> bool {
+    match ty {
+        Type::String | Type::Str => true,
+        Type::Reference { referent, .. } => {
+            matches!(referent.as_ref(), Type::Str | Type::String)
+        }
+        _ => false,
+    }
 }
 
 fn infer_substitutions(parameter: &Type, argument: &Type, inferred: &mut BTreeMap<String, Type>) {

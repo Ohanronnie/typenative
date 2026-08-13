@@ -1033,6 +1033,11 @@ Current evidence:
 - uppercase public `String` has been removed from the non-protected standard
   library and is rejected as `TYPE_OBSOLETE_PUBLIC_TYPE`; owned-returning
   string, environment, and path APIs use lowercase `string`;
+- contextual string literals required as owned `string` are represented by a
+  typed `StringLiteralToOwned` HIR conversion and an explicit
+  `string_from_static` MIR operation for annotated locals, arguments, and
+  returns; `validation/string/main.tn` exercises the conversion and strict
+  UTF-8 equality in native debug and optimized products;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions

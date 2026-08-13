@@ -1593,6 +1593,38 @@ function character(): char { return '\u{03bb}'; }
 }
 
 #[test]
+fn lowers_contextual_owned_string_conversion_explicitly() {
+    let program = source_program(
+        r#"
+function consume(value: string): string { return value; }
+function equals(value: string): bool { return value === "guest"; }
+function make(): string {
+  const local: string = "ronnie";
+  consume("guest");
+  return "done";
+}
+"#,
+    );
+    let bodies = lower_mir(&program);
+    for body in &bodies {
+        tn_mir::validate(body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    }
+    let conversions = bodies
+        .iter()
+        .flat_map(|body| &body.blocks)
+        .flat_map(|block| &block.statements)
+        .filter(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), Rvalue::RawOperation { operation, ty: Type::String, .. } if operation == "string_from_static")
+            )
+        })
+        .count();
+    assert_eq!(conversions, 3);
+}
+
+#[test]
 fn lowers_compound_assignments_as_checked_read_modify_write() {
     let program = source_program(
         r"

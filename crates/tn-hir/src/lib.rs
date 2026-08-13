@@ -446,6 +446,7 @@ pub struct HirTemplate {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum HirExpressionKind {
     Literal,
+    Conversion(HirConversionKind),
     Value,
     Borrow { mutable: bool },
     Move,
@@ -461,6 +462,11 @@ pub enum HirExpressionKind {
     Switch,
     Await,
     Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum HirConversionKind {
+    StringLiteralToOwned,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

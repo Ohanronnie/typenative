@@ -37,6 +37,36 @@ function invalid(): void {
 }
 
 #[test]
+fn records_contextual_owned_string_conversion_in_hir() {
+    let result = checked(
+        r#"
+function consume(value: string): string { return value; }
+function equals(value: string): bool { return value === "guest"; }
+function make(): string {
+  const local: string = "ronnie";
+  consume("guest");
+  return "done";
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let conversions = result
+        .bodies
+        .iter()
+        .flat_map(|body| &body.expressions)
+        .filter(|expression| {
+            matches!(
+                expression.kind,
+                tn_hir::HirExpressionKind::Conversion(
+                    tn_hir::HirConversionKind::StringLiteralToOwned
+                )
+            ) && expression.ty == tn_hir::Type::String
+        })
+        .count();
+    assert_eq!(conversions, 3);
+}
+
+#[test]
 fn contextually_checks_struct_literals_and_calls() {
     let diagnostics = conditions(
         r"

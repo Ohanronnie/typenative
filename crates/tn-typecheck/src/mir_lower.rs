@@ -1001,7 +1001,18 @@ impl OwnershipMirLowerer<'_> {
                 .and_then(|type_start| self.parse_type_range(type_start, equal))
         });
         let (simple_type, source) = self.infer_initializer(initializer, equal, end);
-        let single_constant = equal.is_some_and(|equal| equal + 2 == end)
+        let contextual_conversion = initializer.is_some_and(|token| {
+            self.hir_expression_at(token).is_some_and(|expression| {
+                matches!(
+                    expression.kind,
+                    tn_hir::HirExpressionKind::Conversion(
+                        tn_hir::HirConversionKind::StringLiteralToOwned
+                    )
+                )
+            })
+        });
+        let single_constant = !contextual_conversion
+            && equal.is_some_and(|equal| equal + 2 == end)
             && initializer.is_some_and(|token| self.constant(token, &simple_type).is_some());
         let complex = if source.is_none() && !single_constant {
             equal.and_then(|equal| self.lower_expression_range(equal + 1, end, annotation.as_ref()))
@@ -1068,15 +1079,7 @@ impl OwnershipMirLowerer<'_> {
         complex: Option<(Operand, Type)>,
         name_token: &Token,
     ) {
-        if let Some(constant) = initializer.and_then(|token| self.constant(token, ty)) {
-            self.statement(
-                StatementKind::Assign(
-                    Place::local(local),
-                    Box::new(Rvalue::Use(Operand::Constant(constant))),
-                ),
-                self.span(initializer.expect("constant initializer")),
-            );
-        } else if let Some((operand, source_type)) = complex {
+        if let Some((operand, source_type)) = complex {
             let rvalue = if &source_type == ty {
                 Rvalue::Use(operand)
             } else {
@@ -1089,6 +1092,14 @@ impl OwnershipMirLowerer<'_> {
             self.statement(
                 StatementKind::Assign(Place::local(local), Box::new(rvalue)),
                 self.span(name_token),
+            );
+        } else if let Some(constant) = initializer.and_then(|token| self.constant(token, ty)) {
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(local),
+                    Box::new(Rvalue::Use(Operand::Constant(constant))),
+                ),
+                self.span(initializer.expect("constant initializer")),
             );
         }
     }
@@ -4752,9 +4763,35 @@ impl OwnershipMirLowerer<'_> {
         None
     }
 
-    fn lower_atom(&self, index: usize, expected: Option<&Type>) -> Option<(Operand, Type)> {
+    fn lower_atom(&mut self, index: usize, expected: Option<&Type>) -> Option<(Operand, Type)> {
         let token = *self.tokens.get(index)?;
         let hir = self.hir_expression_at(token);
+        if token.kind == TokenKind::StringLiteral
+            && hir.is_some_and(|expression| {
+                matches!(
+                    expression.kind,
+                    tn_hir::HirExpressionKind::Conversion(
+                        tn_hir::HirConversionKind::StringLiteralToOwned
+                    )
+                )
+            })
+        {
+            let literal = Operand::Constant(self.constant(token, &Type::String)?);
+            let destination = self.temporary(Type::String, self.span(token));
+            self.statement(StatementKind::StorageLive(destination), self.span(token));
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "string_from_static".into(),
+                        operands: vec![literal],
+                        ty: Type::String,
+                    }),
+                ),
+                self.span(token),
+            );
+            return Some((Operand::Move(Place::local(destination)), Type::String));
+        }
         if let Some(expression) = hir {
             match expression.resolution {
                 Some(ResolvedValue::Local(local)) => {
@@ -5388,7 +5425,7 @@ fn normalize_string_comparison_operand(operand: Operand, ty: Type) -> (Operand, 
         return (operand, ty);
     }
     if matches!(operand, Operand::Constant(tn_mir::Constant::String(_))) {
-        return (operand, Type::String);
+        return (operand, Type::Str);
     }
     let Some(mut place) = operand_place(operand.clone()) else {
         return (operand, ty);
