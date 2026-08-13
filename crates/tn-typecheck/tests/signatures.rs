@@ -201,6 +201,36 @@ class EscapesEarly {
 }
 
 #[test]
+fn validates_consistent_generic_interface_method_substitution() {
+    let diagnostics = signature_conditions(
+        r#"
+interface Source<Item> {
+  first(): Item;
+  second(): Item;
+}
+@Conform(Source)
+class Good<T> {
+  first(): T { return undefined; }
+  second(): T { return undefined; }
+}
+@Conform(Source)
+class Inconsistent {
+  first(): i32 { return 1i32; }
+  second(): string { return "wrong"; }
+}
+"#,
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_INTERFACE_METHOD_MISMATCH")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn copy_implementations_require_copy_fields_and_exclude_drop_and_classes() {
     let diagnostics = signature_conditions(
         r"

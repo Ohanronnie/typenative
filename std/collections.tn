@@ -27,6 +27,12 @@ export interface Equal<Rhs> {
 }
 export interface Ord {
 }
+export interface Iterator<Item> {
+  mut next(): Item | undefined;
+}
+export interface IntoIterator<Item, Iter extends Iterator<Item> > {
+  move intoIterator(): Iter;
+}
 @Intrinsic("size_of")function sizeOf<T>(): usize {
   return 0usize;
 }
@@ -68,7 +74,8 @@ function allocationError(): AllocError {
 export struct ArrayOptions {
   public capacity: usize;
 }
-@Drop export class Array<T> {
+@Drop
+@Conform(IntoIterator)export class Array<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -285,11 +292,31 @@ export struct ArrayOptions {
       return sliceFromRawParts<T>(this.pointer as * const T, this.length);
     }
   }
+  move intoIterator(): ArrayIterator<T> {
+    return new ArrayIterator<T>(move this);
+  }
+}
+@Conform(Iterator)export class ArrayIterator<T> {
+  private collection: Array<T>;
+  private index: usize;
+  public constructor(collection: Array<T >) {
+    this.collection = move collection;
+    this.index = 0usize;
+  }
+  mut next(): T | undefined {
+    if (this.index >= this.collection.length) {
+      return undefined;
+    }
+    const output = this.collection.get(this.index);
+    this.index = this.index + 1usize;
+    return output;
+  }
 }
 export struct QueueOptions {
   public capacity: usize;
 }
-@Drop export class Queue<T> {
+@Drop
+@Conform(IntoIterator)export class Queue<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -459,11 +486,24 @@ export struct QueueOptions {
     this.length = 0usize;
     this.head = 0usize;
   }
+  move intoIterator(): QueueIterator<T> {
+    return new QueueIterator<T>(move this);
+  }
+}
+@Conform(Iterator)export class QueueIterator<T> {
+  private collection: Queue<T>;
+  public constructor(collection: Queue<T >) {
+    this.collection = move collection;
+  }
+  mut next(): T | undefined {
+    return this.collection.pop();
+  }
 }
 export struct DequeOptions {
   public capacity: usize;
 }
-@Drop export class Deque<T> {
+@Drop
+@Conform(IntoIterator)export class Deque<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -691,11 +731,24 @@ export struct DequeOptions {
     this.length = 0usize;
     this.head = 0usize;
   }
+  move intoIterator(): DequeIterator<T> {
+    return new DequeIterator<T>(move this);
+  }
+}
+@Conform(Iterator)export class DequeIterator<T> {
+  private collection: Deque<T>;
+  public constructor(collection: Deque<T >) {
+    this.collection = move collection;
+  }
+  mut next(): T | undefined {
+    return this.collection.pop();
+  }
 }
 export struct HeapOptions {
   public capacity: usize;
 }
-@Drop export class Heap<T extends Ord> {
+@Drop
+@Conform(IntoIterator)export class Heap<T extends Ord> {
   private pointer: * mut T;
   private initialized: * mut u8;
   public readonly length: usize;
@@ -911,6 +964,18 @@ export struct HeapOptions {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
     }
     this.length = 0usize;
+  }
+  move intoIterator(): HeapIterator<T> {
+    return new HeapIterator<T>(move this);
+  }
+}
+@Conform(Iterator)export class HeapIterator<T extends Ord> {
+  private collection: Heap<T>;
+  public constructor(collection: Heap<T >) {
+    this.collection = move collection;
+  }
+  mut next(): T | undefined {
+    return this.collection.pop();
   }
 }
 export struct MapOptions {

@@ -397,5 +397,53 @@ function main(): i32 {
   if (legacyMapOutput !== value) {
     return 42i32;
   }
+  let iterable = new Array<i32>({
+    capacity: 2usize,
+  });
+  iterable.push(16i32);
+  iterable.push(26i32);
+  let iterated: i32 = 0i32;
+  for (const item of move iterable) {
+    iterated = iterated + item;
+  }
+  if (iterated !== value) {
+    return 68i32;
+  }
+  let iterableQueue = new Queue<i32>({
+    capacity: 2usize
+  });
+  iterableQueue.push(16i32);
+  iterableQueue.push(26i32);
+  let queueIterated: i32 = 0i32;
+  for (const item of move iterableQueue) {
+    queueIterated = queueIterated + item;
+  }
+  if (queueIterated !== value) {
+    return 69i32;
+  }
+  let iterableDeque = new Deque<i32>({
+    capacity: 2usize
+  });
+  iterableDeque.push(26i32);
+  iterableDeque.pushFront(16i32);
+  let dequeIterated: i32 = 0i32;
+  for (const item of move iterableDeque) {
+    dequeIterated = dequeIterated + item;
+  }
+  if (dequeIterated !== value) {
+    return 70i32;
+  }
+  let iterableHeap = new Heap<i32>({
+    capacity: 2usize
+  });
+  iterableHeap.push(26i32);
+  iterableHeap.push(16i32);
+  let heapIterated: i32 = 0i32;
+  for (const item of move iterableHeap) {
+    heapIterated = heapIterated * 100i32 + item;
+  }
+  if (heapIterated !== 1626i32) {
+    return 71i32;
+  }
   return value;
 }

@@ -1170,6 +1170,7 @@ fn check_implementation(
         );
         return;
     };
+    let mut generic_arguments = BTreeMap::new();
     for requirement in requirements {
         let Some(method) = find_method(methods, &requirement.name) else {
             declaration_diagnostic(
@@ -1182,8 +1183,12 @@ fn check_implementation(
             );
             continue;
         };
-        if !substitutable_signature(&method.function, &requirement.function, definitions)
-            || method.receiver != requirement.receiver
+        if !substitutable_interface_signature(
+            &method.function,
+            &requirement.function,
+            definitions,
+            &mut generic_arguments,
+        ) || method.receiver != requirement.receiver
         {
             diagnostics.push(diag(
                 "TYPE_INTERFACE_METHOD_MISMATCH",
@@ -1195,6 +1200,81 @@ fn check_implementation(
                 "parameter, receiver, result, and effect types must match",
             ));
         }
+    }
+}
+
+fn substitutable_interface_signature(
+    implementation: &Function,
+    requirement: &Function,
+    definitions: &BTreeMap<DeclarationId, &Definition>,
+    generic_arguments: &mut BTreeMap<String, Type>,
+) -> bool {
+    implementation.parameters.len() == requirement.parameters.len()
+        && implementation
+            .parameters
+            .iter()
+            .zip(&requirement.parameters)
+            .all(|(actual, expected)| {
+                interface_type_matches(&actual.ty, &expected.ty, definitions, generic_arguments)
+            })
+        && interface_type_matches(
+            &implementation.result,
+            &requirement.result,
+            definitions,
+            generic_arguments,
+        )
+        && effect_subset(&implementation.effects, &requirement.effects)
+        && implementation.is_async == requirement.is_async
+        && (!implementation.is_unsafe || requirement.is_unsafe)
+}
+
+fn interface_type_matches(
+    actual: &Type,
+    expected: &Type,
+    definitions: &BTreeMap<DeclarationId, &Definition>,
+    generic_arguments: &mut BTreeMap<String, Type>,
+) -> bool {
+    if let Type::Generic(name) = expected {
+        return generic_arguments
+            .entry(name.clone())
+            .or_insert_with(|| actual.clone())
+            == actual;
+    }
+    match (actual, expected) {
+        (Type::Nominal(actual_id, actual_args), Type::Nominal(expected_id, expected_args))
+        | (
+            Type::DynamicInterface(actual_id, actual_args),
+            Type::DynamicInterface(expected_id, expected_args),
+        ) if actual_id == expected_id && actual_args.len() == expected_args.len() => actual_args
+            .iter()
+            .zip(expected_args)
+            .all(|(actual, expected)| {
+                interface_type_matches(actual, expected, definitions, generic_arguments)
+            }),
+        (Type::Optional(actual), Type::Optional(expected))
+        | (Type::Slice(actual), Type::Slice(expected)) => {
+            interface_type_matches(actual, expected, definitions, generic_arguments)
+        }
+        (Type::Array(actual, actual_length), Type::Array(expected, expected_length))
+            if actual_length == expected_length =>
+        {
+            interface_type_matches(actual, expected, definitions, generic_arguments)
+        }
+        (
+            Type::Reference {
+                mutable: actual_mutable,
+                referent: actual,
+                ..
+            },
+            Type::Reference {
+                mutable: expected_mutable,
+                referent: expected,
+                ..
+            },
+        ) if actual_mutable == expected_mutable => {
+            interface_type_matches(actual, expected, definitions, generic_arguments)
+        }
+        _ => is_subtype(actual, expected, definitions),
     }
 }
 
@@ -1243,21 +1323,6 @@ fn check_override(
             "use at least the base method's visibility",
         ));
     }
-}
-
-fn substitutable_signature(
-    left: &Function,
-    right: &Function,
-    definitions: &BTreeMap<DeclarationId, &Definition>,
-) -> bool {
-    left.parameters
-        .iter()
-        .map(|parameter| &parameter.ty)
-        .eq(right.parameters.iter().map(|parameter| &parameter.ty))
-        && is_subtype(&left.result, &right.result, definitions)
-        && effect_subset(&left.effects, &right.effects)
-        && left.is_async == right.is_async
-        && (!left.is_unsafe || right.is_unsafe)
 }
 
 fn effect_subset(left: &[DeclarationId], right: &[DeclarationId]) -> bool {

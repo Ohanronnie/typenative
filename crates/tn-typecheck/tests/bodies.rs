@@ -400,6 +400,22 @@ function generics(good: Good, bad: Bad): void {
 }
 
 #[test]
+fn propagates_owner_generic_bounds_to_nested_construction() {
+    let diagnostics = conditions(
+        r"
+interface Marker {}
+class Boxed<T extends Marker> {
+  public constructor() {}
+}
+class Factory<T extends Marker> {
+  make(): Boxed<T> { return new Boxed<T>(); }
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
 fn selects_builtin_and_explicit_operator_interfaces() {
     let diagnostics = conditions(
         r"

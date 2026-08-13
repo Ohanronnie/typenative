@@ -2218,7 +2218,7 @@ impl BodyChecker<'_> {
                 continue;
             };
             for bound in &generic.bounds {
-                if !satisfies_bound(self.program, argument, bound)
+                if !satisfies_bound(self.program, self.function, self.owner, argument, bound)
                     && let Some(token) = token
                 {
                     self.error(
@@ -3808,7 +3808,13 @@ fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
     }
 }
 
-fn satisfies_bound(program: &Program, ty: &Type, bound: &tn_hir::GenericBound) -> bool {
+fn satisfies_bound(
+    program: &Program,
+    function: &Function,
+    owner: DeclarationId,
+    ty: &Type,
+    bound: &tn_hir::GenericBound,
+) -> bool {
     match bound {
         tn_hir::GenericBound::Static => !matches!(
             ty,
@@ -3816,6 +3822,23 @@ fn satisfies_bound(program: &Program, ty: &Type, bound: &tn_hir::GenericBound) -
         ),
         tn_hir::GenericBound::Outlives(_) => matches!(ty, Type::Reference { .. }),
         tn_hir::GenericBound::Interface(interface, _) => {
+            if let Type::Generic(name) = ty {
+                return function
+                    .generics
+                    .iter()
+                    .chain(
+                        program
+                            .definition(owner)
+                            .into_iter()
+                            .flat_map(|definition| definition.generics.iter()),
+                    )
+                    .find(|parameter| parameter.name == *name)
+                    .is_some_and(|parameter| {
+                        parameter.bounds.iter().any(|candidate| {
+                            matches!(candidate, tn_hir::GenericBound::Interface(candidate, _) if candidate == interface)
+                        })
+                    });
+            }
             let name = declaration_name(program, *interface);
             if matches!(name, Some("Equal" | "Hash" | "Ord"))
                 && matches!(ty, Type::Primitive(_) | Type::String | Type::Str)

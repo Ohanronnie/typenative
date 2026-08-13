@@ -1086,6 +1086,13 @@ Current evidence:
   ordering checks; owned-string ordering lowers through the reusable
   `tn_string_compare` content operation rather than pointer comparison. The
   exported procedural `heap*` family is absent;
+- The canonical `Iterator<Item>` and `IntoIterator<Item, Iter>` protocols are
+  declared library interfaces. `Array`, `Queue`, `Deque`, and `Heap` conform
+  through ordinary move receivers and owning iterator classes; native debug
+  and optimized fixtures exercise source order for sequences and sorted order
+  for heaps. Interface signature validation now infers shared generic
+  substitutions consistently across requirements, and owner generic bounds
+  propagate into nested generic construction;
 - readonly field assignment is rejected outside the declaring type with
   `TYPE_READONLY_FIELD_ASSIGNMENT`, while constructors and declared methods can
   maintain their own public read-only state;
