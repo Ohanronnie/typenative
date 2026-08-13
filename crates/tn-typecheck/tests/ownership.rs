@@ -224,6 +224,40 @@ fn lower_mir(program: &tn_hir::Program) -> Vec<Body> {
 }
 
 #[test]
+fn dereference_uses_the_pointee_type_inside_a_boolean_expression() {
+    let program = source_program(
+        r"
+function less(left: &i32, right: &i32): bool {
+  unsafe { return *left < *right; }
+}
+",
+    );
+    let body = lower_mir(&program).pop().expect("dereference MIR");
+    tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    let dereference_types = body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match &statement.kind {
+            StatementKind::Assign(_, value) => match value.as_ref() {
+                Rvalue::RawOperation { operation, ty, .. } if operation == "dereference" => {
+                    Some(ty.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dereference_types,
+        [
+            Type::Primitive(PrimitiveType::I32),
+            Type::Primitive(PrimitiveType::I32)
+        ]
+    );
+}
+
+#[test]
 fn lowers_unary_short_circuit_generic_calls_without_function_pointer_operands() {
     let program = source_program(
         r"

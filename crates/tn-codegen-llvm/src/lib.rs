@@ -1190,6 +1190,30 @@ impl<'ctx> Generator<'ctx> {
             })
     }
 
+    fn runtime_string_compare(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_string_compare")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_string_compare",
+                    self.context.i32_type().fn_type(
+                        &[
+                            self.context
+                                .ptr_type(AddressSpace::default())
+                                .as_basic_type_enum()
+                                .into(),
+                            self.context
+                                .ptr_type(AddressSpace::default())
+                                .as_basic_type_enum()
+                                .into(),
+                        ],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
     fn runtime_string_from_bytes(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("tn_string_from_bytes")
@@ -3033,6 +3057,37 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ..
+            } if operation == "borrow_element" => {
+                let pointer_operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("borrow_element operation lacks a pointer".into())
+                })?;
+                let pointer = self.lower_operand(pointer_operand)?.into_pointer_value();
+                let Type::RawPointer { pointee, .. } = self.operand_type(pointer_operand)? else {
+                    return Err(CodegenError::Unsupported(
+                        "borrow_element operation requires a raw pointer".into(),
+                    ));
+                };
+                let index = operands
+                    .get(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("borrow_element operation lacks an index".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let element = self.generator.basic_type(&pointee)?;
+                // SAFETY: collection methods check the logical index before invoking this
+                // intrinsic, and their storage invariant guarantees `capacity` consecutive
+                // elements at `pointer`.
+                Ok(unsafe {
+                    self.builder
+                        .build_gep(element, pointer, &[index], "borrowed.element")?
+                        .into()
+                })
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
             } if matches!(operation.as_str(), "borrow_mut" | "borrow_shared") => {
                 let operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported(format!("{operation} operation lacks an operand"))
@@ -3513,13 +3568,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let left = self.lower_operand(left)?;
         let right = self.lower_operand(right)?;
-        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            if matches!(ty, Type::String | Type::Str) {
-                return self.lower_string_equality(operator, left, right);
-            }
-            if matches!(ty, Type::Optional(_)) {
-                return self.lower_optional_equality(operator, left, right);
-            }
+        if let Some(result) = self.lower_string_binary(operator, left, right, ty)? {
+            return Ok(result);
+        }
+        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual)
+            && matches!(ty, Type::Optional(_))
+        {
+            return self.lower_optional_equality(operator, left, right);
         }
 
         if left.is_float_value() {
@@ -3613,6 +3668,30 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         })
     }
 
+    fn lower_string_binary(
+        &self,
+        operator: BinaryOperator,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+        ty: &Type,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        if !matches!(ty, Type::String | Type::Str) {
+            return Ok(None);
+        }
+        match operator {
+            BinaryOperator::Equal | BinaryOperator::NotEqual => {
+                self.lower_string_equality(operator, left, right).map(Some)
+            }
+            BinaryOperator::Less
+            | BinaryOperator::LessEqual
+            | BinaryOperator::Greater
+            | BinaryOperator::GreaterEqual => self
+                .lower_string_comparison(operator, left, right)
+                .map(Some),
+            _ => Ok(None),
+        }
+    }
+
     fn lower_string_equality(
         &self,
         operator: BinaryOperator,
@@ -3644,6 +3723,48 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         } else {
             self.builder.build_not(equal, "string.not_equal")?.into()
         })
+    }
+
+    fn lower_string_comparison(
+        &self,
+        operator: BinaryOperator,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let ordering = self
+            .builder
+            .build_call(
+                self.generator.runtime_string_compare(),
+                &[
+                    left.into_pointer_value().into(),
+                    right.into_pointer_value().into(),
+                ],
+                "string.compare",
+            )?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder("string comparison returned void".into()))?
+            .into_int_value();
+        let predicate = match operator {
+            BinaryOperator::Less => IntPredicate::SLT,
+            BinaryOperator::LessEqual => IntPredicate::SLE,
+            BinaryOperator::Greater => IntPredicate::SGT,
+            BinaryOperator::GreaterEqual => IntPredicate::SGE,
+            _ => {
+                return Err(CodegenError::Unsupported(
+                    "invalid string comparison operator".into(),
+                ));
+            }
+        };
+        Ok(self
+            .builder
+            .build_int_compare(
+                predicate,
+                ordering,
+                ordering.get_type().const_zero(),
+                "string.order",
+            )?
+            .into())
     }
 
     fn lower_optional_equality(

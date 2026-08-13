@@ -2426,7 +2426,13 @@ impl BodyChecker<'_> {
             | TokenKind::Greater
             | TokenKind::GreaterEqual => {
                 if !operands_match
-                    || !supports_operator(self.program, self.function, &left.ty, operator)
+                    || !supports_operator(
+                        self.program,
+                        self.function,
+                        self.owner,
+                        &left.ty,
+                        operator,
+                    )
                 {
                     self.unsupported_operator(operator, &left.ty, token);
                 }
@@ -2459,7 +2465,13 @@ impl BodyChecker<'_> {
                 }
             }
             _ if operands_match
-                && supports_operator(self.program, self.function, &left.ty, operator) =>
+                && supports_operator(
+                    self.program,
+                    self.function,
+                    self.owner,
+                    &left.ty,
+                    operator,
+                ) =>
             {
                 left.ty
             }
@@ -3805,7 +3817,7 @@ fn satisfies_bound(program: &Program, ty: &Type, bound: &tn_hir::GenericBound) -
         tn_hir::GenericBound::Outlives(_) => matches!(ty, Type::Reference { .. }),
         tn_hir::GenericBound::Interface(interface, _) => {
             let name = declaration_name(program, *interface);
-            if matches!(name, Some("Equal" | "Hash"))
+            if matches!(name, Some("Equal" | "Hash" | "Ord"))
                 && matches!(ty, Type::Primitive(_) | Type::String | Type::Str)
             {
                 return true;
@@ -4037,6 +4049,7 @@ fn template_displayable(program: &Program, function: &Function, ty: &Type) -> bo
 fn supports_operator(
     program: &Program,
     function: &Function,
+    owner: DeclarationId,
     ty: &Type,
     operator: TokenKind,
 ) -> bool {
@@ -4101,23 +4114,12 @@ fn supports_operator(
         TokenKind::ShiftRight | TokenKind::ShiftRightEqual => "Shr",
         TokenKind::EqualEqualEqual | TokenKind::BangEqualEqual => "Equal",
         TokenKind::Less | TokenKind::LessEqual | TokenKind::Greater | TokenKind::GreaterEqual => {
-            "Compare"
+            "Ord"
         }
         _ => return false,
     };
     match ty {
-        Type::Generic(name) => function
-            .generics
-            .iter()
-            .find(|parameter| parameter.name == *name)
-            .is_some_and(|parameter| {
-                parameter.bounds.iter().any(|bound| {
-                    let tn_hir::GenericBound::Interface(interface, _) = bound else {
-                        return false;
-                    };
-                    declaration_name(program, *interface) == Some(required)
-                })
-            }),
+        Type::Generic(name) => generic_supports_operator(program, function, owner, name, required),
         Type::Nominal(nominal, _) => {
             declared_conformances(program, *nominal)
                 .iter()
@@ -4136,6 +4138,33 @@ fn supports_operator(
         }
         _ => false,
     }
+}
+
+fn generic_supports_operator(
+    program: &Program,
+    function: &Function,
+    owner: DeclarationId,
+    name: &str,
+    required: &str,
+) -> bool {
+    function
+        .generics
+        .iter()
+        .chain(
+            program
+                .definition(owner)
+                .into_iter()
+                .flat_map(|definition| definition.generics.iter()),
+        )
+        .find(|parameter| parameter.name == name)
+        .is_some_and(|parameter| {
+            parameter.bounds.iter().any(|bound| {
+                let tn_hir::GenericBound::Interface(interface, _) = bound else {
+                    return false;
+                };
+                declaration_name(program, *interface) == Some(required)
+            })
+        })
 }
 
 fn declaration_name(program: &Program, declaration: DeclarationId) -> Option<&str> {

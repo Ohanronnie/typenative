@@ -50,6 +50,11 @@ export interface Ord {
 @Intrinsic("drop_initialized_elements")function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
   return false;
 }
+@Intrinsic("borrow_element")function borrowElement<T>(pointer: * const T, index: usize): & T {
+  unsafe {
+    return & * pointer;
+  }
+}
 function allocationError(): AllocError {
   return {
     code: 12i32
@@ -61,8 +66,8 @@ export struct ArrayOptions {
 @Drop export class Array<T> {
   private pointer: * mut T;
   private initialized: * mut u8;
-  public length: usize;
-  public capacity: usize;
+  public readonly length: usize;
+  public readonly capacity: usize;
   private elementSize: usize;
   public constructor(options: ArrayOptions) {
     const elementSize = sizeOf<T>();
@@ -90,24 +95,81 @@ export struct ArrayOptions {
       rawFree(this.initialized);
     }
   }
-  public mut push(value: T): void {
-    if (this.length === this.capacity) {
-      let next: usize = 1usize;
-      if (this.capacity > 0usize) {
-        next = this.capacity * 2usize;
+  public mut reserve(minimumCapacity: usize): void {
+    if (minimumCapacity <= this.capacity) {
+      return;
+    }
+    let next: usize = 1usize;
+    if (this.capacity > 0usize) {
+      next = this.capacity * 2usize;
+    }
+    if (next<minimumCapacity) {
+      next = minimumCapacity;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacementInitialized = rawAlloc(next);
+      let initializedIndex: usize = 0usize;
+      while (initializedIndex<next) {
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
+        initializedIndex = initializedIndex + 1usize;
       }
-      unsafe {
-        this.pointer = rawRealloc(this.pointer as * mut u8, next * this.elementSize)as * mut T;
-        this.initialized = rawRealloc(this.initialized, next);
-      }
-      let index: usize = this.capacity;
-      while (index<next) {
-        unsafe {
-          tn_bytes_write_u8(this.initialized, next, index, 0u8);
+      let index: usize = 0usize;
+      while (index<this.length) {
+        if (isCopy<T>()) {
+          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+        } else {
+          const value = moveElement<T>(this.pointer, index, this.initialized);
+          storeElement<T>(replacement, index, replacementInitialized, move value);
         }
         index = index + 1usize;
       }
-      this.capacity = next;
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+      this.pointer = replacement;
+      this.initialized = replacementInitialized;
+    }
+    this.capacity = next;
+  }
+  public mut shrinkToFit(): void {
+    if (this.length === this.capacity) {
+      return;
+    }
+    if (this.length === 0usize) {
+      unsafe {
+        rawFree(this.pointer as * mut u8);
+        rawFree(this.initialized);
+        this.pointer = rawAlloc(0usize)as * mut T;
+        this.initialized = rawAlloc(0usize);
+      }
+      this.capacity = 0usize;
+      return;
+    }
+    const target = this.length;
+    unsafe {
+      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacementInitialized = rawAlloc(target);
+      let index: usize = 0usize;
+      while (index<target) {
+        tn_bytes_write_u8(replacementInitialized, target, index, 0u8);
+        if (isCopy<T>()) {
+          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+        } else {
+          const value = moveElement<T>(this.pointer, index, this.initialized);
+          storeElement<T>(replacement, index, replacementInitialized, move value);
+        }
+        index = index + 1usize;
+      }
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+      this.pointer = replacement;
+      this.initialized = replacementInitialized;
+    }
+    this.capacity = target;
+  }
+  public mut push(value: T): void {
+    if (this.length === this.capacity) {
+      this.reserve(this.length + 1usize);
     }
     if (isCopy<T>()) {
       unsafe {
@@ -141,6 +203,14 @@ export struct ArrayOptions {
         return undefined;
       }
       return moveElement<T>(this.pointer, index, this.initialized);
+    }
+  }
+  public borrow(index: usize): & T | undefined {
+    if (index >= this.length) {
+      return undefined;
+    }
+    unsafe {
+      return borrowElement<T>(this.pointer as * const T, index);
     }
   }
   public mut set(index: usize, value: T): bool {
@@ -371,6 +441,14 @@ export struct QueueOptions {
       return value;
     }
   }
+  public peek(): & T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    unsafe {
+      return borrowElement<T>(this.pointer as * const T, this.head);
+    }
+  }
   public mut clear(): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
@@ -586,6 +664,23 @@ export struct DequeOptions {
       return value;
     }
   }
+  public peek(): & T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    unsafe {
+      return borrowElement<T>(this.pointer as * const T, this.head);
+    }
+  }
+  public peekBack(): & T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    const index =(this.head + this.length - 1usize) % this.capacity;
+    unsafe {
+      return borrowElement<T>(this.pointer as * const T, index);
+    }
+  }
   public mut clear(): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
@@ -594,15 +689,225 @@ export struct DequeOptions {
     this.head = 0usize;
   }
 }
-@Drop export struct Heap<T> {
-  public pointer: * mut T;
-  public length: usize;
+export struct HeapOptions {
   public capacity: usize;
-  public elementSize: usize;
+}
+@Drop export class Heap<T extends Ord> {
+  private pointer: * mut T;
+  private initialized: * mut u8;
+  public readonly length: usize;
+  public readonly capacity: usize;
+  private elementSize: usize;
+  public constructor(options: HeapOptions) {
+    const elementSize = sizeOf<T>();
+    unsafe {
+      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.initialized = rawAlloc(options.capacity);
+    }
+    this.length = 0usize;
+    this.capacity = options.capacity;
+    this.elementSize = elementSize;
+    let index: usize = 0usize;
+    while (index<options.capacity) {
+      unsafe {
+        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+      }
+      index = index + 1usize;
+    }
+  }
   mut drop(): void {
     unsafe {
+      dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
       rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
     }
+  }
+  private less(leftIndex: usize, rightIndex: usize): bool {
+    unsafe {
+      const left = borrowElement<T>(this.pointer as * const T, leftIndex);
+      const right = borrowElement<T>(this.pointer as * const T, rightIndex);
+      return * left< * right;
+    }
+  }
+  private mut swap(leftIndex: usize, rightIndex: usize): void {
+    if (leftIndex === rightIndex) {
+      return;
+    }
+    if (isCopy<T>()) {
+      unsafe {
+        const temporary = rawAlloc(this.elementSize);
+        tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, leftIndex * this.elementSize, this.elementSize, temporary);
+        tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, rightIndex * this.elementSize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, leftIndex * this.elementSize);
+        tn_bytes_copy_to_at(temporary as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, rightIndex * this.elementSize);
+        rawFree(temporary);
+      }
+      return;
+    }
+    unsafe {
+      const left = moveElement<T>(this.pointer, leftIndex, this.initialized);
+      const right = moveElement<T>(this.pointer, rightIndex, this.initialized);
+      storeElement<T>(this.pointer, leftIndex, this.initialized, move right);
+      storeElement<T>(this.pointer, rightIndex, this.initialized, move left);
+    }
+  }
+  public mut reserve(minimumCapacity: usize): void {
+    if (minimumCapacity <= this.capacity) {
+      return;
+    }
+    let next: usize = 1usize;
+    if (this.capacity > 0usize) {
+      next = this.capacity * 2usize;
+    }
+    if (next<minimumCapacity) {
+      next = minimumCapacity;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacementInitialized = rawAlloc(next);
+      let initializedIndex: usize = 0usize;
+      while (initializedIndex<next) {
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
+        initializedIndex = initializedIndex + 1usize;
+      }
+      let index: usize = 0usize;
+      while (index<this.length) {
+        if (isCopy<T>()) {
+          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+        } else {
+          const value = moveElement<T>(this.pointer, index, this.initialized);
+          storeElement<T>(replacement, index, replacementInitialized, move value);
+        }
+        index = index + 1usize;
+      }
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+      this.pointer = replacement;
+      this.initialized = replacementInitialized;
+    }
+    this.capacity = next;
+  }
+  public mut shrinkToFit(): void {
+    if (this.length === this.capacity) {
+      return;
+    }
+    if (this.length === 0usize) {
+      unsafe {
+        rawFree(this.pointer as * mut u8);
+        rawFree(this.initialized);
+        this.pointer = rawAlloc(0usize)as * mut T;
+        this.initialized = rawAlloc(0usize);
+      }
+      this.capacity = 0usize;
+      return;
+    }
+    const target = this.length;
+    unsafe {
+      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacementInitialized = rawAlloc(target);
+      let index: usize = 0usize;
+      while (index<target) {
+        tn_bytes_write_u8(replacementInitialized, target, index, 0u8);
+        if (isCopy<T>()) {
+          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+        } else {
+          const value = moveElement<T>(this.pointer, index, this.initialized);
+          storeElement<T>(replacement, index, replacementInitialized, move value);
+        }
+        index = index + 1usize;
+      }
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+      this.pointer = replacement;
+      this.initialized = replacementInitialized;
+    }
+    this.capacity = target;
+  }
+  public mut push(value: T): void {
+    if (this.length === this.capacity) {
+      this.reserve(this.length + 1usize);
+    }
+    if (isCopy<T>()) {
+      unsafe {
+        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, this.length * this.elementSize);
+      }
+    } else {
+      unsafe {
+        storeElement<T>(this.pointer, this.length, this.initialized, move value);
+      }
+    }
+    let index = this.length;
+    this.length = this.length + 1usize;
+    while (index > 0usize) {
+      const parent =(index - 1usize) / 2usize;
+      if (!this.less(index, parent)) {
+        break;
+      }
+      this.swap(index, parent);
+      index = parent;
+    }
+  }
+  public peek(): & T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    unsafe {
+      return borrowElement<T>(this.pointer as * const T, 0usize);
+    }
+  }
+  public mut pop(): T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    const finalIndex = this.length - 1usize;
+    if (!isCopy<T>()) {
+      unsafe {
+        const result = moveElement<T>(this.pointer, 0usize, this.initialized);
+        if (finalIndex > 0usize) {
+          const replacement = moveElement<T>(this.pointer, finalIndex, this.initialized);
+          storeElement<T>(this.pointer, 0usize, this.initialized, move replacement);
+        }
+        this.length = finalIndex;
+        this.siftDown();
+        return result;
+      }
+    }
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, 0usize, this.elementSize, output as * mut u8);
+      const result = * output;
+      rawFree(output as * mut u8);
+      if (finalIndex > 0usize) {
+        tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, finalIndex * this.elementSize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, 0usize);
+      }
+      this.length = finalIndex;
+      this.siftDown();
+      return result;
+    }
+  }
+  private mut siftDown(): void {
+    let index: usize = 0usize;
+    while (true) {
+      const left = index * 2usize + 1usize;
+      if (left >= this.length) {
+        return;
+      }
+      const right = left + 1usize;
+      let smallest = left;
+      if (right<this.length && this.less(right, left)) {
+        smallest = right;
+      }
+      if (!this.less(smallest, index)) {
+        return;
+      }
+      this.swap(index, smallest);
+      index = smallest;
+    }
+  }
+  public mut clear(): void {
+    unsafe {
+      dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
+    }
+    this.length = 0usize;
   }
 }
 export struct MapOptions {
@@ -951,91 +1256,5 @@ export struct Slice<T> {
     unsafe {
       rawFree(this.pointer as * mut u8);
     }
-  }
-}
-export function heapAllocate<T>(elementSize: usize, capacity: usize): Heap<T> {
-  unsafe {
-    return {
-      pointer: rawAlloc(capacity * elementSize)as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize
-    };
-  }
-}
-export function heapAllocateChecked<T>(elementSize: usize, capacity: usize): Heap<T > throws AllocError {
-  if (elementSize !== 0usize && capacity > 18446744073709551615usize / elementSize) {
-    throw allocationError();
-  }
-  unsafe {
-    const pointer = tryRawAlloc(capacity * elementSize);
-    if (isNull(pointer as * const u8)) {
-      throw allocationError();
-    }
-    return {
-      pointer: pointer as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize
-    };
-  }
-}
-export function heapPush<T>(heap: & mut Heap<T>, value: * const u8): void {
-  if (heap.length === heap.capacity) {
-    let next: usize = 1usize;
-    if (heap.capacity > 0usize) {
-      next = heap.capacity * 2usize;
-    }
-    unsafe {
-      heap.pointer = rawRealloc(heap.pointer as * mut u8, next * heap.elementSize)as * mut T;
-    }
-    heap.capacity = next;
-  }
-  unsafe {
-    tn_bytes_copy_to_at(value, heap.elementSize, 0usize, heap.elementSize, heap.pointer as * mut u8, heap.capacity * heap.elementSize, heap.length * heap.elementSize);
-  }
-  heap.length = heap.length + 1usize;
-}
-export function heapPushChecked<T>(heap: & mut Heap<T>, value: * const u8): void throws AllocError {
-  if (heap.length === heap.capacity) {
-    let next: usize = 1usize;
-    if (heap.capacity > 0usize) {
-      if (heap.capacity > 9223372036854775807usize) {
-        throw allocationError();
-      }
-      next = heap.capacity * 2usize;
-    }
-    if (heap.elementSize !== 0usize && next > 18446744073709551615usize / heap.elementSize) {
-      throw allocationError();
-    }
-    unsafe {
-      const pointer = tryRawRealloc(heap.pointer as * mut u8, next * heap.elementSize);
-      if (isNull(pointer as * const u8)) {
-        throw allocationError();
-      }
-      heap.pointer = pointer as * mut T;
-    }
-    heap.capacity = next;
-  }
-  unsafe {
-    if (tn_bytes_copy_to_at(value, heap.elementSize, 0usize, heap.elementSize, heap.pointer as * mut u8, heap.capacity * heap.elementSize, heap.length * heap.elementSize) !== 0i32) {
-      throw allocationError();
-    }
-  }
-  heap.length = heap.length + 1usize;
-}
-export function heapPop<T>(heap: & mut Heap<T>, value: * mut u8): bool {
-  if (heap.length === 0usize) {
-    return false;
-  }
-  heap.length = heap.length - 1usize;
-  unsafe {
-    tn_bytes_copy_at(heap.pointer as * const u8, heap.capacity * heap.elementSize, heap.length * heap.elementSize, heap.elementSize, value);
-  }
-  return true;
-}
-export function heapLength<T>(heap: & Heap<T >): usize {
-  return heap.length;
-}
-export function heapPeek<T>(heap: & Heap<T>, value: * mut u8): bool {
-  if (heap.length === 0usize) {
-    return false;
-  }
-  unsafe {
-    return tn_bytes_copy_at(heap.pointer as * const u8, heap.capacity * heap.elementSize,(heap.length - 1usize) * heap.elementSize, heap.elementSize, value) === 0i32;
   }
 }

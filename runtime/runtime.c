@@ -1853,6 +1853,13 @@ int tn_string_equals(const uint8_t *left, const uint8_t *right) {
   return strcmp((const char *)left, (const char *)right) == 0;
 }
 
+int tn_string_compare(const uint8_t *left, const uint8_t *right) {
+  if (left == NULL || right == NULL) {
+    return (left != NULL) - (right != NULL);
+  }
+  return strcmp((const char *)left, (const char *)right);
+}
+
 char *tn_string_to_ascii_upper(const uint8_t *text) {
   if (text == NULL) {
     return NULL;

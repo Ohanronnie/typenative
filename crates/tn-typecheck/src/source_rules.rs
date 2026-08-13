@@ -299,6 +299,7 @@ fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
         "store_raw" | "arc_clone" => path.ends_with("std/alloc.tn"),
         "is_string"
         | "is_copy"
+        | "borrow_element"
         | "element_initialized"
         | "move_element"
         | "store_element"

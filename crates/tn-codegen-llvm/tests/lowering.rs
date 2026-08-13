@@ -92,6 +92,51 @@ fn verifies_checked_integer_control_flow_before_emission() {
 }
 
 #[test]
+fn lowers_owned_string_ordering_through_content_comparison() {
+    let boolean = Type::Primitive(PrimitiveType::Bool);
+    let body = Body {
+        declaration: DeclarationId(5),
+        member: None,
+        locals: vec![
+            local("left", Type::String, true),
+            local("right", Type::String, true),
+            local("result", boolean.clone(), false),
+        ],
+        blocks: vec![BasicBlock {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    Place::local(LocalId(2)),
+                    Box::new(Rvalue::CheckedBinary {
+                        operator: BinaryOperator::Less,
+                        left: Operand::Copy(Place::local(LocalId(0))),
+                        right: Operand::Copy(Place::local(LocalId(1))),
+                        operand_type: Type::String,
+                        result_type: boolean.clone(),
+                    }),
+                ),
+                span: span(),
+            }],
+            terminator: Terminator {
+                kind: TerminatorKind::Return(Some(Operand::Copy(Place::local(LocalId(2))))),
+                span: span(),
+            },
+        }],
+        return_type: boolean,
+        effects: Vec::new(),
+    };
+    validate(&body).expect("string ordering MIR");
+    let ir = tn_codegen_llvm::compile_to_llvm_ir(
+        "string_order",
+        &[lower_typed_errors(&body)],
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("verified string ordering module");
+    assert!(ir.contains("call i32 @tn_string_compare"));
+    assert!(ir.contains("icmp slt i32"));
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn lowers_fallible_calls_to_tag_tests_and_explicit_error_successors() {
     let integer = Type::Primitive(PrimitiveType::I32);

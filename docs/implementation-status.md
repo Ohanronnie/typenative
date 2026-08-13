@@ -1069,6 +1069,18 @@ Current evidence:
   absent and covered by missing-export regressions; circular copy storage and
   growing/clearing `string` elements return 42 in debug and optimized native
   collection products;
+- `Array<T>` now exposes externally read-only `length` and `capacity`, declared
+  `reserve` and `shrinkToFit` methods, and bounds-checked borrowed element
+  access. The private `borrow_element` operation preserves the concrete
+  referent through MIR and LLVM; a regression fixes dereference lowering so an
+  enclosing boolean expression cannot replace the pointee type;
+- `Heap<T extends Ord>` is now an ordinary owning min-heap class with private
+  storage, automatic growth, `reserve`, `shrinkToFit`, `push`, `peek`, `pop`,
+  and `clear`. Copy and non-copy paths preserve initialization state and exact
+  destruction. Integer and owned-string heaps pass debug and optimized native
+  ordering checks; owned-string ordering lowers through the reusable
+  `tn_string_compare` content operation rather than pointer comparison. The
+  exported procedural `heap*` family is absent;
 - readonly field assignment is rejected outside the declaring type with
   `TYPE_READONLY_FIELD_ASSIGNMENT`, while constructors and declared methods can
   maintain their own public read-only state;
@@ -1095,9 +1107,9 @@ Remaining scope:
 - Canonicalize `Promise<T, E>`, synchronous `throws`, `T | undefined`, `!`, typed
   `try`/`catch`, direct capability decorators, `@Conform`, `@Drop`, `@Intrinsic`,
   `@Sealed`, `using`, generators, async generators, and typed user macros.
-- Complete the remaining collection surface: fixed arrays, slices, and
-  `Heap<T>`; finish map/set/queue/deque iteration and borrowing together with
-  the canonical iterator protocol.
+- Complete the remaining collection surface: fixed arrays and fully opaque
+  borrowed slices; finish collection iteration and borrowing together with the
+  canonical iterator protocol.
 - Remove obsolete `Result`, `Option`, `match`, `impl`, `extension`, `record`,
   `where`, `dyn`, collection, module, and compatibility spellings from every
   compiler layer and fixture.
