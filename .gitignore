@@ -1,0 +1,54 @@
+/build/
+/target/
+**/target/
+
+# Generated fuzzing and benchmark output. Intentional corpus and regression
+# fixtures remain tracked.
+fuzz/artifacts/
+fuzz/crashes/
+fuzz/.cmin/
+fuzz/.tmin/
+benchmarks/results/
+benchmark-results/
+criterion/
+
+# Bootstrap and compiler output.
+bootstrap-out/
+*.a
+*.bc
+*.bin
+*.d
+*.dll
+*.dSYM/
+*.dylib
+*.exe
+*.ll
+*.node
+*.o
+*.obj
+*.out
+*.pdb
+*.so
+
+# Logs and operating-system metadata.
+*.log
+.DS_Store
+
+# Environment files, credentials, tokens, and signing material.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+credentials.json
+secrets.json
+
+# Editor-local state and temporary files.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

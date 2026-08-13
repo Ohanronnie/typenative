@@ -1,0 +1,1 @@
+type Dynamic = dyn Display;

@@ -1,0 +1,25 @@
+extern "C" {
+  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
+  function strlen(bytes: * const u8): usize;
+}
+export struct Formatter {
+  public bytes: * mut u8;
+}
+export interface Display {
+  display(out: & mut Formatter): void;
+}
+export interface Debug {
+  debug(out: & mut Formatter): void;
+}
+export function writeStatic(output: & mut Formatter, text: & static str): void {
+  unsafe {
+    tn_console_write(1i32, text as * const u8, strlen(text as * const u8));
+  }
+}
+export function boolName(value: bool): & static str {
+  if (value) {
+    return "true";
+  } else {
+    return "false";
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "tn-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+logos.workspace = true
+rowan.workspace = true
+tn-diagnostics = { path = "../tn-diagnostics" }
+unicode-ident.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

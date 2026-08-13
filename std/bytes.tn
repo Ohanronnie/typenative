@@ -1,0 +1,400 @@
+import { AllocError, isNull, rawAlloc, rawRealloc, tryRawRealloc } from "std/alloc";
+import { Drop } from "std/core";
+
+extern "C" {
+  function strlen(bytes: * const u8): usize;
+  function tn_utf8_validate(bytes: * const u8, length: usize): i32;
+  function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
+  function tn_bytes_read_u8(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32;
+  function tn_bytes_read_u8_mut(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32;
+  function tn_bytes_write_u8(bytes: * mut u8, length: usize, index: usize, value: u8): i32;
+  function tn_bytes_slice(bytes: * const u8, length: usize, start: usize, end: usize): * const u8;
+  function tn_bytes_slice_mut(bytes: * mut u8, length: usize, start: usize, end: usize): * const u8;
+  function tn_bytes_move_at(bytes: * mut u8, length: usize, sourceOffset: usize, destinationOffset: usize, count: usize): i32;
+  function tn_bytes_append_ascii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize;
+  function tn_bytes_append_safe_ascii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize;
+  function tn_bytes_append_bytes(buffer: * mut u8, capacity: usize, length: usize, source: * const u8, sourceLength: usize): usize;
+  function tn_bytes_append_decimal(buffer: * mut u8, capacity: usize, length: usize, value: number): usize;
+  function tn_bytes_append_usize(buffer: * mut u8, capacity: usize, length: usize, value: usize): usize;
+}
+function strPointer(text: & str): * const u8 {
+  unsafe {
+    return text as * const u8;
+  }
+}
+function stringPointer(text: string): * const u8 {
+  unsafe {
+    return text as * const u8;
+  }
+}
+export struct Bytes {
+  public pointer: * const u8;
+  public length: usize;
+  public get(index: usize): u8 | undefined {
+    return readValue( & this, index);
+  }
+  public slice(start: usize, end: usize): Bytes {
+    unsafe {
+      return {
+        pointer: tn_bytes_slice(this.pointer, this.length, start, end), length: end - start,
+      };
+    }
+  }
+}
+export struct BytesMutOptions {
+  public capacity: usize;
+}
+@Drop export class BytesMut {
+  public pointer: * mut u8;
+  public length: usize;
+  public capacity: usize;
+  public constructor(options: BytesMutOptions) {
+    unsafe {
+      this.pointer = rawAlloc(options.capacity);
+    }
+    this.length = 0;
+    this.capacity = options.capacity;
+  }
+  mut drop(): void {
+    unsafe {
+      tn_runtime_free(this.pointer);
+    }
+  }
+  public mut push(value: u8): void {
+    push( & mut this, value);
+  }
+  public get(index: usize): u8 | undefined {
+    return getMut( & this, index);
+  }
+  public slice(start: usize, end: usize): Bytes {
+    return sliceMut( & this, start, end);
+  }
+  public mut reserve(capacity: usize): void {
+    reserve( & mut this, capacity);
+  }
+  public mut discardPrefix(count: usize): void {
+    if (count >= this.length) {
+      this.length = 0usize;
+    } else {
+      unsafe {
+        tn_bytes_move_at(this.pointer, this.length, count, 0usize, this.length - count);
+      }
+      this.length = this.length - count;
+    }
+  }
+  public mut appendDecimal(value: number): void {
+    appendDecimal( & mut this, value);
+  }
+  public mut appendUnsignedDecimal(value: usize): void {
+    appendUnsignedDecimal( & mut this, value);
+  }
+  public mut appendString(text: string): void {
+    appendString( & mut this, text);
+  }
+  public mut appendSafeString(text: string): void {
+    appendSafeString( & mut this, text);
+  }
+  public mut append(bytes: Bytes): void {
+    appendBytes( & mut this, & bytes);
+  }
+  public mut appendAscii(text: & str): void {
+    appendAscii( & mut this, text);
+  }
+}
+export struct Cursor {
+  public bytes: Bytes;
+  public offset: usize;
+}
+extern "C" {
+  function tn_runtime_free(pointer: * mut u8): void;
+}
+export function empty(): Bytes {
+  unsafe {
+    return {
+      pointer: "" as * const u8, length: 0usize
+    };
+  }
+}
+export function fromStatic(text: & static str): Bytes {
+  unsafe {
+    return {
+      pointer: text as * const u8, length: strlen(text as * const u8)
+    };
+  }
+}
+export function cursor(bytes: Bytes): Cursor {
+  return {
+    bytes: bytes, offset: 0usize
+  };
+}
+export function isValidUtf8(bytes: & Bytes): bool {
+  unsafe {
+    return tn_utf8_validate(bytes.pointer, bytes.length) !== 0;
+  }
+}
+export function copyTo(source: & Bytes, destination: * mut u8): usize {
+  unsafe {
+    return tn_bytes_copy(source.pointer, source.length, destination);
+  }
+}
+function allocationError(): AllocError {
+  return {
+    code: 12i32
+  };
+}
+function reserve(bytes: & mut BytesMut, capacity: usize): void {
+  unsafe {
+    if (capacity <= bytes.capacity && !isNull(bytes.pointer as * const u8)) {
+      return;
+    }
+  }
+  let next = capacity;
+  if (next<bytes.capacity) {
+    next = bytes.capacity;
+  }
+  unsafe {
+    bytes.pointer = rawRealloc(bytes.pointer, next);
+  }
+  bytes.capacity = next;
+}
+export function tryReserve(bytes: & mut BytesMut, capacity: usize): bool {
+  unsafe {
+    if (capacity <= bytes.capacity && !isNull(bytes.pointer as * const u8)) {
+      return true;
+    }
+  }
+  let next = capacity;
+  if (next<bytes.capacity) {
+    next = bytes.capacity;
+  }
+  unsafe {
+    const pointer = tryRawRealloc(bytes.pointer, next);
+    if (isNull(pointer as * const u8)) {
+      return false;
+    }
+    bytes.pointer = pointer;
+  }
+  bytes.capacity = next;
+  return true;
+}
+export function appendAscii(bytes: & mut BytesMut, text: & str): void {
+  let textLength: usize = 0usize;
+  const textPointer = strPointer(text);
+  unsafe {
+    textLength = strlen(textPointer);
+  }
+  const required = bytes.length + textLength + 1usize;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+export function appendSafeAscii(bytes: & mut BytesMut, text: & str): void {
+  let textLength: usize = 0usize;
+  const textPointer = strPointer(text);
+  unsafe {
+    textLength = strlen(textPointer);
+  }
+  const required = bytes.length + textLength + 1usize;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_safe_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+export function appendBytes(bytes: & mut BytesMut, source: & Bytes): void {
+  const required = bytes.length + source.length;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_bytes(bytes.pointer, bytes.capacity, bytes.length, source.pointer, source.length);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+export function appendDecimal(bytes: & mut BytesMut, value: number): void {
+  const required = bytes.length + 32usize;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_decimal(bytes.pointer, bytes.capacity, bytes.length, value);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+function appendUnsignedDecimal(bytes: & mut BytesMut, value: usize): void {
+  const required = bytes.length + 32usize;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_usize(bytes.pointer, bytes.capacity, bytes.length, value);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+function appendString(bytes: & mut BytesMut, text: string): void {
+  let textLength: usize = 0usize;
+  const textPointer = stringPointer(text);
+  unsafe {
+    textLength = strlen(textPointer);
+  }
+  const required = bytes.length + textLength + 1usize;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+function appendSafeString(bytes: & mut BytesMut, text: string): void {
+  let textLength: usize = 0usize;
+  const textPointer = stringPointer(text);
+  unsafe {
+    textLength = strlen(textPointer);
+  }
+  const required = bytes.length + textLength + 1usize;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_safe_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+export function push(bytes: & mut BytesMut, value: u8): void {
+  if (bytes.length === bytes.capacity) {
+    let next: usize = 1usize;
+    if (bytes.capacity > 0usize) {
+      next = bytes.capacity * 2usize;
+    }
+    unsafe {
+      bytes.pointer = rawRealloc(bytes.pointer, next);
+    }
+    bytes.capacity = next;
+  }
+  unsafe {
+    tn_bytes_write_u8(bytes.pointer, bytes.capacity, bytes.length, value);
+  }
+  bytes.length = bytes.length + 1usize;
+}
+export function pushChecked(bytes: & mut BytesMut, value: u8): void throws AllocError {
+  if (bytes.length === bytes.capacity) {
+    let next: usize = 1usize;
+    if (bytes.capacity > 0usize) {
+      if (bytes.capacity > 9223372036854775807usize) {
+        throw allocationError();
+      }
+      next = bytes.capacity * 2usize;
+    }
+    unsafe {
+      const pointer = tryRawRealloc(bytes.pointer, next);
+      if (isNull(pointer as * const u8)) {
+        throw allocationError();
+      }
+      bytes.pointer = pointer;
+    }
+    bytes.capacity = next;
+  }
+  unsafe {
+    if (tn_bytes_write_u8(bytes.pointer, bytes.capacity, bytes.length, value) !== 0i32) {
+      throw allocationError();
+    }
+  }
+  bytes.length = bytes.length + 1usize;
+}
+export function tryPush(bytes: & mut BytesMut, value: u8): bool {
+  if (bytes.length === bytes.capacity) {
+    let next: usize = 1usize;
+    if (bytes.capacity > 0usize) {
+      next = bytes.capacity * 2usize;
+    }
+    unsafe {
+      const pointer = tryRawRealloc(bytes.pointer, next);
+      if (isNull(pointer as * const u8)) {
+        return false;
+      }
+      bytes.pointer = pointer;
+    }
+    bytes.capacity = next;
+  }
+  unsafe {
+    if (tn_bytes_write_u8(bytes.pointer, bytes.capacity, bytes.length, value) !== 0i32) {
+      return false;
+    }
+  }
+  bytes.length = bytes.length + 1usize;
+  return true;
+}
+export function get(bytes: & Bytes, index: usize, value: & mut u8): bool {
+  unsafe {
+    return tn_bytes_read_u8(bytes.pointer, bytes.length, index, value as * mut u8) === 0i32;
+  }
+}
+function readValue(bytes: & Bytes, index: usize): u8 | undefined {
+  let value: u8 = 0u8;
+  const found = get(bytes, index, & mut value);
+  if (found) {
+    return value;
+  }
+  return undefined;
+}
+function getMut(bytes: & BytesMut, index: usize): u8 | undefined {
+  unsafe {
+    const view: Bytes = {
+      pointer: tn_bytes_slice_mut(bytes.pointer, bytes.length, 0usize, bytes.length), length: bytes.length,
+    };
+    return readValue( & view, index);
+  }
+}
+function sliceMut(bytes: & BytesMut, start: usize, end: usize): Bytes {
+  unsafe {
+    const pointer = tn_bytes_slice_mut(bytes.pointer, bytes.length, start, end);
+    const length = end - start;
+    return {
+      pointer: pointer, length: length,
+    };
+  }
+}
+export function clear(bytes: & mut BytesMut): void {
+  bytes.length = 0usize;
+}
+export function remaining(cursor: & Cursor): usize {
+  const offset = cursor.offset;
+  const bytes: & Bytes = cursor.bytes;
+  if (offset >= bytes.length) {
+    return 0usize;
+  }
+  return bytes.length - offset;
+}
+export function readU8(cursor: & mut Cursor, value: & mut u8): bool {
+  const bytes: & Bytes = cursor.bytes;
+  unsafe {
+    const status = tn_bytes_read_u8(bytes.pointer, bytes.length, cursor.offset, value as * mut u8);
+    if (status !== 0i32) {
+      return false;
+    }
+  }
+  cursor.offset = cursor.offset + 1usize;
+  return true;
+}
+export function peekU8(cursor: & Cursor, value: & mut u8): bool {
+  const bytes: & Bytes = cursor.bytes;
+  unsafe {
+    return tn_bytes_read_u8(bytes.pointer, bytes.length, cursor.offset, value as * mut u8) === 0i32;
+  }
+}
+export function advance(cursor: & mut Cursor, count: usize): bool {
+  const offset = cursor.offset;
+  const bytes: & Bytes = cursor.bytes;
+  if (offset >= bytes.length || count > bytes.length - offset) {
+    return false;
+  }
+  cursor.offset = cursor.offset + count;
+  return true;
+}

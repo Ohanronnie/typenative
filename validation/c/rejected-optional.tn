@@ -1,0 +1,4 @@
+
+@Export function rejectedOptional(value: i32 | undefined): i32 {
+  return 0i32;
+}

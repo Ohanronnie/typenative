@@ -1,0 +1,20 @@
+[package]
+name = "tn-hir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+indexmap.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tn-diagnostics = { path = "../tn-diagnostics" }
+tn-syntax = { path = "../tn-syntax" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

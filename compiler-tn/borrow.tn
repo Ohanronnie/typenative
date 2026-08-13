@@ -1,0 +1,56 @@
+import { isNull } from "std/alloc";
+@derive(Copy)export struct BorrowResult {
+  public errors: usize;
+  public checkedBlocks: usize;
+  public checkedLoans: usize;
+  public checkedMoves: usize;
+  public checkedAwaits: usize;
+  public firstConflictBlock: usize;
+}
+function recordPointerIsNull(pointer: * mut u8): bool {
+  unsafe {
+    return isNull(pointer as * const u8);
+  }
+}
+export function checkBorrow(blocks: usize, errorsFromMir: usize, functions: usize, borrowOperationsFromMir: usize, awaitOperationsFromMir: usize, entryBlock: usize, recordPointer: * mut u8, recordCapacity: usize, recordElementSize: usize, recordLength: usize): BorrowResult {
+  let errors: usize = errorsFromMir;
+  let checkedLoans: usize = 0usize;
+  let checkedMoves: usize = 0usize;
+  let checkedAwaits: usize = 0usize;
+  let firstConflictBlock: usize = blocks;
+  let recordsValid = true;
+  if (blocks === 0usize || entryBlock >= blocks || recordPointerIsNull(recordPointer) || recordElementSize === 0usize || recordCapacity<recordLength || recordLength !== blocks * 8usize) {
+    errors = errors + 1usize;
+    recordsValid = false;
+  }
+  let index: usize = 0usize;
+  while (recordsValid && index<blocks && index * 8usize + 7usize < recordLength) {
+    let borrowOperations: usize = 0usize;
+    let moveOperations: usize = 0usize;
+    let awaitOperations: usize = 0usize;
+    unsafe {
+      let borrowPointer = & mut borrowOperations;
+      let movePointer = & mut moveOperations;
+      let awaitPointer = & mut awaitOperations;
+      tn_bytes_copy_at(recordPointer as * const u8, recordCapacity * recordElementSize, index * 8usize * recordElementSize + 4usize * recordElementSize, recordElementSize, borrowPointer as * mut u8);
+      tn_bytes_copy_at(recordPointer as * const u8, recordCapacity * recordElementSize, index * 8usize * recordElementSize + 5usize * recordElementSize, recordElementSize, movePointer as * mut u8);
+      tn_bytes_copy_at(recordPointer as * const u8, recordCapacity * recordElementSize, index * 8usize * recordElementSize + 6usize * recordElementSize, recordElementSize, awaitPointer as * mut u8);
+    }
+    checkedLoans = checkedLoans + borrowOperations;
+    checkedMoves = checkedMoves + moveOperations;
+    checkedAwaits = checkedAwaits + awaitOperations;
+    index = index + 1usize;
+  }
+  if (awaitOperationsFromMir > 0usize && borrowOperationsFromMir > 0usize && functions === 0usize) {
+    errors = errors + 1usize;
+    if (firstConflictBlock === blocks) {
+      firstConflictBlock = entryBlock;
+    }
+  }
+  return {
+    errors: errors, checkedBlocks: index, checkedLoans: checkedLoans, checkedMoves: checkedMoves, checkedAwaits: checkedAwaits, firstConflictBlock: firstConflictBlock
+  };
+}
+extern "C" {
+  function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
+}

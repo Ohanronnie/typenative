@@ -1,0 +1,28 @@
+import { Source, isInvalid, isTemplateInvalid, next } from "./lexer";
+import { isEnd } from "./parser";
+
+@derive(Copy)export struct FormatResult {
+  public source: Source;
+  public errors: usize;
+}
+export function format(source: Source): FormatResult {
+  let offset: usize = 0usize;
+  let errors: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (token.end <= offset) {
+      errors = errors + 1usize;
+      break;
+    }
+    if (isInvalid(token) || isTemplateInvalid(source, token)) {
+      errors = errors + 1usize;
+    }
+    offset = token.end;
+  }
+  return {
+    source: source, errors: errors
+  };
+}

@@ -1,0 +1,18 @@
+enum Message {
+  Record { value: i32; },
+  Pair(i32, i32),
+  Empty,
+}
+
+function invalid(message: Message, optional: i32 | undefined): void {
+  switch (message) {
+    case Message.Record { missing }: {}
+    case Message.Record { value, value }: {}
+    case Message.Pair(value): {}
+    case Message.Empty: {}
+    case Message.Empty: {}
+  };
+  switch (optional) {
+    case undefined: {}
+  };
+}

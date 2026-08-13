@@ -1,0 +1,2 @@
+function main(): void { const result = match (value) { case Item(value): value, }; }
+

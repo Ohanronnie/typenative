@@ -1,0 +1,6 @@
+{
+  "condition": "SYNTAX_UNBALANCED_TEMPLATE_INTERPOLATION",
+  "message": "unbalanced template interpolation",
+  "start": 23,
+  "end": 25
+}

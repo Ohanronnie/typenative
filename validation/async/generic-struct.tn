@@ -1,0 +1,13 @@
+import { run } from "std/async";
+struct Value {
+  public value: i32;
+}
+async function value(): Promise<Value, never> {
+  return {
+    value: 41i32
+  };
+}
+function main(): i32 {
+  const result = run(value());
+  return result.value + 1i32;
+}

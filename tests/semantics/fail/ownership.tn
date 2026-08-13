@@ -1,0 +1,43 @@
+function moves(value: string): void {
+  const moved = move value;
+  value;
+}
+
+function borrow(value: i32): void {
+  const shared = &value;
+  const mutable = &mut value;
+  shared;
+  mutable;
+}
+
+function escape(): &i32 {
+  const local: i32 = 1;
+  const borrowed = &local;
+  return borrowed;
+}
+
+interface Drop { mut drop(): void; }
+@Conform(Drop)
+struct Pair {
+  public first: string;
+  public second: string;
+  mut drop(): void {}
+}
+
+function implicitAssignment(value: string): void {
+  const taken = value;
+  value;
+  taken;
+}
+
+function consume(value: string): void {}
+function implicitArgument(value: string): void {
+  consume(value);
+  value;
+}
+
+function partial(pair: Pair): void {
+  const first = pair.first;
+  pair;
+  first;
+}

@@ -1,0 +1,4 @@
+function compare(left: i32, right: i32): bool {
+  return left == right;
+}
+

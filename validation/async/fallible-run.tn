@@ -1,0 +1,10 @@
+import { run } from "std/async";
+struct Failure {
+}
+async function value(): Promise<i32, Failure> {
+  return 41i32;
+}
+function main(): i32 throws Failure {
+  const result = try run(value());
+  return result + 1i32;
+}

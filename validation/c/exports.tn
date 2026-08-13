@@ -1,0 +1,19 @@
+
+@Layout("C")struct Pair {
+  public left: i32;
+  public right: i32;
+}
+@Layout("C")enum Kind {
+  Zero, Answer = 42,
+}
+@Export("tn_add")function add(left: i32, right: i32): i32 {
+  return left + right;
+}
+@Export("tn_pair_value")function pairValue(pair: Pair): i32 {
+  return pair.left + pair.right;
+}
+@Export("tn_kind_value")function kindValue(kind: Kind): i32 {
+  return switch(kind) {
+    case Kind.Zero: 0i32, case Kind.Answer: 42i32,
+  };
+}

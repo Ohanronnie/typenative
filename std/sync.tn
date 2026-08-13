@@ -1,0 +1,367 @@
+import { AtomicI32, AtomicU64, AtomicUsize, Drop } from "std/core";
+extern "C" {
+  function tn_mutex_create(): * mut u8;
+  function tn_mutex_lock(handle: * mut u8): i32;
+  function tn_mutex_unlock(handle: * mut u8): i32;
+  function tn_mutex_destroy(handle: * mut u8): i32;
+  function tn_rwlock_create(): * mut u8;
+  function tn_rwlock_read_lock(handle: * mut u8): i32;
+  function tn_rwlock_write_lock(handle: * mut u8): i32;
+  function tn_rwlock_unlock(handle: * mut u8): i32;
+  function tn_rwlock_destroy(handle: * mut u8): i32;
+  function tn_barrier_create(threshold: usize): * mut u8;
+  function tn_barrier_wait(handle: * mut u8): i32;
+  function tn_barrier_destroy(handle: * mut u8): i32;
+  function tn_cond_create(): * mut u8;
+  function tn_cond_wait(condition: * mut u8, mutex: * mut u8): i32;
+  function tn_cond_signal(condition: * mut u8): i32;
+  function tn_cond_broadcast(condition: * mut u8): i32;
+  function tn_cond_destroy(condition: * mut u8): i32;
+  function tn_atomic_i32_load(value: * const i32): i32;
+  function tn_atomic_i32_fetch_add(value: * mut i32, delta: i32): i32;
+  function tn_atomic_i32_store(value: * mut i32, next: i32): i32;
+  function tn_atomic_i32_compare_exchange(value: * mut i32, expected: * mut i32, next: i32): i32;
+  function tn_atomic_u64_load(value: * const u64): u64;
+  function tn_atomic_u64_fetch_add(value: * mut u64, delta: u64): u64;
+  function tn_atomic_u64_store(value: * mut u64, next: u64): u64;
+  function tn_atomic_u64_compare_exchange(value: * mut u64, expected: * mut u64, next: u64): i32;
+  function tn_atomic_usize_load(value: * const usize): usize;
+  function tn_atomic_usize_fetch_add(value: * mut usize, delta: usize): usize;
+  function tn_atomic_usize_store(value: * mut usize, next: usize): usize;
+  function tn_atomic_usize_compare_exchange(value: * mut usize, expected: * mut usize, next: usize): i32;
+  function tn_channel_create(elementSize: usize, capacity: usize): * mut u8;
+  function tn_channel_send(handle: * mut u8, value: * const i32): i32;
+  function tn_channel_receive(handle: * mut u8, value: * mut i32): i32;
+  function tn_channel_close(handle: * mut u8): i32;
+  function tn_channel_destroy(handle: * mut u8): i32;
+}
+@Intrinsic function borrowMut<T>(pointer: * mut T): & mut T {
+  unsafe {
+    return & mut * pointer;
+  }
+}
+@Drop export struct MutexGuard<T> {
+  public handle: * mut u8;
+  public value: & mut T;
+  public locked: bool;
+  mut drop(): void {
+    if (this.locked) {
+      unsafe {
+        tn_mutex_unlock(this.handle);
+      }
+      this.locked = false;
+    }
+  }
+}
+@Drop export class Mutex<T> {
+  public handle: * mut u8;
+  public value: T;
+  public closed: bool;
+  public constructor(value: T) {
+    unsafe {
+      this.handle = tn_mutex_create();
+    }
+    this.value = move value;
+    this.closed = false;
+  }
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_mutex_destroy(this.handle);
+      }
+    }
+  }
+  public lock(): MutexGuard<T> {
+    unsafe {
+      tn_mutex_lock(this.handle);
+    }
+    unsafe {
+      const pointer =( & this.value)as * mut T;
+      return {
+        handle: this.handle, value: borrowMut<T>(pointer), locked: true
+      };
+    }
+  }
+}
+@Drop struct RwLock<T> {
+  public handle: * mut u8;
+  public value: T;
+  public closed: bool;
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_rwlock_destroy(this.handle);
+      }
+    }
+  }
+}
+@Drop export struct Channel<T> {
+  public handle: * mut u8;
+  public elementSize: usize;
+  public closed: bool;
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_channel_destroy(this.handle);
+      }
+    }
+  }
+}
+@Drop export struct Condition {
+  public handle: * mut u8;
+  public closed: bool;
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_cond_destroy(this.handle);
+      }
+    }
+  }
+}
+@Drop export struct Barrier {
+  public handle: * mut u8;
+  public closed: bool;
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_barrier_destroy(this.handle);
+      }
+    }
+  }
+}
+@Drop export struct ChannelI32 {
+  public handle: * mut u8;
+  public closed: bool;
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_channel_destroy(this.handle);
+      }
+    }
+  }
+}
+function destroy<T>(mutex: & mut Mutex<T >): void {
+  if (!mutex.closed) {
+    unsafe {
+      tn_mutex_destroy(mutex.handle);
+    }
+    mutex.closed = true;
+  }
+}
+function rwlock<T>(value: T): RwLock<T> {
+  unsafe {
+    return {
+      handle: tn_rwlock_create(), value: value, closed: false
+    };
+  }
+}
+function readLock<T>(lock: & mut RwLock<T >): i32 {
+  unsafe {
+    return tn_rwlock_read_lock(lock.handle);
+  }
+}
+function writeLock<T>(lock: & mut RwLock<T >): i32 {
+  unsafe {
+    return tn_rwlock_write_lock(lock.handle);
+  }
+}
+function unlockReadWrite<T>(lock: & mut RwLock<T >): i32 {
+  unsafe {
+    return tn_rwlock_unlock(lock.handle);
+  }
+}
+function destroyRwLock<T>(lock: & mut RwLock<T >): i32 {
+  if (lock.closed) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_rwlock_destroy(lock.handle);
+    lock.closed = true;
+    return status;
+  }
+}
+export function atomicLoadI32(value: & AtomicI32): i32 {
+  unsafe {
+    return tn_atomic_i32_load(value as * const i32);
+  }
+}
+export function atomicAddI32(value: & mut AtomicI32, delta: i32): i32 {
+  unsafe {
+    return tn_atomic_i32_fetch_add(value as * mut i32, delta);
+  }
+}
+export function atomicStoreI32(value: & mut AtomicI32, next: i32): i32 {
+  unsafe {
+    return tn_atomic_i32_store(value as * mut i32, next);
+  }
+}
+export function atomicCompareExchangeI32(value: & mut AtomicI32, expected: & mut i32, next: i32): bool {
+  unsafe {
+    return tn_atomic_i32_compare_exchange(value as * mut i32, expected as * mut i32, next) !== 0i32;
+  }
+}
+export function atomicLoadUsize(value: & AtomicUsize): usize {
+  unsafe {
+    return tn_atomic_usize_load(value as * const usize);
+  }
+}
+export function atomicLoadU64(value: & AtomicU64): u64 {
+  unsafe {
+    return tn_atomic_u64_load(value as * const u64);
+  }
+}
+export function atomicAddU64(value: & mut AtomicU64, delta: u64): u64 {
+  unsafe {
+    return tn_atomic_u64_fetch_add(value as * mut u64, delta);
+  }
+}
+export function atomicStoreU64(value: & mut AtomicU64, next: u64): u64 {
+  unsafe {
+    return tn_atomic_u64_store(value as * mut u64, next);
+  }
+}
+export function atomicCompareExchangeU64(value: & mut AtomicU64, expected: & mut u64, next: u64): bool {
+  unsafe {
+    return tn_atomic_u64_compare_exchange(value as * mut u64, expected as * mut u64, next) !== 0i32;
+  }
+}
+export function atomicAddUsize(value: & mut AtomicUsize, delta: usize): usize {
+  unsafe {
+    return tn_atomic_usize_fetch_add(value as * mut usize, delta);
+  }
+}
+export function atomicStoreUsize(value: & mut AtomicUsize, next: usize): usize {
+  unsafe {
+    return tn_atomic_usize_store(value as * mut usize, next);
+  }
+}
+export function atomicCompareExchangeUsize(value: & mut AtomicUsize, expected: & mut usize, next: usize): bool {
+  unsafe {
+    return tn_atomic_usize_compare_exchange(value as * mut usize, expected as * mut usize, next) !== 0i32;
+  }
+}
+export function condition(): Condition {
+  unsafe {
+    return {
+      handle: tn_cond_create(), closed: false
+    };
+  }
+}
+export function wait(condition: & mut Condition, mutex: & mut u8): i32 {
+  unsafe {
+    return tn_cond_wait(condition.handle, mutex as * mut u8);
+  }
+}
+export function signal(condition: & Condition): i32 {
+  unsafe {
+    return tn_cond_signal(condition.handle);
+  }
+}
+export function broadcast(condition: & Condition): i32 {
+  unsafe {
+    return tn_cond_broadcast(condition.handle);
+  }
+}
+export function destroyCondition(condition: & mut Condition): i32 {
+  if (condition.closed) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_cond_destroy(condition.handle);
+    condition.closed = true;
+    return status;
+  }
+}
+export function barrier(threshold: usize): Barrier {
+  unsafe {
+    return {
+      handle: tn_barrier_create(threshold), closed: false
+    };
+  }
+}
+export function barrierWait(barrier: & mut Barrier): i32 {
+  unsafe {
+    return tn_barrier_wait(barrier.handle);
+  }
+}
+export function destroyBarrier(barrier: & mut Barrier): i32 {
+  if (barrier.closed) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_barrier_destroy(barrier.handle);
+    barrier.closed = true;
+    return status;
+  }
+}
+export function channelI32(capacity: usize): ChannelI32 {
+  unsafe {
+    return {
+      handle: tn_channel_create(4usize, capacity), closed: false
+    };
+  }
+}
+export function channel<T>(elementSize: usize, capacity: usize): Channel<T> {
+  unsafe {
+    return {
+      handle: tn_channel_create(elementSize, capacity), elementSize: elementSize, closed: false
+    };
+  }
+}
+export function send<T>(channel: & mut Channel<T>, value: * const u8): i32 {
+  unsafe {
+    return tn_channel_send(channel.handle, value as * const i32);
+  }
+}
+export function receive<T>(channel: & mut Channel<T>, value: * mut u8): i32 {
+  unsafe {
+    return tn_channel_receive(channel.handle, value as * mut i32);
+  }
+}
+export function close<T>(channel: & mut Channel<T >): i32 {
+  if (channel.closed) {
+    return 0i32;
+  }
+  unsafe {
+    return tn_channel_close(channel.handle);
+  }
+}
+export function destroyChannel<T>(channel: & mut Channel<T >): i32 {
+  if (channel.closed) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_channel_destroy(channel.handle);
+    channel.closed = true;
+    return status;
+  }
+}
+export function sendI32(channel: & mut ChannelI32, value: i32): i32 {
+  const borrowed = & value;
+  unsafe {
+    return tn_channel_send(channel.handle, borrowed as * const i32);
+  }
+}
+export function receiveI32(channel: & mut ChannelI32, value: & mut i32): i32 {
+  unsafe {
+    return tn_channel_receive(channel.handle, value as * mut i32);
+  }
+}
+export function closeChannelI32(channel: & mut ChannelI32): i32 {
+  if (channel.closed) {
+    return 0i32;
+  }
+  unsafe {
+    return tn_channel_close(channel.handle);
+  }
+}
+export function destroyChannelI32(channel: & mut ChannelI32): i32 {
+  if (channel.closed) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_channel_destroy(channel.handle);
+    channel.closed = true;
+    return status;
+  }
+}

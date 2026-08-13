@@ -1,0 +1,15 @@
+[package]
+name = "tn-node-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tn-diagnostics = { path = "../tn-diagnostics" }
+tn-hir = { path = "../tn-hir" }
+tn-mir = { path = "../tn-mir" }
+
+[lints]
+workspace = true

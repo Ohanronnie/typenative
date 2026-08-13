@@ -1,0 +1,1959 @@
+import { Vec, vecPop, vecPush, vecWithCapacity } from "std/collections";
+import { Source, Token, TokenKind, firstByte, isKeyword, next } from "./lexer";
+import { isEnd } from "./parser";
+
+extern "C" {
+  function tn_selfhost_parse_i32(source: * const u8, start: usize, end: usize, value: * mut i32): i32;
+  function tn_selfhost_validate_numeric_literal(source: * const u8, start: usize, end: usize): i32;
+  function tn_selfhost_eval_i32_program(operations: * const u8, count: usize, value: * mut i32): i32;
+  function tn_selfhost_eval_i32_program_for_cli(operations: * const u8, count: usize, value: * mut i32, argumentBase: i32): i32;
+  function tn_selfhost_eval_i32_program_with_parameters(operations: * const u8, count: usize, parameters: * const i32, parameterCount: usize, value: * mut i32): i32;
+  function tn_selfhost_eval_i32_constant(kind: i32, left: i32, right: i32, value: * mut i32): i32;
+  function tn_selfhost_llvm_emit_i32_program(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize): i32;
+  function tn_selfhost_llvm_emit_i32_program_product(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize, product: i32): i32;
+  function tn_selfhost_llvm_emit_i32_program_with_parameters(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize, parameterCount: usize): i32;
+  function tn_selfhost_llvm_emit_i32_program_with_parameters_product(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize, parameterCount: usize, product: i32): i32;
+  function tn_selfhost_llvm_emit_i32_module_product(output: * const u8, module: * const u8, source: * const u8, sourceLength: usize, functions: * const u8, functionCount: usize, operations: * const u8, operationCount: usize, entryName: * const u8, entryReturnsVoid: i32, product: i32): i32;
+  function tn_selfhost_llvm_emit_void_program(output: * const u8, module: * const u8, functionName: * const u8): i32;
+  function tn_selfhost_llvm_emit_void_program_product(output: * const u8, module: * const u8, functionName: * const u8, product: i32): i32;
+  function tn_selfhost_byte_n(source: * const u8, length: usize, offset: usize): i32;
+  function tn_selfhost_token_is(source: * const u8, start: usize, end: usize, word: * const u8): i32;
+  function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
+}
+@derive(Copy)export struct I32Operation {
+  public kind: i32;
+  public value: i32;
+}
+@derive(Copy)export struct LoweringSummary {
+  public found: i32;
+  public valid: i32;
+  public returnsVoid: i32;
+  public errorStart: usize;
+  public errorEnd: usize;
+  public errorCode: i32;
+}
+@derive(Copy)struct I32ParseResult {
+  public valid: i32;
+  public value: i32;
+}
+@derive(Copy)struct ParameterInfo {
+  public count: usize;
+  public index: i32;
+}
+@derive(Copy)struct ConstantBinding {
+  public start: usize;
+  public end: usize;
+  public value: i32;
+}
+export struct I32Program {
+  public summary: LoweringSummary;
+  public operations: Vec<I32Operation>;
+  public operationData: * const u8;
+  public operationCount: usize;
+  public parameterCount: usize;
+}
+function mutableOperationPointer(value: & mut I32Operation): * mut u8 {
+  unsafe {
+    return value as * mut u8;
+  }
+}
+function mutableI32Pointer(value: & mut i32): * mut i32 {
+  unsafe {
+    return value as * mut i32;
+  }
+}
+function mutableUsizePointer(value: & mut usize): * mut u8 {
+  unsafe {
+    return value as * mut u8;
+  }
+}
+function operatorBufferPointer(operators: & Vec<i32 >): * const u8 {
+  unsafe {
+    return operators.pointer as * const u8;
+  }
+}
+function operationBufferPointer(operations: & Vec<I32Operation >): * const u8 {
+  unsafe {
+    return operations.pointer as * const u8;
+  }
+}
+function staticPointer(value: & static str): * const u8 {
+  unsafe {
+    return value as * const u8;
+  }
+}
+function operationPointer(program: & I32Program): * const u8 {
+  unsafe {
+    return program.operations.pointer as * const u8;
+  }
+}
+export function programPointer(program: & I32Program): * const u8 {
+  return program.operationData;
+}
+export function programCount(program: & I32Program): usize {
+  return program.operationCount;
+}
+function pushOperation(operations: & mut Vec<I32Operation>, kind: i32, value: i32): void {
+  let operation: I32Operation = {
+    kind: kind, value: value
+  };
+  unsafe {
+    vecPush(operations, mutableOperationPointer( & mut operation)as * const u8);
+  }
+}
+function pushOperator(operators: & mut Vec<i32>, value: i32): void {
+  let writable: i32 = value;
+  unsafe {
+    vecPush(operators, mutableI32Pointer( & mut writable)as * const u8);
+  }
+}
+function operatorAt(pointer: * const u8, capacity: usize, elementSize: usize, index: usize): i32 {
+  let value: i32 = 0i32;
+  unsafe {
+    tn_bytes_copy_at(pointer, capacity * elementSize, index * elementSize, elementSize, mutableI32Pointer( & mut value)as * mut u8);
+  }
+  return value;
+}
+function byteAt(source: Source, offset: usize): i32 {
+  unsafe {
+    return tn_selfhost_byte_n(source.pointer, source.length, offset);
+  }
+}
+function tokenWord(source: Source, token: Token, expected: & static str): bool {
+  unsafe {
+    return tn_selfhost_token_is(source.pointer, token.start, token.end, expected as * const u8) !== 0i32;
+  }
+}
+function tokenKind(token: & Token): i32 {
+  let value: i32 = 0i32;
+  unsafe {
+    tn_bytes_copy_at(token as * const u8, 24usize, 0usize, 4usize, mutableI32Pointer( & mut value)as * mut u8);
+  }
+  return value;
+}
+function isNumberToken(token: Token): bool {
+  return tokenKind( & token) === 1i32;
+}
+function isIdentifierToken(token: Token): bool {
+  return tokenKind( & token) === 0i32;
+}
+function isPunctuationToken(token: Token): bool {
+  return tokenKind( & token) === 3i32;
+}
+function numericEnd(source: Source, start: usize): usize {
+  let cursor = start;
+  while (cursor<source.length) {
+    const byte = byteAt(source, cursor);
+    if (!((byte >= 48i32 && byte <= 57i32) ||(byte >= 65i32 && byte <= 90i32) ||(byte >= 97i32 && byte <= 122i32) || byte === 95i32 || byte === 46i32)) {
+      break;
+    }
+    cursor = cursor + 1usize;
+  }
+  return cursor;
+}
+function parseDecimal(source: Source, token: Token): I32ParseResult {
+  if (!isNumberToken(token) || token.start >= token.end) {
+    return {
+      valid: 0i32, value: 0i32
+    };
+  }
+  const end = numericEnd(source, token.start);
+  const first = byteAt(source, token.start);
+  if (first<48i32 || first > 57i32) {
+    return {
+      valid: 0i32, value: 0i32
+    };
+  }
+  let cursor = token.start + 1usize;
+  while (cursor<end) {
+    const byte = byteAt(source, cursor);
+    if ((byte >= 48i32 && byte <= 57i32) ||(byte >= 65i32 && byte <= 90i32) ||(byte >= 97i32 && byte <= 122i32) || byte === 95i32) {
+      cursor = cursor + 1usize;
+      continue;
+    }
+    return {
+      valid: 0i32, value: 0i32
+    };
+  }
+  let value: i32 = 0i32;
+  unsafe {
+    if (tn_selfhost_validate_numeric_literal(source.pointer, token.start, end) !== 0i32 || tn_selfhost_parse_i32(source.pointer, token.start, end, mutableI32Pointer( & mut value)as * mut i32) !== 0i32) {
+      return {
+        valid: 0i32, value: 0i32
+      };
+    }
+  }
+  return {
+    valid: 1i32, value: value
+  };
+}
+function parseConstantExpression(source: Source, first: Token, bindings: & Vec<ConstantBinding >): I32ParseResult {
+  let left: I32ParseResult = {
+    valid: 0i32, value: 0i32
+  };
+  if (isNumberToken(first)) {
+    left = parseDecimal(source, first);
+  } else if (isIdentifierToken(first)) {
+    left = constantValue(source, bindings, first);
+  }
+  if (left.valid === 0i32) {
+    return left;
+  }
+  const operator = next(source, first.end);
+  if (!isPunctuationToken(operator)) {
+    return left;
+  }
+  const kind = operatorKind(source, operator, false);
+  if (kind<2i32 || kind > 6i32) {
+    return left;
+  }
+  const right = next(source, operator.end);
+  if (!isNumberToken(right)) {
+    return {
+      valid: 0i32, value: 0i32
+    };
+  }
+  const parsedRight = parseDecimal(source, right);
+  if (parsedRight.valid === 0i32) {
+    return parsedRight;
+  }
+  return applyConstantBinary(kind, left.value, parsedRight.value);
+}
+function mutableConstantPointer(value: & mut ConstantBinding): * mut u8 {
+  unsafe {
+    return value as * mut u8;
+  }
+}
+function bindingMatches(source: Source, binding: ConstantBinding, token: Token): bool {
+  if (binding.end - binding.start !== token.end - token.start) {
+    return false;
+  }
+  let offset: usize = 0usize;
+  while (offset<token.end - token.start) {
+    if (byteAt(source, binding.start + offset) !== byteAt(source, token.start + offset)) {
+      return false;
+    }
+    offset = offset + 1usize;
+  }
+  return true;
+}
+function constantValue(source: Source, bindings: & Vec<ConstantBinding>, token: Token): I32ParseResult {
+  let index: usize = 0usize;
+  while (index<bindings.length) {
+    let binding: ConstantBinding = {
+      start: 0usize, end: 0usize, value: 0i32
+    };
+    unsafe {
+      tn_bytes_copy_at(bindings.pointer as * const u8, bindings.capacity * bindings.elementSize, index * bindings.elementSize, bindings.elementSize, mutableConstantPointer( & mut binding));
+    }
+    if (bindingMatches(source, binding, token)) {
+      let value: i32 = 0i32;
+      unsafe {
+        tn_bytes_copy_at(bindings.pointer as * const u8, bindings.capacity * bindings.elementSize, index * bindings.elementSize + 16usize, 4usize, mutableI32Pointer( & mut value)as * mut u8);
+      }
+      return {
+        valid: 1i32, value: value
+      };
+    }
+    index = index + 1usize;
+  }
+  return {
+    valid: 0i32, value: 0i32
+  };
+}
+function recordConstant(source: Source, bindings: & mut Vec<ConstantBinding>, token: Token, value: i32): void {
+  let index: usize = 0usize;
+  while (index<bindings.length) {
+    let binding: ConstantBinding = {
+      start: 0usize, end: 0usize, value: 0i32
+    };
+    unsafe {
+      tn_bytes_copy_at(bindings.pointer as * const u8, bindings.capacity * bindings.elementSize, index * bindings.elementSize, bindings.elementSize, mutableConstantPointer( & mut binding));
+    }
+    if (bindingMatches(source, binding, token)) {
+      binding.value = value;
+      unsafe {
+        tn_bytes_copy_to_at(mutableConstantPointer( & mut binding)as * const u8, bindings.elementSize, 0usize, bindings.elementSize, bindings.pointer as * mut u8, bindings.capacity * bindings.elementSize, index * bindings.elementSize);
+      }
+      return;
+    }
+    index = index + 1usize;
+  }
+  let binding: ConstantBinding = {
+    start: token.start, end: token.end, value: value
+  };
+  unsafe {
+    vecPush(bindings, mutableConstantPointer( & mut binding)as * const u8);
+  }
+}
+function functionNameMatches(source: Source, token: Token, target: Token): bool {
+  if (!isIdentifierToken(token) || token.end - token.start !== target.end - target.start) {
+    return false;
+  }
+  let offset: usize = 0usize;
+  while (offset<token.end - token.start) {
+    if (byteAt(source, token.start + offset) !== byteAt(source, target.start + offset)) {
+      return false;
+    }
+    offset = offset + 1usize;
+  }
+  return true;
+}
+function applyConstantBinary(kind: i32, left: i32, right: i32): I32ParseResult {
+  let value: i32 = 0i32;
+  unsafe {
+    if (tn_selfhost_eval_i32_constant(kind, left, right, mutableI32Pointer( & mut value)) !== 0i32) {
+      return {
+        valid: 0i32, value: 0i32
+      };
+    }
+  }
+  return {
+    valid: 1i32, value: value
+  };
+}
+function findFunctionReturnWithArgument(source: Source, target: Token, argument: i32): I32ParseResult {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "function")) {
+      const name = next(source, declaration.end);
+      if (functionNameMatches(source, name, target)) {
+        let cursor = name.end;
+        let parameter: Token = {
+          kind: TokenKind.End, start: source.length, end: source.length
+        };
+        let body: Token = {
+          kind: TokenKind.End, start: source.length, end: source.length
+        };
+        while (cursor<source.length) {
+          const current = next(source, cursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 40i32) {
+            const candidate = next(source, current.end);
+            if (isIdentifierToken(candidate)) {
+              parameter = candidate;
+            }
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 123i32) {
+            body = current;
+            break;
+          }
+          cursor = current.end;
+        }
+        if (!isEnd(body) && !isEnd(parameter)) {
+          let locals = vecWithCapacity<ConstantBinding>(24usize, 16usize);
+          recordConstant(source, & mut locals, parameter, argument);
+          let bodyCursor = body.end;
+          let depth: usize = 1usize;
+          while (bodyCursor<source.length && depth > 0usize) {
+            const current = next(source, bodyCursor);
+            if (isEnd(current)) {
+              break;
+            }
+            const currentByte = byteAt(source, current.start);
+            if (currentByte === 123i32) {
+              depth = depth + 1usize;
+            } else if (currentByte === 125i32) {
+              depth = depth - 1usize;
+            } else if (depth === 1usize && isKeyword(source, current, "return")) {
+              const left = next(source, current.end);
+              const operator = next(source, left.end);
+              const right = next(source, operator.end);
+              let leftValue = constantValue(source, & locals, left);
+              if (!isIdentifierToken(left)) {
+                leftValue = parseDecimal(source, left);
+              }
+              const returnKind = operatorKind(source, operator, false);
+              if (leftValue.valid !== 0i32 &&(!isPunctuationToken(operator) || returnKind<2i32 || returnKind > 6i32)) {
+                return leftValue;
+              }
+              if (leftValue.valid !== 0i32 && isPunctuationToken(operator) && isNumberToken(right)) {
+                const parsed = parseDecimal(source, right);
+                if (parsed.valid !== 0i32) {
+                  const first = applyConstantBinary(returnKind, leftValue.value, parsed.value);
+                  const nextOperator = next(source, right.end);
+                  if (first.valid !== 0i32 && isPunctuationToken(nextOperator)) {
+                    const secondKind = operatorKind(source, nextOperator, false);
+                    if (secondKind >= 2i32 && secondKind <= 6i32) {
+                      const secondRight = next(source, nextOperator.end);
+                      if (isNumberToken(secondRight)) {
+                        const second = parseDecimal(source, secondRight);
+                        if (second.valid !== 0i32) {
+                          return applyConstantBinary(secondKind, first.value, second.value);
+                        }
+                      }
+                    }
+                  }
+                  return first;
+                }
+              }
+            }
+            bodyCursor = current.end;
+          }
+        }
+        return {
+          valid: 0i32, value: 0i32
+        };
+      }
+    }
+    offset = declaration.end;
+  }
+  return {
+    valid: 0i32, value: 0i32
+  };
+}
+function findFunctionReturnLiteral(source: Source, target: Token): I32ParseResult {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "function")) {
+      const name = next(source, declaration.end);
+      if (functionNameMatches(source, name, target)) {
+        let cursor = name.end;
+        let body: Token = {
+          kind: TokenKind.End, start: source.length, end: source.length
+        };
+        while (cursor<source.length) {
+          const current = next(source, cursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 123i32) {
+            body = current;
+            break;
+          }
+          cursor = current.end;
+        }
+        if (!isEnd(body)) {
+          let locals = vecWithCapacity<ConstantBinding>(24usize, 16usize);
+          let bodyCursor = body.end;
+          let depth: usize = 1usize;
+          while (bodyCursor<source.length && depth > 0usize) {
+            const current = next(source, bodyCursor);
+            if (isEnd(current)) {
+              break;
+            }
+            const currentByte = byteAt(source, current.start);
+            if (currentByte === 123i32) {
+              depth = depth + 1usize;
+            } else if (currentByte === 125i32) {
+              depth = depth - 1usize;
+            } else if (depth === 1usize &&(isKeyword(source, current, "let") || isKeyword(source, current, "const"))) {
+              const localName = next(source, current.end);
+              let search = localName.end;
+              while (search<source.length) {
+                const candidate = next(source, search);
+                if (isEnd(candidate)) {
+                  break;
+                }
+                if (isPunctuationToken(candidate) && byteAt(source, candidate.start) === 61i32) {
+                  let initializer = next(source, candidate.end);
+                  if (isKeyword(source, initializer, "try") || isKeyword(source, initializer, "await")) {
+                    initializer = next(source, initializer.end);
+                  }
+                  let initialized: I32ParseResult = {
+                    valid: 0i32, value: 0i32
+                  };
+                  if (isNumberToken(initializer)) {
+                    initialized = parseDecimal(source, initializer);
+                  } else if (isIdentifierToken(initializer)) {
+                    const opening = next(source, initializer.end);
+                    const argumentToken = next(source, opening.end);
+                    const closing = next(source, argumentToken.end);
+                    if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isNumberToken(argumentToken) && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+                      const argumentValue = parseDecimal(source, argumentToken);
+                      if (argumentValue.valid !== 0i32) {
+                        initialized = findFunctionReturnWithArgument(source, initializer, argumentValue.value);
+                      }
+                    } else if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isIdentifierToken(argumentToken)) {
+                      const nestedOpening = next(source, argumentToken.end);
+                      const nestedArgument = next(source, nestedOpening.end);
+                      const nestedClosing = next(source, nestedArgument.end);
+                      if (isPunctuationToken(nestedOpening) && byteAt(source, nestedOpening.start) === 40i32 && isPunctuationToken(nestedArgument) && byteAt(source, nestedArgument.start) === 41i32 && isPunctuationToken(nestedClosing) && byteAt(source, nestedClosing.start) === 41i32) {
+                        initialized = findFunctionReturnLiteral(source, argumentToken);
+                      } else {
+                        initialized = findFunctionReturnLiteral(source, initializer);
+                      }
+                    } else if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isPunctuationToken(argumentToken) && byteAt(source, argumentToken.start) === 41i32) {
+                      initialized = findFunctionReturnLiteral(source, initializer);
+                    } else {
+                      initialized = findFunctionReturnLiteral(source, initializer);
+                    }
+                  }
+                  if (initialized.valid !== 0i32 && isIdentifierToken(localName)) {
+                    recordConstant(source, & mut locals, localName, initialized.value);
+                  }
+                  break;
+                }
+                if (isPunctuationToken(candidate) && byteAt(source, candidate.start) === 59i32) {
+                  break;
+                }
+                search = candidate.end;
+              }
+            } else if (depth === 1usize && isKeyword(source, current, "return")) {
+              let valueToken = next(source, current.end);
+              if (isKeyword(source, valueToken, "try") || isKeyword(source, valueToken, "await")) {
+                valueToken = next(source, valueToken.end);
+              }
+              if (isNumberToken(valueToken)) {
+                const afterValue = next(source, valueToken.end);
+                if (isPunctuationToken(afterValue) &&(byteAt(source, afterValue.start) === 59i32 || byteAt(source, afterValue.start) === 125i32)) {
+                  return parseDecimal(source, valueToken);
+                }
+              }
+              if (isIdentifierToken(valueToken)) {
+                const known = constantValue(source, & locals, valueToken);
+                if (known.valid !== 0i32) {
+                  let operator = next(source, valueToken.end);
+                  if (isPunctuationToken(operator) && byteAt(source, operator.start) === 46i32) {
+                    const member = next(source, operator.end);
+                    operator = next(source, member.end);
+                  }
+                  if (isPunctuationToken(operator)) {
+                    const right = next(source, operator.end);
+                    if (isNumberToken(right)) {
+                      const parsed = parseDecimal(source, right);
+                      if (parsed.valid !== 0i32) {
+                        return applyConstantBinary(operatorKind(source, operator, false), known.value, parsed.value);
+                      }
+                    }
+                  }
+                  return known;
+                }
+                const nested = findFunctionReturnLiteral(source, valueToken);
+                if (nested.valid !== 0i32) {
+                  return nested;
+                }
+              }
+              if (isPunctuationToken(valueToken) && byteAt(source, valueToken.start) === 123i32) {
+                const nestedValue = next(source, valueToken.end);
+                if (isIdentifierToken(nestedValue)) {
+                  const colon = next(source, nestedValue.end);
+                  const numeric = next(source, colon.end);
+                  if (isPunctuationToken(colon) && byteAt(source, colon.start) === 58i32 && isNumberToken(numeric)) {
+                    return parseDecimal(source, numeric);
+                  }
+                }
+              }
+            }
+            bodyCursor = current.end;
+          }
+        }
+        return {
+          valid: 0i32, value: 0i32
+        };
+      }
+    }
+    offset = declaration.end;
+  }
+  return {
+    valid: 0i32, value: 0i32
+  };
+}
+function findFunctionIndex(source: Source, target: Token): i32 {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  let index: i32 = 0i32;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    const byte = byteAt(source, token.start);
+    if (depth === 0usize && isKeyword(source, token, "function")) {
+      const name = next(source, token.end);
+      if (functionNameMatches(source, name, target)) {
+        return index;
+      }
+      index = index + 1i32;
+    }
+    if (byte === 123i32) {
+      depth = depth + 1usize;
+    } else if (byte === 125i32 && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = token.end;
+  }
+  return - 1i32;
+}
+function findFunctionReturnsVoid(source: Source, target: Token): bool {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "function")) {
+      const name = next(source, declaration.end);
+      if (functionNameMatches(source, name, target)) {
+        let cursor = name.end;
+        let parameterDepth: usize = 0usize;
+        let parametersClosed = false;
+        while (cursor<source.length) {
+          const token = next(source, cursor);
+          if (isEnd(token)) {
+            break;
+          }
+          if (isPunctuationToken(token) && byteAt(source, token.start) === 40i32) {
+            parameterDepth = parameterDepth + 1usize;
+          } else if (isPunctuationToken(token) && byteAt(source, token.start) === 41i32 && parameterDepth > 0usize) {
+            parameterDepth = parameterDepth - 1usize;
+            if (parameterDepth === 0usize) {
+              parametersClosed = true;
+            }
+          } else if (parametersClosed && parameterDepth === 0usize && isPunctuationToken(token) && byteAt(source, token.start) === 58i32) {
+            const result = next(source, token.end);
+            return isKeyword(source, result, "void");
+          }
+          if (isPunctuationToken(token) && byteAt(source, token.start) === 123i32) {
+            break;
+          }
+          cursor = token.end;
+        }
+      }
+    }
+    offset = declaration.end;
+  }
+  return false;
+}
+function findFunctionReturnsI32(source: Source, target: Token): bool {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "function")) {
+      const name = next(source, declaration.end);
+      if (functionNameMatches(source, name, target)) {
+        let cursor = name.end;
+        let parameterDepth: usize = 0usize;
+        let parametersClosed = false;
+        while (cursor<source.length) {
+          const token = next(source, cursor);
+          if (isEnd(token)) {
+            break;
+          }
+          if (isPunctuationToken(token) && byteAt(source, token.start) === 40i32) {
+            parameterDepth = parameterDepth + 1usize;
+          } else if (isPunctuationToken(token) && byteAt(source, token.start) === 41i32 && parameterDepth > 0usize) {
+            parameterDepth = parameterDepth - 1usize;
+            if (parameterDepth === 0usize) {
+              parametersClosed = true;
+            }
+          } else if (parametersClosed && parameterDepth === 0usize && isPunctuationToken(token) && byteAt(source, token.start) === 58i32) {
+            const result = next(source, token.end);
+            return tokenWord(source, result, "i32");
+          }
+          if (isPunctuationToken(token) && byteAt(source, token.start) === 123i32) {
+            break;
+          }
+          cursor = token.end;
+        }
+      }
+    }
+    offset = declaration.end;
+  }
+  return false;
+}
+function findFunctionReturnsArgumentCount(source: Source, target: Token): bool {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "function")) {
+      const name = next(source, declaration.end);
+      if (functionNameMatches(source, name, target)) {
+        let cursor = name.end;
+        let body: Token = endToken(source);
+        while (cursor<source.length) {
+          const current = next(source, cursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 123i32) {
+            body = current;
+            break;
+          }
+          cursor = current.end;
+        }
+        if (!isEnd(body)) {
+          let bodyCursor = body.end;
+          let depth: usize = 1usize;
+          while (bodyCursor<source.length && depth > 0usize) {
+            const current = next(source, bodyCursor);
+            if (isEnd(current)) {
+              break;
+            }
+            const currentByte = byteAt(source, current.start);
+            if (currentByte === 123i32) {
+              depth = depth + 1usize;
+            } else if (currentByte === 125i32) {
+              depth = depth - 1usize;
+            } else if (depth === 1usize && isKeyword(source, current, "return")) {
+              const value = next(source, current.end);
+              const opening = next(source, value.end);
+              const closing = next(source, opening.end);
+              if (isIdentifierToken(value) && tokenWord(source, value, "argumentCount") && isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+                return true;
+              }
+            }
+            bodyCursor = current.end;
+          }
+        }
+        return false;
+      }
+    }
+    offset = declaration.end;
+  }
+  return false;
+}
+function precedence(kind: i32): i32 {
+  if (kind === 1i32) {
+    return 30i32;
+  }
+  if (kind === 2i32 || kind === 3i32) {
+    return 10i32;
+  }
+  if (kind === 4i32 || kind === 5i32 || kind === 6i32) {
+    return 20i32;
+  }
+  return - 1i32;
+}
+function operatorKind(source: Source, token: Token, unary: bool): i32 {
+  const byte = byteAt(source, token.start);
+  if (unary && byte === 45i32) {
+    return 1i32;
+  }
+  if (byte === 43i32) {
+    return 2i32;
+  }
+  if (byte === 45i32) {
+    return 3i32;
+  }
+  if (byte === 42i32) {
+    return 4i32;
+  }
+  if (byte === 47i32) {
+    return 5i32;
+  }
+  if (byte === 37i32) {
+    return 6i32;
+  }
+  return - 1i32;
+}
+function comparisonKind(source: Source, token: Token): i32 {
+  const byte = byteAt(source, token.start);
+  if (byte === 61i32 && token.start + 2usize < source.length && byteAt(source, token.start + 1usize) === 61i32 && byteAt(source, token.start + 2usize) === 61i32) {
+    return 12i32;
+  }
+  if (byte === 33i32 && token.start + 2usize < source.length && byteAt(source, token.start + 1usize) === 61i32 && byteAt(source, token.start + 2usize) === 61i32) {
+    return 13i32;
+  }
+  if (byte === 60i32 && token.start + 1usize < source.length && byteAt(source, token.start + 1usize) === 61i32) {
+    return 15i32;
+  }
+  if (byte === 62i32 && token.start + 1usize < source.length && byteAt(source, token.start + 1usize) === 61i32) {
+    return 17i32;
+  }
+  if (byte === 60i32) {
+    return 14i32;
+  }
+  if (byte === 62i32) {
+    return 16i32;
+  }
+  return - 1i32;
+}
+function emptySummary(): LoweringSummary {
+  return {
+    found: 0i32, valid: 0i32, returnsVoid: 0i32, errorStart: 0usize, errorEnd: 0usize, errorCode: 1014i32
+  };
+}
+function invalidSummary(start: usize, end: usize): LoweringSummary {
+  return {
+    found: 1i32, valid: 0i32, returnsVoid: 0i32, errorStart: start, errorEnd: end, errorCode: 1014i32
+  };
+}
+function isIdentifierByte(value: i32): bool {
+  return(value >= 48i32 && value <= 57i32) ||(value >= 65i32 && value <= 90i32) ||(value >= 97i32 && value <= 122i32) || value === 95i32;
+}
+function boundedWordAt(source: Source, offset: usize, end: usize, first: i32, second: i32, third: i32, fourth: i32): bool {
+  if (offset + 4usize > end) {
+    return false;
+  }
+  if (byteAt(source, offset) !== first || byteAt(source, offset + 1usize) !== second || byteAt(source, offset + 2usize) !== third || byteAt(source, offset + 3usize) !== fourth) {
+    return false;
+  }
+  if (offset > 0usize && isIdentifierByte(byteAt(source, offset - 1usize))) {
+    return false;
+  }
+  if (offset + 4usize < source.length && isIdentifierByte(byteAt(source, offset + 4usize))) {
+    return false;
+  }
+  return true;
+}
+function functionReturnsVoid(source: Source, body: Token): i32 {
+  let cursor = body.start;
+  while (cursor > 0usize) {
+    cursor = cursor - 1usize;
+    if (byteAt(source, cursor) === 58i32) {
+      const typeToken = next(source, cursor + 1usize);
+      if (isKeyword(source, typeToken, "void") && typeToken.end<body.start) {
+        return 1i32;
+      }
+      return 0i32;
+    }
+  }
+  return 0i32;
+}
+function findFunctionBody(source: Source, target: & static str): Token {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "function")) {
+      const name = next(source, token.end);
+      if (isIdentifierToken(name) && tokenWord(source, name, target)) {
+        let bodyOffset = name.end;
+        while (bodyOffset<source.length) {
+          const body = next(source, bodyOffset);
+          if (isEnd(body)) {
+            break;
+          }
+          if (isPunctuationToken(body) && byteAt(source, body.start) === 123i32) {
+            return body;
+          }
+          bodyOffset = body.end;
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return {
+    kind: TokenKind.End, start: source.length, end: source.length
+  };
+}
+function findFunctionBodySpan(source: Source, nameStart: usize, nameEnd: usize): Token {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "function")) {
+      const name = next(source, token.end);
+      if (isIdentifierToken(name) && name.start === nameStart && name.end === nameEnd) {
+        let bodyOffset = name.end;
+        while (bodyOffset<source.length) {
+          const body = next(source, bodyOffset);
+          if (isEnd(body)) {
+            break;
+          }
+          if (isPunctuationToken(body) && byteAt(source, body.start) === 123i32) {
+            return body;
+          }
+          bodyOffset = body.end;
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return {
+    kind: TokenKind.End, start: source.length, end: source.length
+  };
+}
+function parameterInfo(source: Source, body: Token, targetStart: usize, targetEnd: usize): ParameterInfo {
+  const target: Token = {
+    kind: TokenKind.Identifier, start: targetStart, end: targetEnd
+  };
+  let offset: usize = 0usize;
+  while (offset<body.start) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "function")) {
+      let cursor = declaration.end;
+      let opening = false;
+      let depth: usize = 0usize;
+      let count: usize = 0usize;
+      let parameterIndex: i32 = 0i32;
+      let candidate = endToken(source);
+      while (cursor<body.start) {
+        const token = next(source, cursor);
+        if (isEnd(token)) {
+          break;
+        }
+        if (isPunctuationToken(token) && byteAt(source, token.start) === 40i32) {
+          if (!opening) {
+            opening = true;
+            depth = 1usize;
+          } else {
+            depth = depth + 1usize;
+          }
+        } else if (opening && isPunctuationToken(token) && byteAt(source, token.start) === 41i32) {
+          if (depth > 0usize) {
+            depth = depth - 1usize;
+          }
+        } else if (opening && depth === 1usize && isIdentifierToken(token)) {
+          candidate = token;
+        } else if (opening && depth === 1usize && isPunctuationToken(token) && byteAt(source, token.start) === 58i32) {
+          if (candidate.start !== source.length && functionNameMatches(source, candidate, target)) {
+            return {
+              count: count + 1usize, index: parameterIndex
+            };
+          }
+          count = count + 1usize;
+          parameterIndex = parameterIndex + 1i32;
+          candidate = endToken(source);
+        } else if (opening && depth === 1usize && isPunctuationToken(token) && byteAt(source, token.start) === 44i32) {
+          candidate = endToken(source);
+        } else if (opening && depth === 0usize && isPunctuationToken(token) && byteAt(source, token.start) === 123i32 && token.start === body.start) {
+          return {
+            count: count, index: - 1i32
+          };
+        }
+        cursor = token.end;
+      }
+    }
+    offset = declaration.end;
+  }
+  return {
+    count: 0usize, index: - 1i32
+  };
+}
+function endToken(source: Source): Token {
+  return {
+    kind: TokenKind.End, start: source.length, end: source.length
+  };
+}
+function findNumericBinding(source: Source, target: Token): I32ParseResult {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "let") || isKeyword(source, declaration, "const")) {
+      const name = next(source, declaration.end);
+      if (isIdentifierToken(name) && functionNameMatches(source, name, target)) {
+        let cursor = name.end;
+        while (cursor<source.length) {
+          const current = next(source, cursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 61i32) {
+            let initializer = next(source, current.end);
+            if (isKeyword(source, initializer, "try") || isKeyword(source, initializer, "await")) {
+              initializer = next(source, initializer.end);
+            }
+            if (isNumberToken(initializer)) {
+              return parseDecimal(source, initializer);
+            }
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 59i32) {
+            break;
+          }
+          cursor = current.end;
+        }
+      }
+    }
+    offset = declaration.end;
+  }
+  return {
+    valid: 0i32, value: 0i32
+  };
+}
+function findReferenceBinding(source: Source, reference: Token): Token {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "let") || isKeyword(source, declaration, "const")) {
+      const name = next(source, declaration.end);
+      if (isIdentifierToken(name) && functionNameMatches(source, name, reference)) {
+        let cursor = name.end;
+        while (cursor<source.length) {
+          const current = next(source, cursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 61i32) {
+            const ampersand = next(source, current.end);
+            let target = next(source, ampersand.end);
+            if (isKeyword(source, target, "mut")) {
+              target = next(source, target.end);
+            }
+            if (isPunctuationToken(ampersand) && byteAt(source, ampersand.start) === 38i32 && isIdentifierToken(target)) {
+              return target;
+            }
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 59i32) {
+            break;
+          }
+          cursor = current.end;
+        }
+      }
+    }
+    offset = declaration.end;
+  }
+  return endToken(source);
+}
+function findCallArgument(source: Source, callName: & static str, argumentIndex: i32): Token {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isIdentifierToken(token) && tokenWord(source, token, callName)) {
+      let cursor = token.end;
+      let opening: Token = endToken(source);
+      while (cursor<source.length) {
+        const current = next(source, cursor);
+        if (isEnd(current)) {
+          break;
+        }
+        if (isPunctuationToken(current) && byteAt(source, current.start) === 40i32) {
+          opening = current;
+          break;
+        }
+        if (isPunctuationToken(current) && byteAt(source, current.start) === 59i32) {
+          break;
+        }
+        cursor = current.end;
+      }
+      if (!isEnd(opening)) {
+        let depth: usize = 1usize;
+        let index: i32 = 0i32;
+        let first = true;
+        cursor = opening.end;
+        while (cursor<source.length && depth > 0usize) {
+          const current = next(source, cursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 40i32) {
+            depth = depth + 1usize;
+          } else if (isPunctuationToken(current) && byteAt(source, current.start) === 41i32) {
+            depth = depth - 1usize;
+          } else if (depth === 1usize && isPunctuationToken(current) && byteAt(source, current.start) === 44i32) {
+            index = index + 1i32;
+            first = true;
+          } else if (depth === 1usize && first && isIdentifierToken(current)) {
+            if (index === argumentIndex) {
+              return current;
+            }
+            first = false;
+          }
+          cursor = current.end;
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return endToken(source);
+}
+function resolveMapGetValue(source: Source, target: Token): I32ParseResult {
+  const outputReference = findCallArgument(source, "mapGet", 2i32);
+  const valueReference = findCallArgument(source, "mapInsert", 2i32);
+  if (isEnd(outputReference) || isEnd(valueReference)) {
+    return {
+      valid: 0i32, value: 0i32
+    };
+  }
+  const outputName = findReferenceBinding(source, outputReference);
+  const valueName = findReferenceBinding(source, valueReference);
+  if (isEnd(outputName) || isEnd(valueName) || !functionNameMatches(source, outputName, target)) {
+    return {
+      valid: 0i32, value: 0i32
+    };
+  }
+  return findNumericBinding(source, valueName);
+}
+function simpleI32Value(source: Source, token: Token, bindings: & Vec<ConstantBinding >): I32ParseResult {
+  if (isNumberToken(token)) {
+    return parseDecimal(source, token);
+  }
+  if (isKeyword(source, token, "true")) {
+    return {
+      valid: 1i32, value: 1i32
+    };
+  }
+  if (isKeyword(source, token, "false")) {
+    return {
+      valid: 1i32, value: 0i32
+    };
+  }
+  if (isIdentifierToken(token)) {
+    return constantValue(source, bindings, token);
+  }
+  return {
+    valid: 0i32, value: 0i32
+  };
+}
+@derive(Copy)struct IfReturnValues {
+  public valid: i32;
+  public condition: i32;
+  public conditionKind: i32;
+  public conditionRight: i32;
+  public thenValue: i32;
+  public elseValue: i32;
+}
+function findClosingBrace(source: Source, opening: Token): Token {
+  let cursor = opening.end;
+  let depth: usize = 1usize;
+  while (cursor<source.length && depth > 0usize) {
+    const token = next(source, cursor);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isPunctuationToken(token) && byteAt(source, token.start) === 123i32) {
+      depth = depth + 1usize;
+    } else if (isPunctuationToken(token) && byteAt(source, token.start) === 125i32) {
+      depth = depth - 1usize;
+      if (depth === 0usize) {
+        return token;
+      }
+    }
+    cursor = token.end;
+  }
+  return endToken(source);
+}
+function returnValueInBlock(source: Source, opening: Token, closing: Token, bindings: & Vec<ConstantBinding >): I32ParseResult {
+  let cursor = opening.end;
+  while (cursor<closing.start) {
+    const token = next(source, cursor);
+    if (isEnd(token) || token.start >= closing.start) {
+      break;
+    }
+    if (isKeyword(source, token, "return")) {
+      const value = next(source, token.end);
+      const terminator = next(source, value.end);
+      if (isPunctuationToken(terminator) && byteAt(source, terminator.start) === 59i32) {
+        return simpleI32Value(source, value, bindings);
+      }
+      return {
+        valid: 0i32, value: 0i32
+      };
+    }
+    cursor = token.end;
+  }
+  return {
+    valid: 0i32, value: 0i32
+  };
+}
+function findIfReturnValues(source: Source, first: Token, bindings: & Vec<ConstantBinding >): IfReturnValues {
+  const opening = next(source, first.end);
+  const condition = next(source, opening.end);
+  let conditionEnd: Token = next(source, condition.end);
+  let conditionKind: i32 = 0i32;
+  let conditionRight: I32ParseResult = {
+    valid: 0i32, value: 0i32
+  };
+  if (isIdentifierToken(condition) && tokenWord(source, condition, "argumentCount")) {
+    const callOpening = next(source, condition.end);
+    const callClosing = next(source, callOpening.end);
+    if (isPunctuationToken(callOpening) && byteAt(source, callOpening.start) === 40i32 && isPunctuationToken(callClosing) && byteAt(source, callClosing.start) === 41i32) {
+      const comparison = next(source, callClosing.end);
+      const comparisonValue = comparisonKind(source, comparison);
+      if (comparisonValue >= 12i32 && comparisonValue <= 17i32) {
+        let width: usize = 1usize;
+        if (comparisonValue === 12i32 || comparisonValue === 13i32) {
+          width = 3usize;
+        } else if (comparisonValue === 15i32 || comparisonValue === 17i32) {
+          width = 2usize;
+        }
+        const right = next(source, comparison.start + width);
+        conditionRight = simpleI32Value(source, right, bindings);
+        conditionEnd = next(source, right.end);
+        conditionKind = comparisonValue;
+      } else {
+        conditionEnd = callClosing;
+        conditionKind = 7i32;
+      }
+    }
+  }
+  const branchOpening = next(source, conditionEnd.end);
+  if (!isPunctuationToken(opening) || byteAt(source, opening.start) !== 40i32 || !isPunctuationToken(conditionEnd) || byteAt(source, conditionEnd.start) !== 41i32 || !isPunctuationToken(branchOpening) || byteAt(source, branchOpening.start) !== 123i32) {
+    return {
+      valid: 0i32, condition: 0i32, conditionKind: 0i32, conditionRight: 0i32, thenValue: 0i32, elseValue: 0i32
+    };
+  }
+  const branchClosing = findClosingBrace(source, branchOpening);
+  const elseKeyword = next(source, branchClosing.end);
+  const elseOpening = next(source, elseKeyword.end);
+  if (isEnd(branchClosing) || !isKeyword(source, elseKeyword, "else") || !isPunctuationToken(elseOpening) || byteAt(source, elseOpening.start) !== 123i32) {
+    return {
+      valid: 0i32, condition: 0i32, conditionKind: 0i32, conditionRight: 0i32, thenValue: 0i32, elseValue: 0i32
+    };
+  }
+  const elseClosing = findClosingBrace(source, elseOpening);
+  const conditionValue = simpleI32Value(source, condition, bindings);
+  const thenValue = returnValueInBlock(source, branchOpening, branchClosing, bindings);
+  const elseValue = returnValueInBlock(source, elseOpening, elseClosing, bindings);
+  if ((conditionKind === 0i32 && conditionValue.valid === 0i32) ||(conditionKind >= 12i32 && conditionKind <= 17i32 && conditionRight.valid === 0i32) || thenValue.valid === 0i32 || elseValue.valid === 0i32 || isEnd(elseClosing)) {
+    return {
+      valid: 0i32, condition: 0i32, conditionKind: 0i32, conditionRight: 0i32, thenValue: 0i32, elseValue: 0i32
+    };
+  }
+  return {
+    valid: 1i32, condition: conditionValue.value, conditionKind: conditionKind, conditionRight: conditionRight.value, thenValue: thenValue.value, elseValue: elseValue.value
+  };
+}
+function lowerBody(source: Source, body: Token): I32Program {
+  let operations = vecWithCapacity<I32Operation>(8usize, source.length + 1usize);
+  let operators = vecWithCapacity<i32>(4usize, source.length + 1usize);
+  let bindings = vecWithCapacity<ConstantBinding>(24usize, 32usize);
+  const operationData = operationBufferPointer( & operations);
+  let operationCount: usize = 0usize;
+  const operatorPointer = operatorBufferPointer( & operators);
+  const operatorCapacity = operators.capacity;
+  const operatorElementSize = operators.elementSize;
+  let summary = emptySummary();
+  let done = false;
+  let sawReturn = false;
+  const functionParameters = parameterInfo(source, body, source.length, source.length);
+  if (isEnd(body)) {
+    return {
+      summary: emptySummary(), operations: operations, operationData: operationData, operationCount: 0usize, parameterCount: 0usize
+    };
+  }
+  let returnsVoid = functionReturnsVoid(source, body);
+  const firstBodyToken = next(source, body.end);
+  if (returnsVoid === 0i32 && isKeyword(source, firstBodyToken, "if")) {
+    const conditional = findIfReturnValues(source, firstBodyToken, & bindings);
+    if (conditional.valid !== 0i32) {
+      const conditionalKind = conditional.conditionKind;
+      const conditionalRight = conditional.conditionRight;
+      const conditionalCondition = conditional.condition;
+      const conditionalThen = conditional.thenValue;
+      const conditionalElse = conditional.elseValue;
+      pushOperation( & mut operations, 0i32, conditionalCondition);
+      if (conditionalKind === 7i32) {
+        operations.length = operations.length - 1usize;
+        pushOperation( & mut operations, 7i32, 0i32);
+      } else if (conditionalKind >= 12i32 && conditionalKind <= 17i32) {
+        operations.length = operations.length - 1usize;
+        let argumentOperation: I32Operation = {
+          kind: 7i32, value: 0i32
+        };
+        unsafe {
+          vecPush( & mut operations, mutableOperationPointer( & mut argumentOperation)as * const u8);
+        }
+        let rightOperation: I32Operation = {
+          kind: 0i32, value: conditionalRight
+        };
+        unsafe {
+          vecPush( & mut operations, mutableOperationPointer( & mut rightOperation)as * const u8);
+        }
+        let comparisonOperation: I32Operation = {
+          kind: conditionalKind, value: 0i32
+        };
+        unsafe {
+          vecPush( & mut operations, mutableOperationPointer( & mut comparisonOperation)as * const u8);
+        }
+      }
+      pushOperation( & mut operations, 0i32, conditionalThen);
+      pushOperation( & mut operations, 0i32, conditionalElse);
+      pushOperation( & mut operations, 11i32, 0i32);
+      summary = {
+        found: 1i32, valid: 1i32, returnsVoid: 0i32, errorStart: 0usize, errorEnd: 0usize, errorCode: 0i32
+      };
+      return {
+        summary: summary, operations: operations, operationData: operationData, operationCount: conditionalKind === 0i32?4usize: conditionalKind === 7i32?4usize: 6usize, parameterCount: 0usize
+      };
+    }
+  }
+  let offset = body.end;
+  let depth: usize = 1usize;
+  while (offset<source.length && depth > 0usize && !done) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    const byte = byteAt(source, token.start);
+    if (byte === 123i32) {
+      depth = depth + 1usize;
+      offset = token.end;
+      continue;
+    }
+    if (byte === 125i32) {
+      depth = depth - 1usize;
+      offset = token.end;
+      continue;
+    }
+    if (depth === 1usize &&(isKeyword(source, token, "let") || isKeyword(source, token, "const"))) {
+      const name = next(source, token.end);
+      if (isIdentifierToken(name)) {
+        let declarationCursor = name.end;
+        let equals: Token = {
+          kind: TokenKind.End, start: source.length, end: source.length
+        };
+        while (declarationCursor<source.length) {
+          const current = next(source, declarationCursor);
+          if (isEnd(current)) {
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 61i32) {
+            equals = current;
+            break;
+          }
+          if (isPunctuationToken(current) && byteAt(source, current.start) === 59i32) {
+            break;
+          }
+          declarationCursor = current.end;
+        }
+        if (!isEnd(equals)) {
+          let initializer = next(source, equals.end);
+          if (isKeyword(source, initializer, "try") || isKeyword(source, initializer, "await")) {
+            initializer = next(source, initializer.end);
+          }
+          let initialized = false;
+          let initializedValue: i32 = 0i32;
+          if (isNumberToken(initializer)) {
+            const parsed = parseConstantExpression(source, initializer, & bindings);
+            if (parsed.valid !== 0i32) {
+              initialized = true;
+              initializedValue = parsed.value;
+            }
+          } else if (isIdentifierToken(initializer)) {
+            const known = constantValue(source, & bindings, initializer);
+            if (known.valid !== 0i32) {
+              initialized = true;
+              initializedValue = known.value;
+            } else {
+              const opening = next(source, initializer.end);
+              const argumentToken = next(source, opening.end);
+              const closing = next(source, argumentToken.end);
+              if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isNumberToken(argumentToken) && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+                const argumentValue = parseDecimal(source, argumentToken);
+                if (argumentValue.valid !== 0i32) {
+                  const called = findFunctionReturnWithArgument(source, initializer, argumentValue.value);
+                  if (called.valid !== 0i32) {
+                    initialized = true;
+                    initializedValue = called.value;
+                  }
+                }
+              } else if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isIdentifierToken(argumentToken)) {
+                const nestedOpening = next(source, argumentToken.end);
+                const nestedArgument = next(source, nestedOpening.end);
+                const nestedClosing = next(source, nestedArgument.end);
+                if (isPunctuationToken(nestedOpening) && byteAt(source, nestedOpening.start) === 40i32 && isPunctuationToken(nestedArgument) && byteAt(source, nestedArgument.start) === 41i32 && isPunctuationToken(nestedClosing) && byteAt(source, nestedClosing.start) === 41i32) {
+                  const called = findFunctionReturnLiteral(source, argumentToken);
+                  if (called.valid !== 0i32) {
+                    initialized = true;
+                    initializedValue = called.value;
+                  }
+                } else if (isPunctuationToken(nestedOpening) && byteAt(source, nestedOpening.start) === 40i32 && isPunctuationToken(argumentToken) && byteAt(source, argumentToken.start) === 41i32) {
+                  const called = findFunctionReturnLiteral(source, initializer);
+                  if (called.valid !== 0i32) {
+                    initialized = true;
+                    initializedValue = called.value;
+                  }
+                }
+              }
+            }
+          }
+          if (initialized) {
+            recordConstant(source, & mut bindings, name, initializedValue);
+          }
+        }
+      }
+      offset = name.end;
+      continue;
+    }
+    if (depth === 1usize && returnsVoid !== 0i32 && isIdentifierToken(token)) {
+      const opening = next(source, token.end);
+      if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && findFunctionReturnsVoid(source, token)) {
+        let cursor = opening.end;
+        let closing = next(source, cursor);
+        let argumentsValid = true;
+        let hasArgument = false;
+        let argumentValue: i32 = 0i32;
+        if (isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+          cursor = closing.end;
+        } else {
+          const argument = next(source, cursor);
+          const parsed = simpleI32Value(source, argument, & bindings);
+          const separator = next(source, argument.end);
+          if (parsed.valid === 0i32 || !isPunctuationToken(separator) || byteAt(source, separator.start) !== 41i32) {
+            argumentsValid = false;
+          } else {
+            hasArgument = true;
+            argumentValue = parsed.value;
+            closing = separator;
+            cursor = closing.end;
+          }
+        }
+        if (argumentsValid && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+          const target = findFunctionIndex(source, token);
+          if (hasArgument) {
+            let argumentOperation: I32Operation = {
+              kind: 0i32, value: argumentValue
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut argumentOperation)as * const u8);
+            }
+          }
+          let callOperation: I32Operation = {
+            kind: 10i32, value: target
+          };
+          unsafe {
+            vecPush( & mut operations, mutableOperationPointer( & mut callOperation)as * const u8);
+          }
+          operationCount = operationCount +(hasArgument?2usize: 1usize);
+          offset = cursor;
+          continue;
+        }
+        if (!argumentsValid) {
+          summary = invalidSummary(token.start, closing.end);
+          done = true;
+          break;
+        }
+      }
+    }
+    if (depth === 1usize && isKeyword(source, token, "return")) {
+      sawReturn = true;
+      let cursor = token.end;
+      let expectValue = true;
+      let parenDepth: usize = 0usize;
+      const conditionalCondition = next(source, cursor);
+      let conditionalConditionEnd = conditionalCondition.end;
+      if (isIdentifierToken(conditionalCondition) && tokenWord(source, conditionalCondition, "argumentCount")) {
+        const opening = next(source, conditionalCondition.end);
+        const closing = next(source, opening.end);
+        if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+          conditionalConditionEnd = closing.end;
+        }
+      }
+      let conditionalRight = endToken(source);
+      let conditionalQuestion = next(source, conditionalConditionEnd);
+      let conditionalComparison = - 1i32;
+      if (isPunctuationToken(conditionalQuestion)) {
+        conditionalComparison = comparisonKind(source, conditionalQuestion);
+        if (conditionalComparison >= 12i32 && conditionalComparison <= 17i32) {
+          let width: usize = 1usize;
+          if (conditionalComparison === 12i32 || conditionalComparison === 13i32) {
+            width = 3usize;
+          } else if (conditionalComparison === 15i32 || conditionalComparison === 17i32) {
+            width = 2usize;
+          }
+          conditionalRight = next(source, conditionalQuestion.start + width);
+          conditionalQuestion = next(source, conditionalRight.end);
+        }
+      }
+      if (returnsVoid === 0i32 && isPunctuationToken(conditionalQuestion) && byteAt(source, conditionalQuestion.start) === 63i32) {
+        const conditionalThen = next(source, conditionalQuestion.end);
+        const conditionalColon = next(source, conditionalThen.end);
+        const conditionalElse = next(source, conditionalColon.end);
+        const conditionalEnd = next(source, conditionalElse.end);
+        let conditionWasEmitted = false;
+        let conditionValue: I32ParseResult = simpleI32Value(source, conditionalCondition, & bindings);
+        if (isIdentifierToken(conditionalCondition) && tokenWord(source, conditionalCondition, "argumentCount")) {
+          const opening = next(source, conditionalCondition.end);
+          const closing = next(source, opening.end);
+          if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32 && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+            let argumentOperation: I32Operation = {
+              kind: 7i32, value: 0i32
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut argumentOperation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+            conditionWasEmitted = true;
+          }
+        } else if (conditionValue.valid !== 0i32 && conditionalComparison<12i32) {
+          let conditionOperation: I32Operation = {
+            kind: 0i32, value: conditionValue.value
+          };
+          unsafe {
+            vecPush( & mut operations, mutableOperationPointer( & mut conditionOperation)as * const u8);
+          }
+          operationCount = operationCount + 1usize;
+          conditionWasEmitted = true;
+        }
+        if (conditionalComparison >= 12i32 && conditionalComparison <= 17i32) {
+          if (!conditionWasEmitted) {
+            if (conditionValue.valid !== 0i32) {
+              pushOperation( & mut operations, 0i32, conditionValue.value);
+              operationCount = operationCount + 1usize;
+              conditionWasEmitted = true;
+            } else if (isIdentifierToken(conditionalCondition) && tokenWord(source, conditionalCondition, "argumentCount")) {
+              pushOperation( & mut operations, 7i32, 0i32);
+              operationCount = operationCount + 1usize;
+              conditionWasEmitted = true;
+            }
+          }
+          const rightValue = simpleI32Value(source, conditionalRight, & bindings);
+          if (conditionWasEmitted && rightValue.valid !== 0i32) {
+            let rightOperation: I32Operation = {
+              kind: 0i32, value: rightValue.value
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut rightOperation)as * const u8);
+            }
+            let comparisonOperation: I32Operation = {
+              kind: conditionalComparison, value: 0i32
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut comparisonOperation)as * const u8);
+            }
+            operationCount = operationCount + 2usize;
+          } else {
+            conditionWasEmitted = false;
+          }
+        }
+        const thenValue = simpleI32Value(source, conditionalThen, & bindings);
+        const elseValue = simpleI32Value(source, conditionalElse, & bindings);
+        if (conditionWasEmitted && thenValue.valid !== 0i32 && elseValue.valid !== 0i32 && isPunctuationToken(conditionalColon) && byteAt(source, conditionalColon.start) === 58i32 && isPunctuationToken(conditionalEnd) && byteAt(source, conditionalEnd.start) === 59i32) {
+          pushOperation( & mut operations, 0i32, thenValue.value);
+          pushOperation( & mut operations, 0i32, elseValue.value);
+          pushOperation( & mut operations, 11i32, 0i32);
+          operationCount = operationCount + 3usize;
+          summary = {
+            found: 1i32, valid: 1i32, returnsVoid: 0i32, errorStart: 0usize, errorEnd: 0usize, errorCode: 0i32
+          };
+          done = true;
+          break;
+        }
+      }
+      while (cursor<source.length && !done) {
+        const current = next(source, cursor);
+        if (isEnd(current)) {
+          summary = invalidSummary(current.start, current.end);
+          done = true;
+          break;
+        }
+        const currentByte = byteAt(source, current.start);
+        if (isIdentifierToken(current) && expectValue && tokenWord(source, current, "argumentCount")) {
+          const opening = next(source, current.end);
+          const closing = next(source, opening.end);
+          if (!isPunctuationToken(opening) || byteAt(source, opening.start) !== 40i32 || !isPunctuationToken(closing) || byteAt(source, closing.start) !== 41i32) {
+            summary = invalidSummary(current.start, closing.end);
+            done = true;
+            break;
+          }
+          let operation: I32Operation = {
+            kind: 7i32, value: 0i32
+          };
+          unsafe {
+            vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+          }
+          operationCount = operationCount + 1usize;
+          expectValue = false;
+          cursor = closing.end;
+          continue;
+        }
+        if (expectValue && currentByte >= 48i32 && currentByte <= 57i32) {
+          const parsed = parseDecimal(source, current);
+          if (parsed.valid === 0i32) {
+            summary = invalidSummary(current.start, current.end);
+            done = true;
+            break;
+          }
+          let operation: I32Operation = {
+            kind: 0i32, value: parsed.value
+          };
+          unsafe {
+            vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+          }
+          operationCount = operationCount + 1usize;
+          expectValue = false;
+          cursor = current.end;
+          continue;
+        }
+        if (expectValue && isIdentifierToken(current)) {
+          const opening = next(source, current.end);
+          if (isPunctuationToken(opening) && byteAt(source, opening.start) === 40i32) {
+            const inner = next(source, opening.end);
+            if (isPunctuationToken(inner) && byteAt(source, inner.start) === 41i32) {
+              const called = findFunctionReturnLiteral(source, current);
+              if (called.valid !== 0i32) {
+                let operation: I32Operation = {
+                  kind: 0i32, value: called.value
+                };
+                unsafe {
+                  vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+                }
+                operationCount = operationCount + 1usize;
+                expectValue = false;
+                cursor = inner.end;
+                continue;
+              }
+              if (findFunctionReturnsArgumentCount(source, current)) {
+                let operation: I32Operation = {
+                  kind: 7i32, value: 0i32
+                };
+                unsafe {
+                  vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+                }
+                operationCount = operationCount + 1usize;
+                expectValue = false;
+                cursor = inner.end;
+                continue;
+              }
+              const functionIndex = findFunctionIndex(source, current);
+              if (functionIndex >= 0i32) {
+                let operation: I32Operation = {
+                  kind: 9i32, value: functionIndex
+                };
+                unsafe {
+                  vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+                }
+                operationCount = operationCount + 1usize;
+                expectValue = false;
+                cursor = inner.end;
+                continue;
+              }
+            }
+            if (isNumberToken(inner)) {
+              let consumed = inner;
+              const innerOperator = next(source, inner.end);
+              if (isPunctuationToken(innerOperator) && operatorKind(source, innerOperator, false) >= 2i32 && operatorKind(source, innerOperator, false) <= 6i32) {
+                const right = next(source, innerOperator.end);
+                if (isNumberToken(right)) {
+                  consumed = right;
+                }
+              }
+              const closing = next(source, consumed.end);
+              if (isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+                const argumentValue = parseConstantExpression(source, inner, & bindings);
+                if (argumentValue.valid !== 0i32) {
+                  const called = findFunctionReturnWithArgument(source, current, argumentValue.value);
+                  if (called.valid !== 0i32) {
+                    let operation: I32Operation = {
+                      kind: 0i32, value: called.value
+                    };
+                    unsafe {
+                      vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+                    }
+                    operationCount = operationCount + 1usize;
+                    expectValue = false;
+                    cursor = closing.end;
+                    continue;
+                  }
+                  const functionIndex = findFunctionIndex(source, current);
+                  if (functionIndex >= 0i32 && findFunctionReturnsI32(source, current)) {
+                    let argumentOperation: I32Operation = {
+                      kind: 0i32, value: argumentValue.value
+                    };
+                    unsafe {
+                      vecPush( & mut operations, mutableOperationPointer( & mut argumentOperation)as * const u8);
+                    }
+                    let callOperation: I32Operation = {
+                      kind: 9i32, value: functionIndex
+                    };
+                    unsafe {
+                      vecPush( & mut operations, mutableOperationPointer( & mut callOperation)as * const u8);
+                    }
+                    operationCount = operationCount + 2usize;
+                    expectValue = false;
+                    cursor = closing.end;
+                    continue;
+                  }
+                }
+              }
+            }
+            const innerOpening = next(source, inner.end);
+            const innerClosing = next(source, innerOpening.end);
+            const closing = next(source, innerClosing.end);
+            if (isIdentifierToken(inner) && isPunctuationToken(innerOpening) && byteAt(source, innerOpening.start) === 40i32 && isPunctuationToken(innerClosing) && byteAt(source, innerClosing.start) === 41i32 && isPunctuationToken(closing) && byteAt(source, closing.start) === 41i32) {
+              if (tokenWord(source, inner, "argumentCount")) {
+                const functionIndex = findFunctionIndex(source, current);
+                if (functionIndex >= 0i32) {
+                  let argumentOperation: I32Operation = {
+                    kind: 7i32, value: 0i32
+                  };
+                  unsafe {
+                    vecPush( & mut operations, mutableOperationPointer( & mut argumentOperation)as * const u8);
+                  }
+                  operationCount = operationCount + 1usize;
+                  let callOperation: I32Operation = {
+                    kind: 9i32, value: functionIndex
+                  };
+                  unsafe {
+                    vecPush( & mut operations, mutableOperationPointer( & mut callOperation)as * const u8);
+                  }
+                  operationCount = operationCount + 1usize;
+                  expectValue = false;
+                  cursor = closing.end;
+                  continue;
+                }
+              }
+              const called = findFunctionReturnLiteral(source, inner);
+              if (called.valid !== 0i32) {
+                let operation: I32Operation = {
+                  kind: 0i32, value: called.value
+                };
+                unsafe {
+                  vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+                }
+                operationCount = operationCount + 1usize;
+                expectValue = false;
+                cursor = closing.end;
+                continue;
+              }
+            }
+          }
+          const parameter = parameterInfo(source, body, current.start, current.end);
+          if (parameter.index >= 0i32) {
+            let operation: I32Operation = {
+              kind: 8i32, value: parameter.index
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+            expectValue = false;
+            cursor = current.end;
+            continue;
+          }
+          const mapped = resolveMapGetValue(source, current);
+          if (mapped.valid !== 0i32) {
+            let operation: I32Operation = {
+              kind: 0i32, value: mapped.value
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+            expectValue = false;
+            cursor = current.end;
+            continue;
+          }
+          const known = constantValue(source, & bindings, current);
+          if (known.valid !== 0i32) {
+            let operation: I32Operation = {
+              kind: 0i32, value: known.value
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+            expectValue = false;
+            cursor = current.end;
+            continue;
+          }
+        }
+        if (!expectValue && isPunctuationToken(current) && currentByte === 46i32) {
+          const member = next(source, current.end);
+          if (isIdentifierToken(member)) {
+            cursor = member.end;
+            continue;
+          }
+        }
+        if (isPunctuationToken(current) && currentByte === 40i32 && expectValue) {
+          let openingOperator: i32 = 7i32;
+          unsafe {
+            vecPush( & mut operators, mutableI32Pointer( & mut openingOperator)as * const u8);
+          }
+          parenDepth = parenDepth + 1usize;
+          expectValue = true;
+          cursor = current.end;
+          continue;
+        }
+        if (isPunctuationToken(current) && currentByte === 45i32 && expectValue) {
+          let unaryOperator: i32 = 1i32;
+          unsafe {
+            vecPush( & mut operators, mutableI32Pointer( & mut unaryOperator)as * const u8);
+          }
+          expectValue = true;
+          cursor = current.end;
+          continue;
+        }
+        if (isPunctuationToken(current) && currentByte === 41i32 && !expectValue) {
+          if (parenDepth === 0usize) {
+            summary = invalidSummary(current.start, current.end);
+            done = true;
+            break;
+          }
+          while (operators.length > 0usize && operatorAt(operatorPointer, operatorCapacity, operatorElementSize, operators.length - 1usize) !== 7i32) {
+            operators.length = operators.length - 1usize;
+            let popped: i32 = 0i32;
+            unsafe {
+              tn_bytes_copy_at(operatorPointer, operatorCapacity * operatorElementSize, operators.length * operatorElementSize, operatorElementSize, mutableI32Pointer( & mut popped)as * mut u8);
+            }
+            let operation: I32Operation = {
+              kind: popped, value: 0i32
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+          }
+          if (operators.length === 0usize) {
+            summary = invalidSummary(current.start, current.end);
+            done = true;
+            break;
+          }
+          operators.length = operators.length - 1usize;
+          parenDepth = parenDepth - 1usize;
+          cursor = current.end;
+          continue;
+        }
+        if (isPunctuationToken(current) && !expectValue &&(currentByte === 43i32 || currentByte === 45i32 || currentByte === 42i32 || currentByte === 47i32 || currentByte === 37i32)) {
+          const kind = operatorKind(source, current, false);
+          const currentPrecedence = precedence(kind);
+          while (operators.length > 0usize) {
+            const top = operatorAt(operatorPointer, operatorCapacity, operatorElementSize, operators.length - 1usize);
+            if (top === 7i32 || precedence(top) < currentPrecedence ||(currentPrecedence === 30i32 && precedence(top) === currentPrecedence)) {
+              break;
+            }
+            operators.length = operators.length - 1usize;
+            let popped: i32 = 0i32;
+            unsafe {
+              tn_bytes_copy_at(operatorPointer, operatorCapacity * operatorElementSize, operators.length * operatorElementSize, operatorElementSize, mutableI32Pointer( & mut popped)as * mut u8);
+            }
+            let operation: I32Operation = {
+              kind: popped, value: 0i32
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+          }
+          let binaryOperator: i32 = kind;
+          unsafe {
+            vecPush( & mut operators, mutableI32Pointer( & mut binaryOperator)as * const u8);
+          }
+          expectValue = true;
+          cursor = current.end;
+          continue;
+        }
+        if (isPunctuationToken(current) && currentByte === 59i32 && !expectValue) {
+          if (parenDepth !== 0usize) {
+            summary = invalidSummary(current.start, current.end);
+            done = true;
+            break;
+          }
+          while (operators.length > 0usize) {
+            operators.length = operators.length - 1usize;
+            let popped: i32 = 0i32;
+            unsafe {
+              tn_bytes_copy_at(operatorPointer, operatorCapacity * operatorElementSize, operators.length * operatorElementSize, operatorElementSize, mutableI32Pointer( & mut popped)as * mut u8);
+            }
+            if (popped === 7i32) {
+              summary = invalidSummary(current.start, current.end);
+              done = true;
+              break;
+            }
+            let operation: I32Operation = {
+              kind: popped, value: 0i32
+            };
+            unsafe {
+              vecPush( & mut operations, mutableOperationPointer( & mut operation)as * const u8);
+            }
+            operationCount = operationCount + 1usize;
+          }
+          const closing = next(source, current.end);
+          if (!isPunctuationToken(closing) || byteAt(source, closing.start) !== 125i32) {
+            summary = invalidSummary(closing.start, closing.end);
+            done = true;
+            break;
+          }
+          summary = {
+            found: 1i32, valid: 1i32, returnsVoid: 0i32, errorStart: 0usize, errorEnd: 0usize, errorCode: 0i32
+          };
+          done = true;
+          break;
+        }
+        summary = invalidSummary(current.start, current.end);
+        done = true;
+        break;
+      }
+      if (!done) {
+        summary = invalidSummary(cursor, cursor);
+        done = true;
+      }
+      break;
+    }
+    offset = token.end;
+  }
+  if (returnsVoid !== 0i32 && !sawReturn) {
+    summary = {
+      found: 1i32, valid: 1i32, returnsVoid: 1i32, errorStart: 0usize, errorEnd: 0usize, errorCode: 0i32
+    };
+  }
+  return {
+    summary: summary, operations: operations, operationData: operationData, operationCount: operationCount, parameterCount: functionParameters.count
+  };
+}
+export function lowerFunction(source: Source, target: & static str): I32Program {
+  return lowerBody(source, findFunctionBody(source, target));
+}
+export function lowerFunctionSpan(source: Source, nameStart: usize, nameEnd: usize): I32Program {
+  return lowerBody(source, findFunctionBodySpan(source, nameStart, nameEnd));
+}
+export function lowerMain(source: Source): I32Program {
+  return lowerBody(source, findFunctionBody(source, "main"));
+}
+export function evaluate(operations: * const u8, count: usize, value: & mut i32): bool {
+  unsafe {
+    return tn_selfhost_eval_i32_program(operations, count, mutableI32Pointer(value)) === 0i32;
+  }
+}
+export function evaluateForCli(operations: * const u8, count: usize, value: & mut i32, argumentBase: i32): bool {
+  unsafe {
+    return tn_selfhost_eval_i32_program_for_cli(operations, count, mutableI32Pointer(value), argumentBase) === 0i32;
+  }
+}
+export function evaluateWithParameters(operations: * const u8, count: usize, parameters: * const i32, parameterCount: usize, value: & mut i32): bool {
+  unsafe {
+    return tn_selfhost_eval_i32_program_with_parameters(operations, count, parameters, parameterCount, mutableI32Pointer(value)) === 0i32;
+  }
+}
+export function emit(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_i32_program(output, module, functionName, operations, count);
+  }
+}
+export function emitProduct(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize, product: i32): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_i32_program_product(output, module, functionName, operations, count, product);
+  }
+}
+export function emitWithParameters(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize, parameterCount: usize): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_i32_program_with_parameters(output, module, functionName, operations, count, parameterCount);
+  }
+}
+export function emitWithParametersProduct(output: * const u8, module: * const u8, functionName: * const u8, operations: * const u8, count: usize, parameterCount: usize, product: i32): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_i32_program_with_parameters_product(output, module, functionName, operations, count, parameterCount, product);
+  }
+}
+export function emitModuleProduct(output: * const u8, module: * const u8, source: Source, functions: * const u8, functionCount: usize, operations: * const u8, operationCount: usize, entryName: * const u8, entryReturnsVoid: i32, product: i32): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_i32_module_product(output, module, source.pointer, source.length, functions, functionCount, operations, operationCount, entryName, entryReturnsVoid, product);
+  }
+}
+export function emitVoid(output: * const u8, module: * const u8, functionName: * const u8): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_void_program(output, module, functionName);
+  }
+}
+export function emitVoidProduct(output: * const u8, module: * const u8, functionName: * const u8, product: i32): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_void_program_product(output, module, functionName, product);
+  }
+}

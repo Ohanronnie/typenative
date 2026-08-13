@@ -1,0 +1,21 @@
+extern "C" {
+  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
+  function strlen(bytes: * const u8): usize;
+}
+export function log(text: & static str): void {
+  unsafe {
+    tn_console_write(1i32, text as * const u8, strlen(text as * const u8));
+    tn_console_write(1i32, "\n" as * const u8, 1usize);
+  }
+}
+export function error(text: & static str): void {
+  unsafe {
+    tn_console_write(2i32, text as * const u8, strlen(text as * const u8));
+    tn_console_write(2i32, "\n" as * const u8, 1usize);
+  }
+}
+export function write(text: & static str): void {
+  unsafe {
+    tn_console_write(1i32, text as * const u8, strlen(text as * const u8));
+  }
+}

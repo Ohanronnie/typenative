@@ -1,0 +1,49 @@
+extern "C" {
+  function tn_clock_monotonic_ns(): u64;
+  function tn_clock_wall_ns(): u64;
+}
+export struct Duration {
+  public nanoseconds: u64;
+}
+export function monotonicNow(): Instant {
+  unsafe {
+    return {
+      nanoseconds: tn_clock_monotonic_ns()
+    };
+  }
+}
+export function wallNow(): Instant {
+  unsafe {
+    return {
+      nanoseconds: tn_clock_wall_ns()
+    };
+  }
+}
+export function durationFromNanoseconds(value: u64): Duration {
+  return {
+    nanoseconds: value
+  };
+}
+export function seconds(value: u64): Duration {
+  return {
+    nanoseconds: value * 1000000000u64
+  };
+}
+export function milliseconds(value: u64): Duration {
+  return {
+    nanoseconds: value * 1000000u64
+  };
+}
+export function elapsed(start: Instant, end: Instant): Duration {
+  if (end.nanoseconds<start.nanoseconds) {
+    return {
+      nanoseconds: 0u64
+    };
+  }
+  return {
+    nanoseconds: end.nanoseconds - start.nanoseconds
+  };
+}
+export struct Instant {
+  public nanoseconds: u64;
+}

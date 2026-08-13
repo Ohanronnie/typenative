@@ -1,0 +1,16 @@
+extern "C" {
+  function tn_runtime_abort(code: u32): void;
+}
+export struct TestResult {
+  public passed: bool;
+}
+export function assert(condition: bool): void {
+  if (!condition) {
+    unsafe {
+      tn_runtime_abort(1u32);
+    }
+  }
+}
+export function assertEqual(left: i32, right: i32): void {
+  assert(left === right);
+}

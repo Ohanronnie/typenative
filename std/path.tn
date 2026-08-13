@@ -1,0 +1,68 @@
+import { rawAlloc, rawFree } from "std/alloc";
+import { Drop } from "std/core";
+import { String } from "std/string";
+
+export struct Path {
+  public text: & static str;
+}
+@Drop export struct OwnedPath {
+  public pointer: * mut u8;
+  public length: usize;
+  public capacity: usize;
+  mut drop(): void {
+    unsafe {
+      rawFree(this.pointer);
+    }
+  }
+}
+export struct PathError {
+  public code: i32;
+}
+extern "C" {
+  function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
+  function tn_path_basename(path: * const u8, output: * mut u8, capacity: usize): i32;
+  function strlen(bytes: * const u8): usize;
+}
+export function join(left: & static str, right: & static str, output: * mut u8, capacity: usize): i32 {
+  unsafe {
+    return tn_path_join(left as * const u8, right as * const u8, output, capacity);
+  }
+}
+export function basename(path: & static str, output: * mut u8, capacity: usize): i32 {
+  unsafe {
+    return tn_path_basename(path as * const u8, output, capacity);
+  }
+}
+function pathError(code: i32): PathError {
+  return {
+    code: code
+  };
+}
+export function joinOwned(left: & static str, right: & static str): OwnedPath throws PathError {
+  unsafe {
+    const capacity = strlen(left as * const u8) + strlen(right as * const u8) + 2usize;
+    const pointer = rawAlloc(capacity);
+    const status = tn_path_join(left as * const u8, right as * const u8, pointer, capacity);
+    if (status !== 0i32) {
+      rawFree(pointer);
+      throw pathError(status);
+    }
+    return {
+      pointer: pointer, length: strlen(pointer as * const u8), capacity: capacity
+    };
+  }
+}
+export function basenameOwned(path: & static str): String throws PathError {
+  unsafe {
+    const capacity = strlen(path as * const u8) + 1usize;
+    const pointer = rawAlloc(capacity);
+    const status = tn_path_basename(path as * const u8, pointer, capacity);
+    if (status !== 0i32) {
+      rawFree(pointer);
+      throw pathError(status);
+    }
+    return {
+      pointer: pointer, length: strlen(pointer as * const u8), capacity: capacity
+    };
+  }
+}

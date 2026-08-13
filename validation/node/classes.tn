@@ -1,0 +1,21 @@
+extern "C" {
+  function tn_runtime_free_count(): usize;
+}
+@Export("freeCount")function freeCount(): usize {
+  unsafe {
+    return tn_runtime_free_count();
+  }
+}
+@Drop
+@Export class Counter {
+  public value: i32;
+  public constructor(value: i32) {
+    this.value = value;
+  }
+  public increment(delta: i32): i32 {
+    this.value = this.value + delta;
+    return this.value;
+  }
+  mut drop(): void {
+  }
+}

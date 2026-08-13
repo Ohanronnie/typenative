@@ -1,0 +1,189 @@
+import { Bytes } from "std/bytes";
+import { ParseIntegerError } from "std/core";
+
+extern "C" {
+  function tn_utf8_validate(bytes: * const u8, length: usize): i32;
+  function tn_string_from_bytes(bytes: * const u8, length: usize): string;
+  function tn_string_equals(left: * const u8, right: * const u8): i32;
+  function tn_string_to_ascii_upper(text: * const u8): string;
+  function tn_runtime_alloc(size: usize): * mut u8;
+  function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
+  function strlen(bytes: * const u8): usize;
+  function tn_parse_ascii(bytes: * const u8, length: usize, value: * mut usize, offset: * mut usize): i32;
+}
+export struct Utf8Error {
+  public offset: usize;
+}
+import { Drop } from "std/core";
+extern "C" {
+  function tn_runtime_free(pointer: * mut u8): void;
+  function tn_utf8_decode(bytes: * const u8, length: usize, offset: usize, codepoint: * mut u32, next: * mut usize): i32;
+  function tn_utf8_slice_copy(bytes: * const u8, length: usize, start: usize, end: usize, destination: * mut u8, capacity: usize, written: * mut usize): i32;
+}
+import { AllocError, isNull, rawAlloc, rawFree, tryRawAlloc } from "std/alloc";
+@Drop export struct String {
+  public pointer: * mut u8;
+  public length: usize;
+  public capacity: usize;
+  mut drop(): void {
+    unsafe {
+      tn_runtime_free(this.pointer);
+    }
+  }
+}
+export struct Chars {
+  public pointer: * const u8;
+  public length: usize;
+  public offset: usize;
+}
+export function bytes(text: & str): Bytes {
+  unsafe {
+    return {
+      pointer: text as * const u8, length: strlen(text as * const u8),
+    };
+  }
+}
+function fromUtf8(value: Bytes): string throws Utf8Error {
+  unsafe {
+    if (tn_utf8_validate(value.pointer, value.length) === 0i32) {
+      throw utf8Error(0usize);
+    }
+    return tn_string_from_bytes(value.pointer, value.length);
+  }
+}
+export function length(value: string): usize {
+  unsafe {
+    return strlen(value as * const u8);
+  }
+}
+export function emptyOwned(): string {
+  unsafe {
+    return tn_string_from_bytes("" as * const u8, 0usize);
+  }
+}
+function toAsciiUppercase(value: string): string {
+  unsafe {
+    return tn_string_to_ascii_upper(value as * const u8);
+  }
+}
+function integerError(offset: usize): ParseIntegerError {
+  return {
+    offset: offset,
+  };
+}
+function parseAscii(value: Bytes): usize throws ParseIntegerError {
+  let parsed: usize = 0usize;
+  let offset: usize = 0usize;
+  let status: i32 = 0i32;
+  unsafe {
+    {
+      const output = & mut parsed;
+      const errorOutput = & mut offset;
+      status = tn_parse_ascii(value.pointer, value.length, output as * mut usize, errorOutput as * mut usize);
+    }
+  }
+  if (status !== 0i32) {
+    throw integerError(offset);
+  }
+  return parsed;
+}
+export function isValidUtf8(text: & static str): bool {
+  unsafe {
+    return tn_utf8_validate(text as * const u8, strlen(text as * const u8)) !== 0;
+  }
+}
+export function fromStatic(text: & static str): String {
+  unsafe {
+    const length = strlen(text as * const u8);
+    const pointer = tn_runtime_alloc(length + 1usize);
+    tn_bytes_copy(text as * const u8, length, pointer);
+    return {
+      pointer: pointer, length: length, capacity: length + 1usize
+    };
+  }
+}
+function allocationError(): AllocError {
+  return {
+    code: 12i32
+  };
+}
+export function fromStaticChecked(text: & static str): String throws AllocError {
+  unsafe {
+    const length = strlen(text as * const u8);
+    const pointer = tryRawAlloc(length + 1usize);
+    if (isNull(pointer as * const u8)) {
+      throw allocationError();
+    }
+    tn_bytes_copy(text as * const u8, length, pointer);
+    return {
+      pointer: pointer, length: length, capacity: length + 1usize
+    };
+  }
+}
+export function chars(text: & static str): Chars {
+  unsafe {
+    return {
+      pointer: text as * const u8, length: strlen(text as * const u8), offset: 0usize
+    };
+  }
+}
+export function next(chars: & mut Chars, codepoint: * mut u32): bool {
+  let nextOffset: usize = chars.offset;
+  const output = & mut nextOffset;
+  unsafe {
+    const status = tn_utf8_decode(chars.pointer, chars.length, chars.offset, codepoint, output as * mut usize);
+    if (status <= 0i32) {
+      return false;
+    }
+  }
+  chars.offset = nextOffset;
+  return true;
+}
+function utf8Error(offset: usize): Utf8Error {
+  return {
+    offset: offset
+  };
+}
+export function sliceOwned(text: & static str, start: usize, end: usize): String throws Utf8Error {
+  unsafe {
+    const length = strlen(text as * const u8);
+    if (start > end || end > length || end - start === 18446744073709551615usize) {
+      throw utf8Error(start);
+    }
+    const capacity = end - start + 1usize;
+    const pointer = rawAlloc(capacity);
+    let written: usize = 0usize;
+    const output = & mut written;
+    const status = tn_utf8_slice_copy(text as * const u8, length, start, end, pointer, capacity, output as * mut usize);
+    if (status !== 0i32) {
+      rawFree(pointer);
+      throw utf8Error(start);
+    }
+    return {
+      pointer: pointer, length: written, capacity: capacity
+    };
+  }
+}
+export function sliceOwnedChecked(text: & static str, start: usize, end: usize): String throws Utf8Error {
+  unsafe {
+    const length = strlen(text as * const u8);
+    if (start > end || end > length || end - start === 18446744073709551615usize) {
+      throw utf8Error(start);
+    }
+    const capacity = end - start + 1usize;
+    const pointer = tryRawAlloc(capacity);
+    if (isNull(pointer as * const u8)) {
+      throw utf8Error(start);
+    }
+    let written: usize = 0usize;
+    const output = & mut written;
+    const status = tn_utf8_slice_copy(text as * const u8, length, start, end, pointer, capacity, output as * mut usize);
+    if (status !== 0i32) {
+      rawFree(pointer);
+      throw utf8Error(start);
+    }
+    return {
+      pointer: pointer, length: written, capacity: capacity
+    };
+  }
+}

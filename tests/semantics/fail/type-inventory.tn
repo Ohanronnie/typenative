@@ -1,0 +1,42 @@
+interface Display { display(): void; }
+struct Point { public value: i32; }
+enum Choice { Empty, Value(i32) }
+class Base {}
+
+function typeFailures(): void {
+  const boolean: bool = 1;
+  const signed8: i8 = true;
+  const signed16: i16 = true;
+  const signed32: i32 = true;
+  const signed64: i64 = true;
+  const signed128: i128 = true;
+  const signedSize: isize = true;
+  const nativeNumber: number = true;
+  const unsigned8: u8 = true;
+  const unsigned16: u16 = true;
+  const unsigned32: u32 = true;
+  const unsigned64: u64 = true;
+  const unsigned128: u128 = true;
+  const unsignedSize: usize = true;
+  const float32: f32 = true;
+  const float64: f64 = true;
+  const character: char = true;
+  const ownedText: string = true;
+  const text: &str = true;
+  const optional: i32 | undefined = true;
+  const array: [i32; 1] = [true];
+  const slice: &[i32] = true;
+  const tuple: (i32, bool) = (true, 1);
+  const structure: Point = { value: true };
+  const enumeration: Choice = true;
+  const dynamic: Display = true;
+  const classOwner: Base = true;
+  const shared: &i32 = true;
+  const mutable: &mut i32 = true;
+  const pointer: *const i32 = true;
+  const mutablePointer: *mut i32 = true;
+  const callback: (i32) => bool = true;
+  const pending: Promise<i32, never> = true;
+  const noValue: void = true;
+  const impossible: never = true;
+}

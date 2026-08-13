@@ -1,0 +1,9 @@
+function inference(): void {
+  const narrow: i32 = 1i64;
+  const absent = undefined;
+  if (1) {}
+}
+
+function pointers(pointer: *const i32): i32 {
+  return *pointer;
+}

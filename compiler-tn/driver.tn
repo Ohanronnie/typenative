@@ -1,0 +1,63 @@
+import { BackendProgram, lower as lowerBackend, validate as validateBackend } from "./backend";
+import { BorrowResult, checkBorrow } from "./borrow";
+import { Diagnostic, diagnostic } from "./diagnostics";
+import { FormatResult, format } from "./formatter";
+import { HirProgram, lower as lowerHir } from "./hir";
+import { Source } from "./lexer";
+import { MirProgram, lower as lowerMir, validate as validateMir } from "./mir";
+import { ParseSummary, parse } from "./parser";
+import { SemanticProgram, checkSemantic } from "./semantic";
+import { ToolingResult, document } from "./tooling";
+
+export struct Compiler {
+  public tokenCount: usize;
+  public errorCount: usize;
+  public firstErrorCode: i32;
+  public firstErrorStart: usize;
+  public firstErrorEnd: usize;
+  public firstDiagnostic: Diagnostic;
+  public declarationCount: usize;
+  public maxDelimiterDepth: usize;
+  public mirBlocks: usize;
+  public checkedBlocks: usize;
+  public formatted: bool;
+  public documentVersion: usize;
+  public sourceIdentity: u64;
+  public entryBlock: usize;
+  public exitBlock: usize;
+  public backendFunctions: usize;
+  public backendEntry: usize;
+  public backendLowerableFunctions: usize;
+  public backendOperationWords: usize;
+}
+export function compiler(source: Source): Compiler {
+  const parsed: ParseSummary = parse(source);
+  const hir: HirProgram = lowerHir(source, parsed);
+  const backend: BackendProgram = lowerBackend(source, & hir);
+  const tokenCount = hir.tokenCount;
+  const semantic: SemanticProgram = checkSemantic(source, hir);
+  const mir: MirProgram = lowerMir(source, semantic);
+  const mirValid = validateMir(mir.blocks, mir.entryBlock, mir.exitBlock, mir.sourceLength, mir.recordPointer, mir.recordCapacity, mir.recordElementSize, mir.recordLength);
+  const borrow: BorrowResult = checkBorrow(mir.blocks, mir.errors, mir.functions, mir.borrowOperations, mir.awaitOperations, mir.entryBlock, mir.recordPointer, mir.recordCapacity, mir.recordElementSize, mir.recordLength);
+  let errorCount = parsed.errorCount + borrow.errors + backend.malformedFunctions;
+  const backendFunctions = backend.functionCount;
+  const backendEntry = backend.entryIndex;
+  const backendMalformed = backend.malformedFunctions;
+  const backendLowerableFunctions = backend.lowerableFunctions;
+  const backendOperationWords = backend.operationWords;
+  if (!validateBackend( & backend.functions, & backend.operations, backendFunctions, backendEntry, backendMalformed, source.length)) {
+    errorCount = errorCount + 1usize;
+  }
+  if (!mirValid) {
+    errorCount = errorCount + 1usize;
+  }
+  const formatted: FormatResult = format(source);
+  const tooling: ToolingResult = document(source, 1usize, errorCount);
+  const firstDiagnostic = diagnostic(semantic.firstErrorCode, semantic.firstErrorStart, semantic.firstErrorEnd);
+  return {
+    tokenCount: tokenCount, errorCount: errorCount, firstErrorCode: semantic.firstErrorCode, firstErrorStart: semantic.firstErrorStart, firstErrorEnd: semantic.firstErrorEnd, firstDiagnostic: firstDiagnostic, declarationCount: semantic.declarationCount, maxDelimiterDepth: parsed.maxDelimiterDepth, mirBlocks: mir.blocks, checkedBlocks: borrow.checkedBlocks, formatted: formatted.errors === 0usize, documentVersion: tooling.documentVersion, sourceIdentity: semantic.sourceIdentity, entryBlock: mir.entryBlock, exitBlock: mir.exitBlock, backendFunctions: backendFunctions, backendEntry: backendEntry, backendLowerableFunctions: backendLowerableFunctions, backendOperationWords: backendOperationWords
+  };
+}
+export function compile(source: Source): Compiler {
+  return compiler(source);
+}

@@ -1,0 +1,1 @@
+function invalid(value: bool): bool { return match (value) { default: false, }; }

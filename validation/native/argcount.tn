@@ -1,0 +1,4 @@
+import { argumentCount } from "std/process";
+function main(): i32 {
+  return argumentCount();
+}

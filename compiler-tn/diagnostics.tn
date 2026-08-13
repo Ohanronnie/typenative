@@ -1,0 +1,45 @@
+
+@derive(Copy)export struct Span {
+  public start: usize;
+  public end: usize;
+}
+@derive(Copy)export enum Severity {
+  Error, Warning, Note,
+}
+@derive(Copy)export struct Diagnostic {
+  public code: i32;
+  public severity: Severity;
+  public primary: Span;
+  public secondary: Span;
+  public hasSecondary: bool;
+}
+export function diagnostic(code: i32, start: usize, end: usize): Diagnostic {
+  return {
+    code: code, severity: Severity.Error, primary: {
+      start: start, end: end
+    }, secondary: {
+      start: end, end: end
+    }, hasSecondary: false
+  };
+}
+export function withSecondary(primary: Diagnostic, start: usize, end: usize): Diagnostic {
+  return {
+    code: primary.code, severity: primary.severity, primary: primary.primary, secondary: {
+      start: start, end: end
+    }, hasSecondary: true
+  };
+}
+export function isError(value: Diagnostic): bool {
+  match (value.severity) {
+    case Severity.Error: {
+      return true;
+    }
+    case Severity.Warning: {
+      return false;
+    }
+    case Severity.Note: {
+      return false;
+    }
+  };
+  return false;
+}

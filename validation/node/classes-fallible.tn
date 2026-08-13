@@ -1,0 +1,11 @@
+import { Bytes } from "std/bytes";
+struct Failure {
+}
+@Drop
+@Export class Holder {
+  public constructor() {
+  }
+  public echo(value: Bytes): Bytes throws Failure {
+    return value;
+  }
+}

@@ -1,0 +1,9 @@
+class Item {}
+
+const invalid: Item = new Item();
+static raw: *const i32 = undefined;
+static mut counter: i32 = 0;
+
+function access(): void {
+  counter;
+}

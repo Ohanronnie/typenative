@@ -1,0 +1,15 @@
+import { run } from "std/async";
+import { NetworkError } from "std/net";
+import { serve } from "./redis-server";
+
+async function runAlternate(): Promise<i32, never> {
+  try {
+    try await serve("127.0.0.1:6389", 4096);
+  } catch (error: NetworkError) {
+    return 1;
+  }
+  return 0;
+}
+function main(): i32 {
+  return run(runAlternate());
+}

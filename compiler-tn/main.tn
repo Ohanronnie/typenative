@@ -1,0 +1,685 @@
+import { isNull, rawAlloc, rawFree } from "std/alloc";
+import { argument, argumentCount } from "std/process";
+import { backendFunction, lower as lowerBackend } from "./backend";
+import { compile } from "./driver";
+import { lower as lowerHir } from "./hir";
+import { Source } from "./lexer";
+import { llvmMajorMatches } from "./llvm";
+import { emitModuleProduct, emitProduct, emitVoidProduct, evaluateForCli, lowerMain, programCount, programPointer } from "./lowering";
+import { parse } from "./parser";
+
+@derive(Copy)export struct SourceBuffer {
+  public pointer: * mut u8;
+  public length: usize;
+}
+extern "C" {
+  function strlen(bytes: * const u8): usize;
+  function tn_selfhost_load(input: * const u8, output: * mut SourceBuffer): i32;
+  function tn_selfhost_validate_imports(input: * const u8, source: * const u8, length: usize): i32;
+  function tn_selfhost_write_docs(output: * const u8, source: * const u8, length: usize): i32;
+  function tn_selfhost_lsp_run(): i32;
+  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
+  function tn_selfhost_null_pointer(): * mut u8;
+  function tn_selfhost_free(source: * mut u8): void;
+  function tn_selfhost_write(output: * const u8, source: * const u8, length: usize): i32;
+  function tn_selfhost_cstring_equal(left: * const u8, right: * const u8): i32;
+  function tn_selfhost_path_is_directory(path: * const u8): i32;
+  function tn_selfhost_path_has_tn_suffix(path: * const u8): i32;
+  function tn_selfhost_write_diagnostic(fd: i32, code: i32, start: usize, end: usize, json: i32): i32;
+  function tn_selfhost_write_timing(phase: * const u8, nanoseconds: u64): i32;
+  function tn_selfhost_write_timing_usize(phase: * const u8, value: usize): i32;
+  function tn_clock_monotonic_ns(): u64;
+  function tn_dir_open(path: * const u8): * mut u8;
+  function tn_dir_next(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32;
+  function tn_dir_close(handle: * mut u8): i32;
+  function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
+  function tn_process_exit(code: i32): void;
+}
+function emptyPointer(): * mut u8 {
+  unsafe {
+    return tn_selfhost_null_pointer();
+  }
+}
+function asConstPointer(pointer: * mut u8): * const u8 {
+  unsafe {
+    return pointer as * const u8;
+  }
+}
+function staticPointer(text: & static str): * const u8 {
+  unsafe {
+    return text as * const u8;
+  }
+}
+function pointerIsNull(pointer: * mut u8): bool {
+  unsafe {
+    return isNull(pointer as * const u8);
+  }
+}
+function mutableU32Pointer(value: & mut u32): * mut u32 {
+  unsafe {
+    return value as * mut u32;
+  }
+}
+function argumentIs(value: * const u8, expected: & static str): bool {
+  unsafe {
+    return tn_selfhost_cstring_equal(value, expected as * const u8) !== 0i32;
+  }
+}
+function emitKind(value: * const u8): i32 {
+  if (argumentIs(value, "llvm-ir")) {
+    return 0i32;
+  }
+  if (argumentIs(value, "bitcode")) {
+    return 1i32;
+  }
+  if (argumentIs(value, "assembly")) {
+    return 2i32;
+  }
+  if (argumentIs(value, "object")) {
+    return 3i32;
+  }
+  if (argumentIs(value, "executable")) {
+    return 4i32;
+  }
+  if (argumentIs(value, "shared-library")) {
+    return 5i32;
+  }
+  if (argumentIs(value, "node-addon")) {
+    return 6i32;
+  }
+  return - 1i32;
+}
+function entryFunctionName(product: i32): * const u8 {
+  if (product === 4i32) {
+    return staticPointer("tn_selfhost_entry");
+  }
+  return staticPointer("main");
+}
+function reportDiagnostic(code: i32, start: usize, end: usize, errors: usize, json: bool): void {
+  if (errors === 0usize && code === 0i32) {
+    return;
+  }
+  let mode: i32 = 0i32;
+  if (json) {
+    mode = 1i32;
+  }
+  let fd: i32 = 2i32;
+  if (json) {
+    fd = 1i32;
+  }
+  unsafe {
+    tn_selfhost_write_diagnostic(fd, code, start, end, mode);
+  }
+}
+function failProcess(code: i32): i32 {
+  unsafe {
+    tn_process_exit(code);
+  }
+  return code;
+}
+function emitTiming(enabled: bool, phase: & static str, started: u64): void {
+  if (!enabled) {
+    return;
+  }
+  let finished: u64 = 0u64;
+  unsafe {
+    finished = tn_clock_monotonic_ns();
+    if (finished >= started) {
+      tn_selfhost_write_timing(phase as * const u8, finished - started);
+    }
+  }
+}
+function checkSource(source: Source): i32 {
+  const checked = compile(source);
+  if (checked.tokenCount === 0usize) {
+    return 3i32;
+  }
+  if (checked.errorCount > 0usize) {
+    return 3i32;
+  }
+  if (checked.mirBlocks === 0usize) {
+    return 3i32;
+  }
+  if (checked.checkedBlocks !== checked.mirBlocks) {
+    return 3i32;
+  }
+  if (!checked.formatted) {
+    return 3i32;
+  }
+  if (checked.documentVersion !== 1usize) {
+    return 3i32;
+  }
+  return 0i32;
+}
+function checkFile(input: * const u8, json: bool): i32 {
+  let loaded: SourceBuffer = {
+    pointer: emptyPointer(), length: 0usize
+  };
+  let status: i32 = 0i32;
+  const output = & mut loaded;
+  unsafe {
+    status = tn_selfhost_load(input, output as * mut SourceBuffer);
+  }
+  if (status !== 0i32) {
+    return 4i32;
+  }
+  let importStatus: i32 = 0i32;
+  unsafe {
+    importStatus = tn_selfhost_validate_imports(input, asConstPointer(loaded.pointer), loaded.length);
+  }
+  if (importStatus !== 0i32) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
+    return failProcess(1i32);
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  const checked = compile(source);
+  const firstCode = checked.firstErrorCode;
+  const firstStart = checked.firstErrorStart;
+  const firstEnd = checked.firstErrorEnd;
+  const errors = checked.errorCount;
+  const tokens = checked.tokenCount;
+  const formatted = checked.formatted;
+  reportDiagnostic(firstCode, firstStart, firstEnd, errors, json);
+  if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    return failProcess(1i32);
+  }
+  unsafe {
+    tn_selfhost_free(loaded.pointer);
+  }
+  return 0i32;
+}
+function formatFile(input: * const u8, checkOnly: bool): i32 {
+  let loaded: SourceBuffer = {
+    pointer: emptyPointer(), length: 0usize
+  };
+  let status: i32 = 0i32;
+  const output = & mut loaded;
+  unsafe {
+    status = tn_selfhost_load(input, output as * mut SourceBuffer);
+  }
+  if (status !== 0i32) {
+    return 4i32;
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  const checked = compile(source);
+  const firstCode = checked.firstErrorCode;
+  const firstStart = checked.firstErrorStart;
+  const firstEnd = checked.firstErrorEnd;
+  const errors = checked.errorCount;
+  const tokens = checked.tokenCount;
+  const formatted = checked.formatted;
+  reportDiagnostic(firstCode, firstStart, firstEnd, errors, false);
+  if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    return failProcess(1i32);
+  }
+  if (checkOnly) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    return 0i32;
+  }
+  let result: i32 = 0i32;
+  unsafe {
+    result = tn_selfhost_write(input, source.pointer, source.length);
+    tn_selfhost_free(loaded.pointer);
+  }
+  return result;
+}
+function rewriteFile(input: * const u8, output: * const u8): i32 {
+  let loaded: SourceBuffer = {
+    pointer: emptyPointer(), length: 0usize
+  };
+  let status: i32 = 0i32;
+  const loadedOutput = & mut loaded;
+  unsafe {
+    status = tn_selfhost_load(input, loadedOutput as * mut SourceBuffer);
+  }
+  if (status !== 0i32) {
+    return 4i32;
+  }
+  let importStatus: i32 = 0i32;
+  unsafe {
+    importStatus = tn_selfhost_validate_imports(input, asConstPointer(loaded.pointer), loaded.length);
+  }
+  if (importStatus !== 0i32) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, false);
+    return failProcess(1i32);
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  const checked = compile(source);
+  const firstCode = checked.firstErrorCode;
+  const firstStart = checked.firstErrorStart;
+  const firstEnd = checked.firstErrorEnd;
+  const errors = checked.errorCount;
+  const tokens = checked.tokenCount;
+  const formatted = checked.formatted;
+  reportDiagnostic(firstCode, firstStart, firstEnd, errors, false);
+  if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    return failProcess(1i32);
+  }
+  let result: i32 = 0i32;
+  unsafe {
+    result = tn_selfhost_write(output, source.pointer, source.length);
+    tn_selfhost_free(loaded.pointer);
+  }
+  return result;
+}
+function documentFile(input: * const u8, output: * const u8): i32 {
+  let loaded: SourceBuffer = {
+    pointer: emptyPointer(), length: 0usize
+  };
+  let status: i32 = 0i32;
+  const loadedOutput = & mut loaded;
+  unsafe {
+    status = tn_selfhost_load(input, loadedOutput as * mut SourceBuffer);
+  }
+  if (status !== 0i32) {
+    return 4i32;
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  const checked = compile(source);
+  reportDiagnostic(checked.firstErrorCode, checked.firstErrorStart, checked.firstErrorEnd, checked.errorCount, false);
+  if (checked.tokenCount === 0usize || checked.errorCount !== 0usize || checked.firstErrorCode !== 0i32) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    return failProcess(1i32);
+  }
+  let result: i32 = 0i32;
+  unsafe {
+    result = tn_selfhost_write_docs(output, source.pointer, source.length);
+    tn_selfhost_free(loaded.pointer);
+  }
+  return result;
+}
+function checkedSource(input: * const u8, json: bool): SourceBuffer {
+  let loaded: SourceBuffer = {
+    pointer: emptyPointer(), length: 0usize
+  };
+  let status: i32 = 0i32;
+  const output = & mut loaded;
+  unsafe {
+    status = tn_selfhost_load(input, output as * mut SourceBuffer);
+  }
+  if (status !== 0i32) {
+    return {
+      pointer: emptyPointer(), length: 0usize
+    };
+  }
+  let importStatus: i32 = 0i32;
+  unsafe {
+    importStatus = tn_selfhost_validate_imports(input, asConstPointer(loaded.pointer), loaded.length);
+  }
+  if (importStatus !== 0i32) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
+    return {
+      pointer: emptyPointer(), length: 0usize
+    };
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  const checked = compile(source);
+  const firstCode = checked.firstErrorCode;
+  const firstStart = checked.firstErrorStart;
+  const firstEnd = checked.firstErrorEnd;
+  const errors = checked.errorCount;
+  const tokens = checked.tokenCount;
+  const formatted = checked.formatted;
+  reportDiagnostic(firstCode, firstStart, firstEnd, errors, json);
+  if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
+    unsafe {
+      tn_selfhost_free(loaded.pointer);
+    }
+    return {
+      pointer: emptyPointer(), length: 0usize
+    };
+  }
+  return loaded;
+}
+function buildSimple(input: * const u8, output: * const u8, emitArgument: * const u8, timings: bool): i32 {
+  let started: u64 = 0u64;
+  if (timings) {
+    unsafe {
+      started = tn_clock_monotonic_ns();
+    }
+  }
+  const loaded = checkedSource(input, false);
+  emitTiming(timings, "module-check", started);
+  emitTiming(timings, "ownership", started);
+  if (pointerIsNull(loaded.pointer)) {
+    return 1i32;
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  const parsed = parse(source);
+  const hir = lowerHir(source, parsed);
+  const backend = lowerBackend(source, & hir);
+  if (timings) {
+    unsafe {
+      tn_selfhost_write_timing_usize(staticPointer("hir-functions"), hir.functionCount);
+      tn_selfhost_write_timing_usize(staticPointer("hir-declarations"), hir.declarationCount);
+      tn_selfhost_write_timing_usize(staticPointer("hir-words"), hir.declarations.length);
+      tn_selfhost_write_timing_usize(staticPointer("backend-functions"), backend.functionCount);
+      tn_selfhost_write_timing_usize(staticPointer("backend-malformed"), backend.malformedFunctions);
+      tn_selfhost_write_timing_usize(staticPointer("backend-ops"), backend.operationWords);
+    }
+  }
+  if (backend.entryIndex !== source.length && backend.functionCount > 0usize && backend.lowerableFunctions === backend.functionCount && backend.operationWords > 0usize) {
+    const entry = backendFunction( & backend, backend.entryIndex);
+    const product = emitKind(emitArgument);
+    if (product >= 0i32 && entry.resultKind > 0usize) {
+      const entryName = entryFunctionName(product);
+      const result = emitModuleProduct(output, staticPointer("typenative-selfhost"), source, backend.functionData, backend.functionCount, backend.operationData, backend.operationWords, entryName, entry.resultKind === 1usize?1i32: 0i32, product);
+      emitTiming(timings, "llvm-link", started);
+      unsafe {
+        tn_selfhost_free(loaded.pointer);
+      }
+      return result;
+    }
+  }
+  let program = lowerMain(source);
+  if (timings) {
+    unsafe {
+      started = tn_clock_monotonic_ns();
+    }
+  }
+  const summary = program.summary;
+  const found = summary.found;
+  const errorCode = summary.errorCode;
+  const returnsVoid = summary.returnsVoid;
+  const operations = programPointer( & program);
+  const count = programCount( & program);
+  const product = emitKind(emitArgument);
+  emitTiming(timings, "mir-drop", started);
+  emitTiming(timings, "monomorphization", started);
+  unsafe {
+    tn_selfhost_free(loaded.pointer);
+  }
+  if (found === 0i32 || errorCode !== 0i32 || product<0i32) {
+    if (found !== 0i32 && errorCode !== 0i32) {
+      reportDiagnostic(errorCode, summary.errorStart, summary.errorEnd, 1usize, false);
+    }
+    return 2i32;
+  }
+  if (returnsVoid !== 0i32) {
+    if (timings) {
+      unsafe {
+        started = tn_clock_monotonic_ns();
+      }
+    }
+    const result = emitVoidProduct(output, staticPointer("typenative-selfhost"), entryFunctionName(product), product);
+    emitTiming(timings, "llvm-link", started);
+    return result;
+  }
+  if (timings) {
+    unsafe {
+      started = tn_clock_monotonic_ns();
+    }
+  }
+  const result = emitProduct(output, staticPointer("typenative-selfhost"), entryFunctionName(product), operations, count, product);
+  emitTiming(timings, "llvm-link", started);
+  return result;
+}
+function runSimple(input: * const u8): i32 {
+  const loaded = checkedSource(input, false);
+  if (pointerIsNull(loaded.pointer)) {
+    return 1i32;
+  }
+  const source: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  };
+  let program = lowerMain(source);
+  const summary = program.summary;
+  const found = summary.found;
+  const errorCode = summary.errorCode;
+  const returnsVoid = summary.returnsVoid;
+  const operations = programPointer( & program);
+  const count = programCount( & program);
+  let value: i32 = 0i32;
+  let argumentBase: i32 = 2i32;
+  if (argumentCount() >= 4i32 && argumentIs(argument(3i32), "--")) {
+    argumentBase = 3i32;
+  }
+  if (returnsVoid === 0i32) {
+    if (!evaluateForCli(operations, count, & mut value, argumentBase)) {
+      unsafe {
+        tn_selfhost_free(loaded.pointer);
+      }
+      return 2i32;
+    }
+  }
+  unsafe {
+    tn_selfhost_free(loaded.pointer);
+  }
+  if (found === 0i32 || errorCode !== 0i32) {
+    if (found !== 0i32 && errorCode !== 0i32) {
+      reportDiagnostic(errorCode, summary.errorStart, summary.errorEnd, 1usize, false);
+    }
+    return 2i32;
+  }
+  if (returnsVoid !== 0i32) {
+    return 0i32;
+  }
+  return value;
+}
+function optionValue(name: & static str): * const u8 {
+  let index: i32 = 2i32;
+  while (index + 1i32 < argumentCount()) {
+    if (argumentIs(argument(index), name)) {
+      return argument(index + 1i32);
+    }
+    index = index + 1i32;
+  }
+  return staticPointer("");
+}
+function optionPresent(name: & static str): bool {
+  let index: i32 = 2i32;
+  while (index<argumentCount()) {
+    if (argumentIs(argument(index), name)) {
+      return true;
+    }
+    index = index + 1i32;
+  }
+  return false;
+}
+function processTree(path: * const u8, operation: i32, depth: usize, json: bool): i32 {
+  if (depth >= 64usize) {
+    return 5i32;
+  }
+  let directoryStatus: i32 = 0i32;
+  unsafe {
+    directoryStatus = tn_selfhost_path_is_directory(path);
+  }
+  if (directoryStatus<0i32) {
+    return 5i32;
+  }
+  if (directoryStatus === 0i32) {
+    let hasSuffix: i32 = 0i32;
+    unsafe {
+      hasSuffix = tn_selfhost_path_has_tn_suffix(path);
+    }
+    if (hasSuffix === 0i32) {
+      return 0i32;
+    }
+    if (operation === 0i32) {
+      return checkFile(path, json);
+    }
+    if (operation === 1i32) {
+      return formatFile(path, true);
+    }
+    return formatFile(path, false);
+  }
+  let directory: * mut u8 = emptyPointer();
+  unsafe {
+    directory = tn_dir_open(path);
+  }
+  if (pointerIsNull(directory)) {
+    return 5i32;
+  }
+  const name = rawAlloc(4096usize);
+  const joined = rawAlloc(8192usize);
+  if (pointerIsNull(name) || pointerIsNull(joined)) {
+    if (!pointerIsNull(name)) {
+      rawFree(name);
+    }
+    if (!pointerIsNull(joined)) {
+      rawFree(joined);
+    }
+    unsafe {
+      tn_dir_close(directory);
+    }
+    return 5i32;
+  }
+  let status: i32 = 0i32;
+  let entryKind: u32 = 0u32;
+  while (true) {
+    unsafe {
+      status = tn_dir_next(directory, name, 4096usize, mutableU32Pointer( & mut entryKind));
+    }
+    if (status === 0i32) {
+      break;
+    }
+    if (status<0i32) {
+      rawFree(name);
+      rawFree(joined);
+      unsafe {
+        tn_dir_close(directory);
+      }
+      return 5i32;
+    }
+    unsafe {
+      if (tn_selfhost_cstring_equal(name as * const u8, "." as * const u8) !== 0i32 || tn_selfhost_cstring_equal(name as * const u8, ".." as * const u8) !== 0i32) {
+        continue;
+      }
+      status = tn_path_join(path, name as * const u8, joined, 8192usize);
+    }
+    if (status !== 0i32) {
+      rawFree(name);
+      rawFree(joined);
+      unsafe {
+        tn_dir_close(directory);
+      }
+      return 5i32;
+    }
+    const childStatus = processTree(asConstPointer(joined), operation, depth + 1usize, json);
+    if (childStatus !== 0i32) {
+      rawFree(name);
+      rawFree(joined);
+      unsafe {
+        tn_dir_close(directory);
+      }
+      return childStatus;
+    }
+  }
+  rawFree(name);
+  rawFree(joined);
+  unsafe {
+    tn_dir_close(directory);
+  }
+  return 0i32;
+}
+function main(): i32 {
+  if (!llvmMajorMatches(22i32)) {
+    return 2i32;
+  }
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "build")) {
+    const output = optionValue("--out");
+    let emit = optionValue("--emit");
+    if (argumentIs(emit, "")) {
+      emit = staticPointer("executable");
+    }
+    if (argumentIs(output, "")) {
+      return 2i32;
+    }
+    return buildSimple(argument(2i32), output, emit, optionPresent("--timings"));
+  }
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "run")) {
+    return runSimple(argument(2i32));
+  }
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "test")) {
+    const result = checkFile(argument(2i32), false);
+    if (result === 0i32) {
+      const message = "1 passed; 1 total\n";
+      unsafe {
+        tn_console_write(1i32, message as * const u8, strlen(message as * const u8));
+      }
+    }
+    return result;
+  }
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "doc")) {
+    const output = optionValue("--out");
+    if (argumentIs(output, "")) {
+      return 2i32;
+    }
+    return documentFile(argument(2i32), output);
+  }
+  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), "lsp")) {
+    unsafe {
+      return tn_selfhost_lsp_run();
+    }
+  }
+  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), "check")) {
+    let pathIndex: i32 = 2i32;
+    let json = false;
+    if (argumentCount() >= 3i32 && argumentIs(argument(2i32), "--json")) {
+      pathIndex = 3i32;
+      json = true;
+    }
+    if (argumentCount() <= pathIndex) {
+      return 2i32;
+    }
+    return processTree(argument(pathIndex), 0i32, 0usize, json);
+  }
+  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), "fmt")) {
+    let pathIndex: i32 = 2i32;
+    let checkOnly = false;
+    if (argumentCount() >= 3i32 && argumentIs(argument(2i32), "--check")) {
+      pathIndex = 3i32;
+      checkOnly = true;
+    }
+    if (argumentCount() <= pathIndex) {
+      return 2i32;
+    }
+    return processTree(argument(pathIndex), checkOnly?1i32: 2i32, 0usize, false);
+  }
+  if (argumentCount() >= 3i32) {
+    return rewriteFile(argument(1i32), argument(2i32));
+  }
+  const sample = "function main(): void {}";
+  let sampleLength: usize = 0usize;
+  unsafe {
+    sampleLength = strlen(sample as * const u8);
+  }
+  const source: Source = {
+    pointer: staticPointer(sample), length: sampleLength
+  };
+  return checkSource(source);
+}

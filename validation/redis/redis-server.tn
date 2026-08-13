@@ -1,0 +1,108 @@
+import { Arc } from "std/alloc";
+import { run, TaskGroup } from "std/async";
+import { Map } from "std/collections";
+import { error as consoleError } from "std/console";
+import { NetworkError, TcpListener, TcpStream } from "std/net";
+import { Mutex } from "std/sync";
+import { Command, RedisError, Reply, RespConnection, } from "./resp";
+
+@Sealed class Database {
+  private state: Map<string, string>;
+  public constructor(capacity: usize) {
+    this.state = new Map<string, string>({
+      capacity: capacity,
+    });
+  }
+  public mut execute(command: Command): Reply {
+    if (command.name === "PING") {
+      return Reply.Simple(string.from("PONG"));
+    }
+    if (command.name === "SET") {
+      const key = command.arguments.get(0);
+      const value = command.arguments.get(1);
+      if (key === undefined || value === undefined) {
+        return Reply.Error(string.from("ERR SET requires a key and value"));
+      }
+      const setKey = key!;
+      const setValue = value!;
+      this.state.set(move setKey, move setValue);
+      return Reply.Simple(string.from("OK"));
+    }
+    if (command.name === "GET") {
+      const key = command.arguments.get(0);
+      if (key === undefined) {
+        return Reply.Error(string.from("ERR GET requires a key"));
+      }
+      const getKey = key!;
+      const value = this.state.get( & getKey);
+      if (value === undefined) {
+        return Reply.Missing;
+      }
+      return Reply.Bulk(value!);
+    }
+    if (command.name === "DEL") {
+      const key = command.arguments.get(0);
+      if (key === undefined) {
+        return Reply.Error(string.from("ERR DEL requires a key"));
+      }
+      const deleteKey = key!;
+      if (this.state.remove( & deleteKey)) {
+        return Reply.Integer(1);
+      }
+      return Reply.Integer(0);
+    }
+    return Reply.Error(string.from("ERR unknown command"));
+  }
+}
+function executeLocked(database: & Mutex<Database>, command: Command): Reply {
+  using locked = database.lock();
+  return locked.value.execute(move command);
+}
+async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,): Promise<void, RedisError> {
+  await using connection = new RespConnection(move stream);
+  try {
+    while (true) {
+      const command = try await connection.readCommand();
+      if (command === undefined) {
+        connection.close();
+        return;
+      }
+      const reply = executeLocked(database.get(), command!);
+      try await connection.writeReply(reply);
+    }
+  } catch (error: RedisError) {
+    connection.close();
+    throw error;
+  }
+}
+async function serveClientTask(stream: TcpStream, database: Arc<Mutex<Database> >,): Promise<void, never> {
+  try {
+    try await serveClient(move stream, database);
+  } catch (error: RedisError) {
+    return;
+  }
+  return;
+}
+export async function serve(address: & str, capacity: usize,): Promise<void, NetworkError> {
+  await using listener = try new TcpListener(address);
+  using clients = new TaskGroup<RedisError>();
+  const database = new Arc(new Mutex(new Database(capacity),),);
+  while (true) {
+    const stream = try await listener.accept();
+    if (!clients.spawn(serveClientTask(move stream, database.clone()))) {
+      return;
+    }
+  }
+}
+async function runServer(address: & static str, capacity: usize,): Promise<i32, never> {
+  try {
+    try await serve(address, capacity);
+  } catch (error: NetworkError) {
+    consoleError("Redis server failed");
+    return 1;
+  }
+  return 0;
+}
+export function main(): i32 {
+  return run(runServer("127.0.0.1:6379", 4096));
+}

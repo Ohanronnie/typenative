@@ -1,0 +1,277 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+use tn_hir::{DefinitionData, GenericBound, Type, lower_program};
+use tn_hir::{ImportClause, load_module_graph};
+
+fn write(path: &Path, source: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("fixture directory");
+    }
+    std::fs::write(path, source).expect("fixture source");
+}
+
+#[test]
+fn lowers_resolved_nominal_generic_and_compound_signatures() {
+    let directory = tempfile::tempdir().expect("temporary HIR program");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    std::fs::create_dir(&standard_library).expect("standard-library directory");
+    write(
+        &root.join("main.tn"),
+        r"export interface Display {
+  display(value: i32): void;
+}
+
+@Conform(Display)
+export struct Point {
+  public x: f64;
+  public label?: string;
+  display(value: i32): void {}
+}
+struct Box<T extends Display> {
+  public value: T;
+}
+type MaybePoint = Point | undefined;
+function identity<T extends Display>(value: T): T {
+  return value;
+}
+class Base {}
+final class Derived extends Base implements Display {
+  public display(value: i32): void {}
+}
+",
+    );
+    let graph =
+        load_module_graph(root, &root.join("main.tn"), &standard_library).expect("module graph");
+    let program = lower_program(graph).expect("resolved HIR");
+    assert_eq!(program.definitions.len(), 7);
+    let alias = program
+        .definitions
+        .iter()
+        .find_map(|definition| match &definition.data {
+            DefinitionData::TypeAlias(ty) => Some(ty),
+            _ => None,
+        })
+        .expect("type alias");
+    assert!(matches!(alias, Type::Optional(_)));
+    let function = program
+        .definitions
+        .iter()
+        .find_map(|definition| match &definition.data {
+            DefinitionData::Function(function) => Some(function),
+            _ => None,
+        })
+        .expect("function");
+    assert_eq!(function.parameters[0].ty, Type::Generic("T".into()));
+    assert_eq!(function.result, Type::Generic("T".into()));
+    assert_eq!(function.generics.len(), 1);
+    assert!(matches!(
+        function.generics[0].bounds.as_slice(),
+        [GenericBound::Interface(_, _)]
+    ));
+    let generic_struct = program
+        .definitions
+        .iter()
+        .find(|definition| {
+            matches!(definition.data, DefinitionData::Struct { .. })
+                && definition.generics.len() == 1
+        })
+        .expect("generic struct definition");
+    assert!(matches!(
+        generic_struct.generics[0].bounds.as_slice(),
+        [GenericBound::Interface(_, _)]
+    ));
+    assert_eq!(
+        program
+            .definitions
+            .iter()
+            .filter(|definition| matches!(definition.data, DefinitionData::Class { .. }))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn resolves_exact_relative_and_standard_modules_across_cycles() {
+    let directory = tempfile::tempdir().expect("temporary module graph");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    write(
+        &root.join("main.tn"),
+        "import { helper as run } from \"./helper\";\nimport { Value } from \"std/core\";\nexport function main(): void {}\n",
+    );
+    write(
+        &root.join("helper.tn"),
+        "import { main } from \"./main\";\nexport function helper(): void {}\n",
+    );
+    write(
+        &standard_library.join("core.tn"),
+        "export struct Value {}\n",
+    );
+
+    let graph = load_module_graph(root, &root.join("main.tn"), &standard_library)
+        .expect("valid module graph");
+    assert_eq!(graph.modules.len(), 3);
+    let entry = graph.module(graph.entry).expect("entry module");
+    assert_eq!(entry.imports.len(), 2);
+    assert!(matches!(entry.imports[0].clause, ImportClause::Named(_)));
+    assert_eq!(
+        graph,
+        load_module_graph(root, &root.join("main.tn"), &standard_library)
+            .expect("repeat graph is deterministic")
+    );
+}
+
+#[test]
+fn module_ids_are_stable_across_workspace_roots() {
+    let left_directory = tempfile::tempdir().expect("left temporary module graph");
+    let right_directory = tempfile::tempdir().expect("right temporary module graph");
+    for root in [left_directory.path(), right_directory.path()] {
+        let standard_library = root.join("std");
+        write(
+            &root.join("main.tn"),
+            "import { helper } from \"./helper\";\nimport { Value } from \"std/core\";\nfunction main(): void {}\n",
+        );
+        write(
+            &root.join("helper.tn"),
+            "export function helper(): void {}\n",
+        );
+        write(
+            &standard_library.join("core.tn"),
+            "export struct Value {}\n",
+        );
+    }
+
+    let left_root = left_directory
+        .path()
+        .canonicalize()
+        .expect("left canonical root");
+    let right_root = right_directory
+        .path()
+        .canonicalize()
+        .expect("right canonical root");
+    let load = |root: &Path| {
+        load_module_graph(root, &root.join("main.tn"), &root.join("std"))
+            .expect("valid module graph")
+    };
+    let left = load(&left_root);
+    let right = load(&right_root);
+
+    let identity = |graph: &tn_hir::ModuleGraph, root: &Path| {
+        graph
+            .modules
+            .iter()
+            .map(|module| {
+                let key = if let Ok(path) = module.path.strip_prefix(root.join("std")) {
+                    format!("std/{}", path.display())
+                } else {
+                    format!(
+                        "project/{}",
+                        module.path.strip_prefix(root).unwrap().display()
+                    )
+                };
+                (
+                    key,
+                    (
+                        module.id.0,
+                        module
+                            .imports
+                            .iter()
+                            .map(|import| import.target.0)
+                            .collect::<Vec<_>>(),
+                        module
+                            .declarations
+                            .iter()
+                            .map(|declaration| declaration.id.0)
+                            .collect::<Vec<_>>(),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+
+    assert_eq!(left.entry, right.entry);
+    assert_eq!(identity(&left, &left_root), identity(&right, &right_root));
+}
+
+#[test]
+fn rejects_package_specifiers_missing_exports_and_overload_sets() {
+    let directory = tempfile::tempdir().expect("temporary module graph");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    std::fs::create_dir(&standard_library).expect("standard-library directory");
+    write(
+        &root.join("main.tn"),
+        "import { hidden } from \"./helper\";\nimport \"package\";\nfunction duplicate(): void {}\nfunction duplicate(value: i32): void {}\n",
+    );
+    write(&root.join("helper.tn"), "function hidden(): void {}\n");
+    let error = load_module_graph(root, &root.join("main.tn"), &standard_library)
+        .expect_err("invalid graph must fail");
+    let conditions = error
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.condition.as_str())
+        .collect::<Vec<_>>();
+    assert!(conditions.contains(&"RESOLVE_INVALID_MODULE_SPECIFIER"));
+    assert!(conditions.contains(&"RESOLVE_MISSING_EXPORT"));
+    assert!(conditions.contains(&"RESOLVE_DUPLICATE_DECLARATION"));
+}
+
+#[test]
+fn retains_interface_and_lifetime_generic_arguments() {
+    let directory = tempfile::tempdir().expect("temporary HIR program");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    std::fs::create_dir(&standard_library).expect("standard-library directory");
+    write(
+        &root.join("main.tn"),
+        r"interface Container<Item> {
+  item(): Item;
+}
+@Conform(Container)
+struct Bag<T> { public value: T;
+  item(): T { return this.value; }
+}
+struct Borrowed<lifetime a, T> { public value: &a T; }
+type StaticBorrow = Borrowed<static, i32>;
+",
+    );
+    let graph =
+        load_module_graph(root, &root.join("main.tn"), &standard_library).expect("module graph");
+    let program = lower_program(graph).expect("resolved HIR");
+
+    let bag = program
+        .definitions
+        .iter()
+        .find_map(|definition| match &definition.data {
+            DefinitionData::Struct { methods, .. } if definition.generics.len() == 1 => {
+                Some((definition, methods))
+            }
+            _ => None,
+        })
+        .expect("generic conformance target");
+    assert_eq!(bag.1[0].name, "item");
+    let declaration = program
+        .graph
+        .declaration(bag.0.declaration)
+        .expect("conformance declaration");
+    assert!(
+        declaration.attributes.iter().any(|attribute| {
+            attribute.name == "Conform" && attribute.arguments == ["Container"]
+        })
+    );
+
+    let alias = program
+        .definitions
+        .iter()
+        .find_map(|definition| match &definition.data {
+            DefinitionData::TypeAlias(ty) => Some(ty),
+            _ => None,
+        })
+        .expect("lifetime-instantiated alias");
+    assert!(matches!(
+        alias,
+        Type::Nominal(_, arguments)
+            if arguments == &[Type::Lifetime("static".into()), Type::Primitive(tn_hir::PrimitiveType::I32)]
+    ));
+}

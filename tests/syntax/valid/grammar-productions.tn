@@ -1,0 +1,153 @@
+import { Formatter } from "std/fmt";
+
+const answer: i32 = 42i32;
+static epoch: usize = 0usize;
+static mut counter: i64 = 0i64;
+
+type Optional<T> = T | undefined;
+type Pair = (i32, string);
+type Unary = (i32) => i32;
+type AsyncUnary = async (i32) => Promise<i32, never>;
+type Callback = extern "C" function(i32): i32;
+type SharedView = &str;
+type MutableView = &mut [u8];
+type Raw = *const u8;
+type Dynamic = unknown;
+
+interface Reader<T extends Display> {
+  read<U extends Display>(buffer: &mut [T]): usize throws IOError;
+  move close(): void;
+}
+
+@Layout("C")
+@Conform(Reader)
+export struct Record<T extends Display & Send> {
+  @Inline
+  public readonly name: &str;
+  protected value?: T;
+  private bytes: [u8; 4usize];
+
+  public read<U extends Display>(buffer: &mut [T]): usize throws IOError {
+    return buffer.length();
+  }
+
+  move close(): void {}
+}
+
+abstract class Base implements Reader<i32> {
+  private id: i64;
+
+  constructor(id: i64) {
+    this.id = id;
+  }
+
+  public abstract read(buffer: &mut [u8]): usize throws IOError;
+
+  display(out: &mut Formatter): void {
+    out.write(`Base(${this.id})`);
+  }
+
+  move close(): void {}
+}
+
+final class Derived extends Base implements Reader<i32> {
+  public readonly ready: bool = true;
+
+  constructor(id: i64) {
+    super(id);
+  }
+
+  public override read(buffer: &mut [u8]): usize throws IOError {
+    return buffer.length();
+  }
+
+  public final generic<T extends Copy>(value: T): T {
+    return value;
+  }
+
+  move close(): void {}
+}
+
+enum Message<T> {
+  Empty,
+  Tuple(T, usize),
+  Record { value: T; },
+}
+
+@Layout("u8")
+enum Color {
+  Red = 1u8,
+  Green = 2u8,
+  Blue = 3u8,
+}
+
+extern "C" {
+  @Export("sum") function sum(left: i32, right: i32): i32;
+  function log(format: *const c_char, ...): c_int;
+}
+
+async function transform<T extends Display & Send, E extends Error>(
+  value: T,
+  text: &str,
+): Promise<T, E> throws E {
+  const selected = true ? value : value;
+  let array: [i32; 3usize] = [1i32, 2i32, 3i32];
+  let tuple = (array[0usize], text);
+  let maybe: i32 | undefined = undefined;
+  if (maybe !== undefined) {
+    tuple;
+  } else {
+    while (false) {
+      break;
+    }
+  }
+  for (const item of array) {
+    if (item === 2i32) {
+      continue;
+    }
+  }
+  const result = switch (selected) {
+    case true: 1usize,
+    default: 0usize,
+  };
+  using resource = acquire();
+  await using asyncResource = acquireAsync();
+  return try await complete(result);
+}
+
+function syntaxInventory(left: i32, right: i32): void {
+  let integer = 0b1010u8;
+  integer = 0o12u8;
+  integer = 0x0Au8;
+  integer += 1u8;
+  integer <<= 1u8;
+  const character = '\u{03bb}';
+  const escaped = "line\n\x41\u{42}";
+  const template = `left=${left}, escaped=\${right}`;
+  const grouped = (left + right) * -left;
+  const tuple = (left, right,);
+  const emptyArray = [];
+  const shorthand = { left, right: right };
+  const closure = (value: i32) => value;
+  const blockClosure = (value: i32): i32 => {
+    return value;
+  };
+  const compared = left !== right || left <= right && left >= right;
+  const shifted = (left << 1i32) >> 1i32;
+  const bits = (left | right) ^ (left & right);
+  const cast = left as i64;
+  const indexed = tuple[0usize];
+  const borrowed = &left;
+  const mutableBorrow = &mut right;
+  const dereferenced = *pointer;
+  const inverted = !false;
+  const complemented = ~left;
+  const moved = move shorthand;
+  const decision = left < right ? left : right;
+  const patterns = switch (left) {
+    case 0i32: 0i32,
+    case undefined: 1i32,
+    default: 2i32,
+  };
+  return;
+}

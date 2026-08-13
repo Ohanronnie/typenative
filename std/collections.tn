@@ -1,0 +1,1044 @@
+import { AllocError, isNull, rawAlloc, rawFree, rawRealloc, tryRawAlloc, tryRawRealloc } from "std/alloc";
+import { Drop } from "std/core";
+
+extern "C" {
+  function tn_runtime_free(pointer: * mut u8): void;
+  function tn_bytes_write_u8(bytes: * mut u8, length: usize, index: usize, value: u8): i32;
+  function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
+  function tn_bytes_move_at(bytes: * mut u8, length: usize, sourceOffset: usize, destinationOffset: usize, count: usize): i32;
+  function tn_map_create(keySize: usize, valueSize: usize, ordered: i32): * mut u8;
+  function tn_map_create_ex(keySize: usize, valueSize: usize, ordered: i32, stringKeys: i32, stringValues: i32, capacity: usize): * mut u8;
+  function tn_map_insert(handle: * mut u8, key: * const u8, value: * const u8): i32;
+  function tn_map_get(handle: * mut u8, key: * const u8, value: * mut u8): i32;
+  function tn_map_contains(handle: * mut u8, key: * const u8): i32;
+  function tn_map_remove(handle: * mut u8, key: * const u8): i32;
+  function tn_map_clear(handle: * mut u8): i32;
+  function tn_map_length(handle: * mut u8): usize;
+  function tn_map_next(handle: * mut u8, cursor: * mut usize, key: * mut u8, value: * mut u8): i32;
+  function tn_map_destroy(handle: * mut u8): i32;
+}
+export interface Hash {
+}
+export interface Equal<Rhs> {
+}
+export interface Ord {
+}
+@Intrinsic function sizeOf<T>(): usize {
+  return 0usize;
+}
+@Intrinsic function isString<T>(): bool {
+  return false;
+}
+@Intrinsic function isCopy<T>(): bool {
+  return false;
+}
+@Intrinsic function elementInitialized(pointer: * const u8, index: usize): bool {
+  return false;
+}
+@Intrinsic function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
+  unsafe {
+    return * pointer;
+  }
+}
+@Intrinsic function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
+  return false;
+}
+@Intrinsic function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
+  return false;
+}
+function allocationError(): AllocError {
+  return {
+    code: 12i32
+  };
+}
+export struct ArrayOptions {
+  public capacity: usize;
+}
+@Drop export class Array<T> {
+  private pointer: * mut T;
+  private initialized: * mut u8;
+  public length: usize;
+  public capacity: usize;
+  private elementSize: usize;
+  public constructor(options: ArrayOptions) {
+    const elementSize = sizeOf<T>();
+    unsafe {
+      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.initialized = rawAlloc(options.capacity);
+    }
+    this.length = 0usize;
+    this.capacity = options.capacity;
+    this.elementSize = elementSize;
+    let index: usize = 0usize;
+    while (index<options.capacity) {
+      unsafe {
+        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+      }
+      index = index + 1usize;
+    }
+  }
+  mut drop(): void {
+    unsafe {
+      dropInitializedElements<T>(this.pointer, this.length, this.initialized);
+    }
+    unsafe {
+      rawFree(this.pointer as * mut u8);
+      rawFree(this.initialized);
+    }
+  }
+  public mut push(value: T): void {
+    if (this.length === this.capacity) {
+      let next: usize = 1usize;
+      if (this.capacity > 0usize) {
+        next = this.capacity * 2usize;
+      }
+      unsafe {
+        this.pointer = rawRealloc(this.pointer as * mut u8, next * this.elementSize)as * mut T;
+        this.initialized = rawRealloc(this.initialized, next);
+      }
+      let index: usize = this.capacity;
+      while (index<next) {
+        unsafe {
+          tn_bytes_write_u8(this.initialized, next, index, 0u8);
+        }
+        index = index + 1usize;
+      }
+      this.capacity = next;
+    }
+    if (isCopy<T>()) {
+      unsafe {
+        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, this.length * this.elementSize);
+      }
+    } else {
+      unsafe {
+        storeElement<T>(this.pointer, this.length, this.initialized, move value);
+      }
+    }
+    this.length = this.length + 1usize;
+  }
+  public get(index: usize): T | undefined {
+    if (index >= this.length) {
+      return undefined;
+    }
+    if (isCopy<T>()) {
+      unsafe {
+        const output = rawAlloc(this.elementSize)as * mut T;
+        if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
+          rawFree(output as * mut u8);
+          return undefined;
+        }
+        const value = * output;
+        rawFree(output as * mut u8);
+        return value;
+      }
+    }
+    unsafe {
+      if (!elementInitialized(this.initialized as * const u8, index)) {
+        return undefined;
+      }
+      return moveElement<T>(this.pointer, index, this.initialized);
+    }
+  }
+  public mut set(index: usize, value: T): bool {
+    if (index >= this.length) {
+      return false;
+    }
+    if (isCopy<T>()) {
+      unsafe {
+        return tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, index * this.elementSize) === 0i32;
+      }
+    } else {
+      unsafe {
+        return storeElement<T>(this.pointer, index, this.initialized, move value);
+      }
+    }
+  }
+  public mut removeAt(index: usize): T | undefined {
+    if (index >= this.length) {
+      return undefined;
+    }
+    if (!isCopy<T>()) {
+      unsafe {
+        if (!elementInitialized(this.initialized as * const u8, index)) {
+          return undefined;
+        }
+        const value = moveElement<T>(this.pointer, index, this.initialized);
+        const remaining = this.length - index - 1usize;
+        if (remaining > 0usize) {
+          tn_bytes_move_at(this.pointer as * mut u8, this.capacity * this.elementSize,(index + 1usize) * this.elementSize, index * this.elementSize, remaining * this.elementSize);
+          tn_bytes_move_at(this.initialized, this.capacity, index + 1usize, index, remaining);
+        }
+        tn_bytes_write_u8(this.initialized, this.capacity, this.length - 1usize, 0u8);
+        this.length = this.length - 1usize;
+        return value;
+      }
+    }
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const remaining = this.length - index - 1usize;
+      if (remaining > 0usize) {
+        tn_bytes_move_at(this.pointer as * mut u8, this.capacity * this.elementSize,(index + 1usize) * this.elementSize, index * this.elementSize, remaining * this.elementSize);
+      }
+      this.length = this.length - 1usize;
+      const value = * output;
+      rawFree(output as * mut u8);
+      return value;
+    }
+  }
+  public mut pop(): T | undefined {
+    if (this.length === 0usize) {
+      return undefined;
+    }
+    return this.removeAt(this.length - 1usize);
+  }
+  public mut clear(): void {
+    unsafe {
+      dropInitializedElements<T>(this.pointer, this.length, this.initialized);
+    }
+    this.length = 0usize;
+  }
+  public slice(): Slice<T> {
+    unsafe {
+      return {
+        pointer: this.pointer as * const T, length: this.length, elementSize: this.elementSize
+      };
+    }
+  }
+}
+@Drop export struct Queue<T> {
+  public pointer: * mut T;
+  public length: usize;
+  public capacity: usize;
+  public elementSize: usize;
+  public head: usize;
+  mut drop(): void {
+    unsafe {
+      rawFree(this.pointer as * mut u8);
+    }
+  }
+}
+@Drop export struct Deque<T> {
+  public pointer: * mut T;
+  public length: usize;
+  public capacity: usize;
+  public elementSize: usize;
+  public head: usize;
+  mut drop(): void {
+    unsafe {
+      rawFree(this.pointer as * mut u8);
+    }
+  }
+}
+@Drop export struct Heap<T> {
+  public pointer: * mut T;
+  public length: usize;
+  public capacity: usize;
+  public elementSize: usize;
+  mut drop(): void {
+    unsafe {
+      rawFree(this.pointer as * mut u8);
+    }
+  }
+}
+export struct MapOptions {
+  public capacity: usize;
+}
+@Drop export class Map<K, V> {
+  public handle: * mut u8;
+  public length: usize;
+  public keySize: usize;
+  public valueSize: usize;
+  public capacity: usize;
+  public constructor(options: MapOptions) {
+    const keySize = sizeOf<K>();
+    const valueSize = sizeOf<V>();
+    let stringKeys: i32 = 0;
+    let stringValues: i32 = 0;
+    if (isString<K>()) {
+      stringKeys = 1;
+    }
+    if (isString<V>()) {
+      stringValues = 1;
+    }
+    unsafe {
+      this.handle = tn_map_create_ex(keySize, valueSize, 0, stringKeys, stringValues, options.capacity,);
+    }
+    this.keySize = keySize;
+    this.valueSize = valueSize;
+    this.capacity = options.capacity;
+    this.length = 0;
+  }
+  public mut set(key: K, value: V): bool {
+    unsafe {
+      const status = tn_map_insert(this.handle,( & key)as * const u8,( & value)as * const u8);
+      this.length = tn_map_length(this.handle);
+      return status === 0;
+    }
+  }
+  public get(key: & K): V | undefined {
+    unsafe {
+      const output = rawAlloc(this.valueSize)as * mut V;
+      if (tn_map_get(this.handle, key as * const u8, output as * mut u8) !== 1) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      return value;
+    }
+  }
+  public contains(key: & K): bool {
+    unsafe {
+      return tn_map_contains(this.handle, key as * const u8) === 1;
+    }
+  }
+  public mut remove(key: & K): bool {
+    unsafe {
+      const removed = tn_map_remove(this.handle, key as * const u8) === 1;
+      this.length = tn_map_length(this.handle);
+      return removed;
+    }
+  }
+  public mut clear(): void {
+    unsafe {
+      tn_map_clear(this.handle);
+    }
+    this.length = 0;
+  }
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop export struct Set<T> {
+  public handle: * mut u8;
+  public length: usize;
+  public elementSize: usize;
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop export struct OrderedMap<K, V> {
+  public handle: * mut u8;
+  public length: usize;
+  public keySize: usize;
+  public valueSize: usize;
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop export struct OrderedSet<T> {
+  public handle: * mut u8;
+  public length: usize;
+  public elementSize: usize;
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+export struct Slice<T> {
+  public pointer: * const T;
+  public length: usize;
+  public elementSize: usize;
+  public get(index: usize): T | undefined {
+    if (index >= this.length) {
+      return undefined;
+    }
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      if (tn_bytes_copy_at(this.pointer as * const u8, this.length * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      return value;
+    }
+  }
+}
+@Drop export struct FixedArray<T, N> {
+  public pointer: * mut T;
+  public length: usize;
+  public elementSize: usize;
+  mut drop(): void {
+    unsafe {
+      rawFree(this.pointer as * mut u8);
+    }
+  }
+}
+export function queueAllocate<T>(elementSize: usize, capacity: usize): Queue<T> {
+  unsafe {
+    return {
+      pointer: rawAlloc(capacity * elementSize)as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize, head: 0usize
+    };
+  }
+}
+export function queueAllocateChecked<T>(elementSize: usize, capacity: usize): Queue<T > throws AllocError {
+  if (elementSize !== 0usize && capacity > 18446744073709551615usize / elementSize) {
+    throw allocationError();
+  }
+  unsafe {
+    const pointer = tryRawAlloc(capacity * elementSize);
+    if (isNull(pointer as * const u8)) {
+      throw allocationError();
+    }
+    return {
+      pointer: pointer as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize, head: 0usize
+    };
+  }
+}
+export function queuePush<T>(queue: & mut Queue<T>, value: * const u8): void {
+  if (queue.length === queue.capacity) {
+    let next: usize = 1usize;
+    if (queue.capacity > 0usize) {
+      next = queue.capacity * 2usize;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * queue.elementSize);
+      let index: usize = 0usize;
+      while (index<queue.length) {
+        const sourceIndex =(queue.head + index) % queue.capacity;
+        tn_bytes_copy_to_at(queue.pointer as * const u8, queue.capacity * queue.elementSize, sourceIndex * queue.elementSize, queue.elementSize, replacement, next * queue.elementSize, index * queue.elementSize);
+        index = index + 1usize;
+      }
+      rawFree(queue.pointer as * mut u8);
+      queue.pointer = replacement as * mut T;
+      queue.head = 0usize;
+    }
+    queue.capacity = next;
+  }
+  const destinationIndex =(queue.head + queue.length) % queue.capacity;
+  unsafe {
+    tn_bytes_copy_to_at(value, queue.elementSize, 0usize, queue.elementSize, queue.pointer as * mut u8, queue.capacity * queue.elementSize, destinationIndex * queue.elementSize);
+  }
+  queue.length = queue.length + 1usize;
+}
+export function queuePushChecked<T>(queue: & mut Queue<T>, value: * const u8): void throws AllocError {
+  if (queue.length === queue.capacity) {
+    let next: usize = 1usize;
+    if (queue.capacity > 0usize) {
+      if (queue.capacity > 9223372036854775807usize) {
+        throw allocationError();
+      }
+      next = queue.capacity * 2usize;
+    }
+    if (queue.elementSize !== 0usize && next > 18446744073709551615usize / queue.elementSize) {
+      throw allocationError();
+    }
+    unsafe {
+      const replacement = tryRawAlloc(next * queue.elementSize);
+      if (isNull(replacement as * const u8)) {
+        throw allocationError();
+      }
+      let index: usize = 0usize;
+      while (index<queue.length) {
+        const sourceIndex =(queue.head + index) % queue.capacity;
+        if (tn_bytes_copy_to_at(queue.pointer as * const u8, queue.capacity * queue.elementSize, sourceIndex * queue.elementSize, queue.elementSize, replacement, next * queue.elementSize, index * queue.elementSize) !== 0i32) {
+          rawFree(replacement);
+          throw allocationError();
+        }
+        index = index + 1usize;
+      }
+      rawFree(queue.pointer as * mut u8);
+      queue.pointer = replacement as * mut T;
+      queue.head = 0usize;
+    }
+    queue.capacity = next;
+  }
+  const destinationIndex =(queue.head + queue.length) % queue.capacity;
+  unsafe {
+    if (tn_bytes_copy_to_at(value, queue.elementSize, 0usize, queue.elementSize, queue.pointer as * mut u8, queue.capacity * queue.elementSize, destinationIndex * queue.elementSize) !== 0i32) {
+      throw allocationError();
+    }
+  }
+  queue.length = queue.length + 1usize;
+}
+export function queuePop<T>(queue: & mut Queue<T>, value: * mut u8): bool {
+  if (queue.length === 0usize) {
+    return false;
+  }
+  const sourceIndex = queue.head;
+  unsafe {
+    tn_bytes_copy_at(queue.pointer as * const u8, queue.capacity * queue.elementSize, sourceIndex * queue.elementSize, queue.elementSize, value);
+  }
+  queue.head =(queue.head + 1usize) % queue.capacity;
+  queue.length = queue.length - 1usize;
+  return true;
+}
+export function queuePushFront<T>(queue: & mut Queue<T>, value: * const u8): void {
+  if (queue.length === queue.capacity) {
+    let next: usize = 1usize;
+    if (queue.capacity > 0usize) {
+      next = queue.capacity * 2usize;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * queue.elementSize);
+      let index: usize = 0usize;
+      while (index<queue.length) {
+        const sourceIndex =(queue.head + index) % queue.capacity;
+        tn_bytes_copy_to_at(queue.pointer as * const u8, queue.capacity * queue.elementSize, sourceIndex * queue.elementSize, queue.elementSize, replacement, next * queue.elementSize,(index + 1usize) * queue.elementSize);
+        index = index + 1usize;
+      }
+      rawFree(queue.pointer as * mut u8);
+      queue.pointer = replacement as * mut T;
+      queue.head = 1usize;
+    }
+    queue.capacity = next;
+  }
+  if (queue.length === 0usize) {
+    queue.head = 0usize;
+  } else if (queue.head === 0usize) {
+    queue.head = queue.capacity - 1usize;
+  } else {
+    queue.head = queue.head - 1usize;
+  }
+  unsafe {
+    tn_bytes_copy_to_at(value, queue.elementSize, 0usize, queue.elementSize, queue.pointer as * mut u8, queue.capacity * queue.elementSize, queue.head * queue.elementSize);
+  }
+  queue.length = queue.length + 1usize;
+}
+export function queuePushFrontChecked<T>(queue: & mut Queue<T>, value: * const u8): void throws AllocError {
+  if (queue.length === queue.capacity) {
+    let next: usize = 1usize;
+    if (queue.capacity > 0usize) {
+      if (queue.capacity > 9223372036854775807usize) {
+        throw allocationError();
+      }
+      next = queue.capacity * 2usize;
+    }
+    if (queue.elementSize !== 0usize && next > 18446744073709551615usize / queue.elementSize) {
+      throw allocationError();
+    }
+    unsafe {
+      const replacement = tryRawAlloc(next * queue.elementSize);
+      if (isNull(replacement as * const u8)) {
+        throw allocationError();
+      }
+      let index: usize = 0usize;
+      while (index<queue.length) {
+        const sourceIndex =(queue.head + index) % queue.capacity;
+        if (tn_bytes_copy_to_at(queue.pointer as * const u8, queue.capacity * queue.elementSize, sourceIndex * queue.elementSize, queue.elementSize, replacement, next * queue.elementSize,(index + 1usize) * queue.elementSize) !== 0i32) {
+          rawFree(replacement);
+          throw allocationError();
+        }
+        index = index + 1usize;
+      }
+      rawFree(queue.pointer as * mut u8);
+      queue.pointer = replacement as * mut T;
+      queue.head = 1usize;
+    }
+    queue.capacity = next;
+  }
+  if (queue.length === 0usize) {
+    queue.head = 0usize;
+  } else if (queue.head === 0usize) {
+    queue.head = queue.capacity - 1usize;
+  } else {
+    queue.head = queue.head - 1usize;
+  }
+  unsafe {
+    if (tn_bytes_copy_to_at(value, queue.elementSize, 0usize, queue.elementSize, queue.pointer as * mut u8, queue.capacity * queue.elementSize, queue.head * queue.elementSize) !== 0i32) {
+      throw allocationError();
+    }
+  }
+  queue.length = queue.length + 1usize;
+}
+export function queueLength<T>(queue: & Queue<T >): usize {
+  return queue.length;
+}
+export function queueClear<T>(queue: & mut Queue<T >): void {
+  queue.length = 0usize;
+  queue.head = 0usize;
+}
+export function dequeAllocate<T>(elementSize: usize, capacity: usize): Deque<T> {
+  unsafe {
+    return {
+      pointer: rawAlloc(capacity * elementSize)as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize, head: 0usize
+    };
+  }
+}
+export function dequeAllocateChecked<T>(elementSize: usize, capacity: usize): Deque<T > throws AllocError {
+  if (elementSize !== 0usize && capacity > 18446744073709551615usize / elementSize) {
+    throw allocationError();
+  }
+  unsafe {
+    const pointer = tryRawAlloc(capacity * elementSize);
+    if (isNull(pointer as * const u8)) {
+      throw allocationError();
+    }
+    return {
+      pointer: pointer as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize, head: 0usize
+    };
+  }
+}
+export function dequePush<T>(deque: & mut Deque<T>, value: * const u8): void {
+  if (deque.length === deque.capacity) {
+    let next: usize = 1usize;
+    if (deque.capacity > 0usize) {
+      next = deque.capacity * 2usize;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * deque.elementSize);
+      let index: usize = 0usize;
+      while (index<deque.length) {
+        const sourceIndex =(deque.head + index) % deque.capacity;
+        tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize, index * deque.elementSize);
+        index = index + 1usize;
+      }
+      rawFree(deque.pointer as * mut u8);
+      deque.pointer = replacement as * mut T;
+      deque.head = 0usize;
+    }
+    deque.capacity = next;
+  }
+  const destinationIndex =(deque.head + deque.length) % deque.capacity;
+  unsafe {
+    tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, destinationIndex * deque.elementSize);
+  }
+  deque.length = deque.length + 1usize;
+}
+export function dequePushChecked<T>(deque: & mut Deque<T>, value: * const u8): void throws AllocError {
+  if (deque.length === deque.capacity) {
+    let next: usize = 1usize;
+    if (deque.capacity > 0usize) {
+      if (deque.capacity > 9223372036854775807usize) {
+        throw allocationError();
+      }
+      next = deque.capacity * 2usize;
+    }
+    if (deque.elementSize !== 0usize && next > 18446744073709551615usize / deque.elementSize) {
+      throw allocationError();
+    }
+    unsafe {
+      const replacement = tryRawAlloc(next * deque.elementSize);
+      if (isNull(replacement as * const u8)) {
+        throw allocationError();
+      }
+      let index: usize = 0usize;
+      while (index<deque.length) {
+        const sourceIndex =(deque.head + index) % deque.capacity;
+        if (tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize, index * deque.elementSize) !== 0i32) {
+          rawFree(replacement);
+          throw allocationError();
+        }
+        index = index + 1usize;
+      }
+      rawFree(deque.pointer as * mut u8);
+      deque.pointer = replacement as * mut T;
+      deque.head = 0usize;
+    }
+    deque.capacity = next;
+  }
+  const destinationIndex =(deque.head + deque.length) % deque.capacity;
+  unsafe {
+    if (tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, destinationIndex * deque.elementSize) !== 0i32) {
+      throw allocationError();
+    }
+  }
+  deque.length = deque.length + 1usize;
+}
+export function dequePop<T>(deque: & mut Deque<T>, value: * mut u8): bool {
+  if (deque.length === 0usize) {
+    return false;
+  }
+  const sourceIndex = deque.head;
+  unsafe {
+    tn_bytes_copy_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, value);
+  }
+  deque.head =(deque.head + 1usize) % deque.capacity;
+  deque.length = deque.length - 1usize;
+  return true;
+}
+export function dequePushFront<T>(deque: & mut Deque<T>, value: * const u8): void {
+  if (deque.length === deque.capacity) {
+    let next: usize = 1usize;
+    if (deque.capacity > 0usize) {
+      next = deque.capacity * 2usize;
+    }
+    unsafe {
+      const replacement = rawAlloc(next * deque.elementSize);
+      let index: usize = 0usize;
+      while (index<deque.length) {
+        const sourceIndex =(deque.head + index) % deque.capacity;
+        tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize,(index + 1usize) * deque.elementSize);
+        index = index + 1usize;
+      }
+      rawFree(deque.pointer as * mut u8);
+      deque.pointer = replacement as * mut T;
+      deque.head = 1usize;
+    }
+    deque.capacity = next;
+  }
+  if (deque.length === 0usize) {
+    deque.head = 0usize;
+  } else if (deque.head === 0usize) {
+    deque.head = deque.capacity - 1usize;
+  } else {
+    deque.head = deque.head - 1usize;
+  }
+  unsafe {
+    tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, deque.head * deque.elementSize);
+  }
+  deque.length = deque.length + 1usize;
+}
+export function dequePushFrontChecked<T>(deque: & mut Deque<T>, value: * const u8): void throws AllocError {
+  if (deque.length === deque.capacity) {
+    let next: usize = 1usize;
+    if (deque.capacity > 0usize) {
+      if (deque.capacity > 9223372036854775807usize) {
+        throw allocationError();
+      }
+      next = deque.capacity * 2usize;
+    }
+    if (deque.elementSize !== 0usize && next > 18446744073709551615usize / deque.elementSize) {
+      throw allocationError();
+    }
+    unsafe {
+      const replacement = tryRawAlloc(next * deque.elementSize);
+      if (isNull(replacement as * const u8)) {
+        throw allocationError();
+      }
+      let index: usize = 0usize;
+      while (index<deque.length) {
+        const sourceIndex =(deque.head + index) % deque.capacity;
+        if (tn_bytes_copy_to_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, replacement, next * deque.elementSize,(index + 1usize) * deque.elementSize) !== 0i32) {
+          rawFree(replacement);
+          throw allocationError();
+        }
+        index = index + 1usize;
+      }
+      rawFree(deque.pointer as * mut u8);
+      deque.pointer = replacement as * mut T;
+      deque.head = 1usize;
+    }
+    deque.capacity = next;
+  }
+  if (deque.length === 0usize) {
+    deque.head = 0usize;
+  } else if (deque.head === 0usize) {
+    deque.head = deque.capacity - 1usize;
+  } else {
+    deque.head = deque.head - 1usize;
+  }
+  unsafe {
+    if (tn_bytes_copy_to_at(value, deque.elementSize, 0usize, deque.elementSize, deque.pointer as * mut u8, deque.capacity * deque.elementSize, deque.head * deque.elementSize) !== 0i32) {
+      throw allocationError();
+    }
+  }
+  deque.length = deque.length + 1usize;
+}
+export function dequePopBack<T>(deque: & mut Deque<T>, value: * mut u8): bool {
+  if (deque.length === 0usize) {
+    return false;
+  }
+  const sourceIndex =(deque.head + deque.length - 1usize) % deque.capacity;
+  unsafe {
+    tn_bytes_copy_at(deque.pointer as * const u8, deque.capacity * deque.elementSize, sourceIndex * deque.elementSize, deque.elementSize, value);
+  }
+  deque.length = deque.length - 1usize;
+  return true;
+}
+export function dequeLength<T>(deque: & Deque<T >): usize {
+  return deque.length;
+}
+export function dequeClear<T>(deque: & mut Deque<T >): void {
+  deque.length = 0usize;
+  deque.head = 0usize;
+}
+export function heapAllocate<T>(elementSize: usize, capacity: usize): Heap<T> {
+  unsafe {
+    return {
+      pointer: rawAlloc(capacity * elementSize)as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize
+    };
+  }
+}
+export function heapAllocateChecked<T>(elementSize: usize, capacity: usize): Heap<T > throws AllocError {
+  if (elementSize !== 0usize && capacity > 18446744073709551615usize / elementSize) {
+    throw allocationError();
+  }
+  unsafe {
+    const pointer = tryRawAlloc(capacity * elementSize);
+    if (isNull(pointer as * const u8)) {
+      throw allocationError();
+    }
+    return {
+      pointer: pointer as * mut T, length: 0usize, capacity: capacity, elementSize: elementSize
+    };
+  }
+}
+export function heapPush<T>(heap: & mut Heap<T>, value: * const u8): void {
+  if (heap.length === heap.capacity) {
+    let next: usize = 1usize;
+    if (heap.capacity > 0usize) {
+      next = heap.capacity * 2usize;
+    }
+    unsafe {
+      heap.pointer = rawRealloc(heap.pointer as * mut u8, next * heap.elementSize)as * mut T;
+    }
+    heap.capacity = next;
+  }
+  unsafe {
+    tn_bytes_copy_to_at(value, heap.elementSize, 0usize, heap.elementSize, heap.pointer as * mut u8, heap.capacity * heap.elementSize, heap.length * heap.elementSize);
+  }
+  heap.length = heap.length + 1usize;
+}
+export function heapPushChecked<T>(heap: & mut Heap<T>, value: * const u8): void throws AllocError {
+  if (heap.length === heap.capacity) {
+    let next: usize = 1usize;
+    if (heap.capacity > 0usize) {
+      if (heap.capacity > 9223372036854775807usize) {
+        throw allocationError();
+      }
+      next = heap.capacity * 2usize;
+    }
+    if (heap.elementSize !== 0usize && next > 18446744073709551615usize / heap.elementSize) {
+      throw allocationError();
+    }
+    unsafe {
+      const pointer = tryRawRealloc(heap.pointer as * mut u8, next * heap.elementSize);
+      if (isNull(pointer as * const u8)) {
+        throw allocationError();
+      }
+      heap.pointer = pointer as * mut T;
+    }
+    heap.capacity = next;
+  }
+  unsafe {
+    if (tn_bytes_copy_to_at(value, heap.elementSize, 0usize, heap.elementSize, heap.pointer as * mut u8, heap.capacity * heap.elementSize, heap.length * heap.elementSize) !== 0i32) {
+      throw allocationError();
+    }
+  }
+  heap.length = heap.length + 1usize;
+}
+export function heapPop<T>(heap: & mut Heap<T>, value: * mut u8): bool {
+  if (heap.length === 0usize) {
+    return false;
+  }
+  heap.length = heap.length - 1usize;
+  unsafe {
+    tn_bytes_copy_at(heap.pointer as * const u8, heap.capacity * heap.elementSize, heap.length * heap.elementSize, heap.elementSize, value);
+  }
+  return true;
+}
+export function heapLength<T>(heap: & Heap<T >): usize {
+  return heap.length;
+}
+export function heapPeek<T>(heap: & Heap<T>, value: * mut u8): bool {
+  if (heap.length === 0usize) {
+    return false;
+  }
+  unsafe {
+    return tn_bytes_copy_at(heap.pointer as * const u8, heap.capacity * heap.elementSize,(heap.length - 1usize) * heap.elementSize, heap.elementSize, value) === 0i32;
+  }
+}
+function mapAllocateRaw<K, V>(keySize: usize, valueSize: usize): Map<K, V> {
+  return new Map<K, V>({
+    capacity: 16,
+  });
+}
+export function mapAllocate<K extends Equal<K > & Hash, V>(keySize: usize, valueSize: usize): Map<K, V> {
+  return mapAllocateRaw<K, V>(keySize, valueSize);
+}
+export function mapAllocateChecked<K extends Equal<K > & Hash, V>(keySize: usize, valueSize: usize): Map<K, V > throws AllocError {
+  const map = mapAllocateRaw<K, V>(keySize, valueSize);
+  unsafe {
+    if (isNull(map.handle as * const u8)) {
+      throw allocationError();
+    }
+  }
+  return map;
+}
+export function mapInsert<K extends Equal<K > & Hash, V>(map: & mut Map<K, V>, key: * const K, value: * const V): bool {
+  unsafe {
+    const status = tn_map_insert(map.handle, key as * const u8, value as * const u8);
+    map.length = tn_map_length(map.handle);
+    return status === 0i32;
+  }
+}
+export function mapGet<K extends Equal<K > & Hash, V>(map: & Map<K, V>, key: * const K, value: * mut V): bool {
+  unsafe {
+    return tn_map_get(map.handle, key as * const u8, value as * mut u8) === 1i32;
+  }
+}
+export function mapContains<K extends Equal<K > & Hash, V>(map: & Map<K, V>, key: * const K): bool {
+  unsafe {
+    return tn_map_contains(map.handle, key as * const u8) === 1i32;
+  }
+}
+export function mapRemove<K extends Equal<K > & Hash, V>(map: & mut Map<K, V>, key: * const K): bool {
+  unsafe {
+    const removed = tn_map_remove(map.handle, key as * const u8) === 1i32;
+    map.length = tn_map_length(map.handle);
+    return removed;
+  }
+}
+export function mapClear<K extends Equal<K > & Hash, V>(map: & mut Map<K, V >): void {
+  unsafe {
+    tn_map_clear(map.handle);
+    map.length = 0usize;
+  }
+}
+export function mapLength<K extends Equal<K > & Hash, V>(map: & Map<K, V >): usize {
+  return map.length;
+}
+export function mapNext<K extends Equal<K > & Hash, V>(map: & Map<K, V>, cursor: & mut usize, key: * mut K, value: * mut V): bool {
+  unsafe {
+    return tn_map_next(map.handle, cursor as * mut usize, key as * mut u8, value as * mut u8) === 1i32;
+  }
+}
+function setAllocateRaw<T>(elementSize: usize): Set<T> {
+  unsafe {
+    return {
+      handle: tn_map_create(elementSize, 0usize, 0i32), length: 0usize, elementSize: elementSize
+    };
+  }
+}
+export function setAllocate<T extends Equal<T > & Hash>(elementSize: usize): Set<T> {
+  return setAllocateRaw<T>(elementSize);
+}
+export function setAllocateChecked<T extends Equal<T > & Hash>(elementSize: usize): Set<T > throws AllocError {
+  const set = setAllocateRaw<T>(elementSize);
+  unsafe {
+    if (isNull(set.handle as * const u8)) {
+      throw allocationError();
+    }
+  }
+  return set;
+}
+export function setInsert<T extends Equal<T > & Hash>(set: & mut Set<T>, value: * const T): bool {
+  unsafe {
+    const status = tn_map_insert(set.handle, value as * const u8, "" as * const u8);
+    set.length = tn_map_length(set.handle);
+    return status === 0i32;
+  }
+}
+export function setContains<T extends Equal<T > & Hash>(set: & Set<T>, value: * const T): bool {
+  unsafe {
+    return tn_map_contains(set.handle, value as * const u8) === 1i32;
+  }
+}
+export function setRemove<T extends Equal<T > & Hash>(set: & mut Set<T>, value: * const T): bool {
+  unsafe {
+    const removed = tn_map_remove(set.handle, value as * const u8) === 1i32;
+    set.length = tn_map_length(set.handle);
+    return removed;
+  }
+}
+export function setClear<T extends Equal<T > & Hash>(set: & mut Set<T >): void {
+  unsafe {
+    tn_map_clear(set.handle);
+    set.length = 0usize;
+  }
+}
+export function setLength<T extends Equal<T > & Hash>(set: & Set<T >): usize {
+  return set.length;
+}
+export function orderedMapAllocate<K, V>(keySize: usize, valueSize: usize): OrderedMap<K, V> {
+  unsafe {
+    return {
+      handle: tn_map_create(keySize, valueSize, 1i32), length: 0usize, keySize: keySize, valueSize: valueSize
+    };
+  }
+}
+export function orderedMapAllocateChecked<K extends Equal<K > & Hash, V>(keySize: usize, valueSize: usize): OrderedMap<K, V > throws AllocError {
+  const map = orderedMapAllocate<K, V>(keySize, valueSize);
+  unsafe {
+    if (isNull(map.handle as * const u8)) {
+      throw allocationError();
+    }
+  }
+  return map;
+}
+export function orderedMapInsert<K extends Equal<K > & Hash, V>(map: & mut OrderedMap<K, V>, key: * const K, value: * const V): bool {
+  unsafe {
+    const status = tn_map_insert(map.handle, key as * const u8, value as * const u8);
+    map.length = tn_map_length(map.handle);
+    return status === 0i32;
+  }
+}
+export function orderedMapGet<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V>, key: * const K, value: * mut V): bool {
+  unsafe {
+    return tn_map_get(map.handle, key as * const u8, value as * mut u8) === 1i32;
+  }
+}
+export function orderedMapContains<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V>, key: * const K): bool {
+  unsafe {
+    return tn_map_contains(map.handle, key as * const u8) === 1i32;
+  }
+}
+export function orderedMapRemove<K extends Equal<K > & Hash, V>(map: & mut OrderedMap<K, V>, key: * const K): bool {
+  unsafe {
+    const removed = tn_map_remove(map.handle, key as * const u8) === 1i32;
+    map.length = tn_map_length(map.handle);
+    return removed;
+  }
+}
+export function orderedMapClear<K extends Equal<K > & Hash, V>(map: & mut OrderedMap<K, V >): void {
+  unsafe {
+    tn_map_clear(map.handle);
+    map.length = 0usize;
+  }
+}
+export function orderedMapLength<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V >): usize {
+  return map.length;
+}
+export function orderedMapNext<K extends Equal<K > & Hash, V>(map: & OrderedMap<K, V>, cursor: & mut usize, key: * mut K, value: * mut V): bool {
+  unsafe {
+    return tn_map_next(map.handle, cursor as * mut usize, key as * mut u8, value as * mut u8) === 1i32;
+  }
+}
+export function orderedSetAllocate<T>(elementSize: usize): OrderedSet<T> {
+  unsafe {
+    return {
+      handle: tn_map_create(elementSize, 0usize, 1i32), length: 0usize, elementSize: elementSize
+    };
+  }
+}
+export function orderedSetAllocateChecked<T extends Equal<T > & Hash>(elementSize: usize): OrderedSet<T > throws AllocError {
+  const set = orderedSetAllocate<T>(elementSize);
+  unsafe {
+    if (isNull(set.handle as * const u8)) {
+      throw allocationError();
+    }
+  }
+  return set;
+}
+export function orderedSetInsert<T extends Equal<T > & Hash>(set: & mut OrderedSet<T>, value: * const T): bool {
+  unsafe {
+    const status = tn_map_insert(set.handle, value as * const u8, "" as * const u8);
+    set.length = tn_map_length(set.handle);
+    return status === 0i32;
+  }
+}
+export function orderedSetContains<T extends Equal<T > & Hash>(set: & OrderedSet<T>, value: * const T): bool {
+  unsafe {
+    return tn_map_contains(set.handle, value as * const u8) === 1i32;
+  }
+}
+export function orderedSetRemove<T extends Equal<T > & Hash>(set: & mut OrderedSet<T>, value: * const T): bool {
+  unsafe {
+    const removed = tn_map_remove(set.handle, value as * const u8) === 1i32;
+    set.length = tn_map_length(set.handle);
+    return removed;
+  }
+}
+export function orderedSetClear<T extends Equal<T > & Hash>(set: & mut OrderedSet<T >): void {
+  unsafe {
+    tn_map_clear(set.handle);
+    set.length = 0usize;
+  }
+}
+export function orderedSetLength<T extends Equal<T > & Hash>(set: & OrderedSet<T >): usize {
+  return set.length;
+}

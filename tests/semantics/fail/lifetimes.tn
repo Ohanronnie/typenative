@@ -1,0 +1,11 @@
+export function ambiguous(left: &i32, right: &i32): &i32 {
+  return left;
+}
+
+export function noInput(): &i32 {
+  return undefined;
+}
+
+export function unrelated<lifetime a>(value: &i32): &a i32 {
+  return value;
+}

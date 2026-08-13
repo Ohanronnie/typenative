@@ -1,0 +1,180 @@
+import { Drop } from "std/core";
+extern "C" {
+  function tn_runtime_alloc(size: usize): * mut u8;
+  function tn_runtime_try_alloc(size: usize): * mut u8;
+  function tn_runtime_realloc(pointer: * mut u8, size: usize): * mut u8;
+  function tn_runtime_try_realloc(pointer: * mut u8, size: usize): * mut u8;
+  function tn_pointer_is_null(pointer: * const u8): i32;
+  function tn_runtime_free(pointer: * mut u8): void;
+  function tn_ref_alloc(size: usize): * mut u8;
+  function tn_ref_try_alloc(size: usize): * mut u8;
+  function tn_ref_retain(pointer: * mut u8): * mut u8;
+  function tn_ref_release(pointer: * mut u8): i32;
+  function tn_ref_downgrade(pointer: * mut u8): * mut u8;
+  function tn_ref_upgrade(pointer: * mut u8): * mut u8;
+  function tn_ref_release_weak(pointer: * mut u8): i32;
+}
+export struct AllocError {
+  public code: i32;
+}
+function allocationError(): AllocError {
+  return {
+    code: 12i32
+  };
+}
+@Drop export struct Box<T> {
+  public pointer: * mut T;
+  mut drop(): void {
+    unsafe {
+      tn_runtime_free(this.pointer as * mut u8);
+    }
+  }
+}
+@Drop export struct Rc<T> {
+  public pointer: * mut T;
+  public alive: bool;
+  mut drop(): void {
+    if (this.alive) {
+      unsafe {
+        tn_ref_release(this.pointer as * mut u8);
+      }
+    }
+  }
+}
+@Intrinsic function sizeOf<T>(): usize {
+  return 0usize;
+}
+@Intrinsic function borrowShared<T>(pointer: * const T): & T {
+  unsafe {
+    return & * pointer;
+  }
+}
+@Intrinsic function storeRaw<T>(pointer: * mut T, value: T): bool {
+  return false;
+}
+@Intrinsic function cloneArc<T>(value: & mut Arc<T >): Arc<T> {
+  unsafe {
+    const pointer = value as * mut Arc<T>;
+    return * pointer;
+  }
+}
+@Drop export class Arc<T> {
+  public pointer: * mut T;
+  public alive: bool;
+  public constructor(value: T) {
+    this.alive = false;
+    unsafe {
+      this.pointer = tn_ref_alloc(sizeOf<T>())as * mut T;
+      storeRaw<T>(this.pointer, move value);
+    }
+    this.alive = true;
+  }
+  mut drop(): void {
+    if (this.alive) {
+      unsafe {
+        tn_ref_release(this.pointer as * mut u8);
+      }
+    }
+  }
+  public clone(): Arc<T> {
+    return cloneArc<T>( & mut this);
+  }
+  public get(): & T {
+    unsafe {
+      return borrowShared<T>(this.pointer as * const T);
+    }
+  }
+}
+@Drop export struct Weak<T> {
+  public pointer: * mut T;
+  public alive: bool;
+  mut drop(): void {
+    if (this.alive) {
+      unsafe {
+        tn_ref_release_weak(this.pointer as * mut u8);
+      }
+    }
+  }
+}
+export function rawAlloc(size: usize): * mut u8 {
+  unsafe {
+    return tn_runtime_alloc(size);
+  }
+}
+export function rawFree(pointer: * mut u8): void {
+  unsafe {
+    tn_runtime_free(pointer);
+  }
+}
+export function tryRawAlloc(size: usize): * mut u8 {
+  unsafe {
+    return tn_runtime_try_alloc(size);
+  }
+}
+export function rawRealloc(pointer: * mut u8, size: usize): * mut u8 {
+  unsafe {
+    return tn_runtime_realloc(pointer, size);
+  }
+}
+export function tryRawRealloc(pointer: * mut u8, size: usize): * mut u8 {
+  unsafe {
+    return tn_runtime_try_realloc(pointer, size);
+  }
+}
+export function isNull(pointer: * const u8): bool {
+  unsafe {
+    return tn_pointer_is_null(pointer) !== 0i32;
+  }
+}
+export function rawAddress<T>(value: & mut T): * mut T {
+  unsafe {
+    return value as * mut T;
+  }
+}
+@Intrinsic function borrowMut<T>(pointer: * mut T): & mut T {
+  unsafe {
+    return & mut * pointer;
+  }
+}
+export function boxFromRaw<T>(pointer: * mut T): Box<T> {
+  return {
+    pointer: pointer
+  };
+}
+export function boxAlloc<T>(size: usize): Box<T> {
+  unsafe {
+    return {
+      pointer: tn_runtime_alloc(size)as * mut T
+    };
+  }
+}
+export function rcAlloc<T>(size: usize): Rc<T> {
+  unsafe {
+    return {
+      pointer: tn_ref_alloc(size)as * mut T, alive: true
+    };
+  }
+}
+export function rcAllocChecked<T>(size: usize): Rc<T > throws AllocError {
+  unsafe {
+    const pointer = tn_ref_try_alloc(size);
+    if (tn_pointer_is_null(pointer as * const u8) !== 0i32) {
+      throw allocationError();
+    }
+    return {
+      pointer: pointer as * mut T, alive: true
+    };
+  }
+}
+export function rcFromRaw<T>(pointer: * mut T): Rc<T> {
+  return {
+    pointer: pointer, alive: true
+  };
+}
+export function rcClone<T>(value: & Rc<T >): Rc<T> {
+  unsafe {
+    return {
+      pointer: tn_ref_retain(value.pointer as * mut u8)as * mut T, alive: true
+    };
+  }
+}

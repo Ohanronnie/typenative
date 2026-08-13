@@ -1,0 +1,5 @@
+function nested(): void {
+  const value = call([1i32, 2i32}, broken<Thing(]);
+  const recovered = 3i32;
+}
+

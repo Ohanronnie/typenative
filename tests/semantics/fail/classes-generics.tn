@@ -1,0 +1,34 @@
+interface Display<T> {
+  display(value: T): void;
+}
+
+struct Plain {}
+class Product {}
+final class Closed {}
+class ExtendsClosed extends Closed {}
+class NotInterface {}
+class Unrelated {}
+class WrongConformance implements NotInterface {}
+
+class Parent {
+  private secret: Product;
+  protected inherited: Product;
+  public final closed(value: Product): Product { return value; }
+  public value(value: Product): Product { return value; }
+}
+
+class Child extends Parent {
+  public override closed(value: Product): Product { return value; }
+  public value(value: Product): Product { return value; }
+  public invalidPrivate(): Product { return this.secret; }
+}
+
+function invalidAccess(value: Parent): void {
+  value.secret;
+  value.inherited;
+  const unrelated = value as? Unrelated;
+  unrelated;
+}
+
+type MissingArgument = Display;
+type WrongArity = Display<i32, bool>;

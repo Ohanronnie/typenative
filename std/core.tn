@@ -1,0 +1,55 @@
+export interface Copy {
+}
+export interface Clone {
+}
+export interface Drop {
+}
+export interface Send {
+}
+export interface Sync {
+}
+export interface Error {
+}
+export interface AsyncDisposable {
+  move async dispose(): Promise<void, never>;
+}
+export struct ParseIntegerError {
+  public offset: usize;
+}
+export struct Range<T> {
+  public start: T;
+  public end: T;
+}
+export struct AtomicI32 {
+  public value: i32;
+}
+export struct AtomicUsize {
+  public value: usize;
+}
+export struct AtomicU64 {
+  public value: u64;
+}
+export function atomicI32(value: i32): AtomicI32 {
+  return {
+    value: value
+  };
+}
+export function atomicLoad(value: & AtomicI32): i32 {
+  return value.value;
+}
+export function atomicUsize(value: usize): AtomicUsize {
+  return {
+    value: value
+  };
+}
+export function atomicLoadUsize(value: & AtomicUsize): usize {
+  return value.value;
+}
+export function atomicU64(value: u64): AtomicU64 {
+  return {
+    value: value
+  };
+}
+export function atomicLoadU64(value: & AtomicU64): u64 {
+  return value.value;
+}

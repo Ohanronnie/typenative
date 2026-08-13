@@ -1,0 +1,174 @@
+import { rawAlloc, rawFree } from "std/alloc";
+import { Bytes } from "std/bytes";
+import { Drop } from "std/core";
+
+extern "C" {
+  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
+  function tn_io_write_all(fd: i32, bytes: * const u8, length: usize): i32;
+  function tn_io_flush(fd: i32): i32;
+  function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
+}
+export struct IOError {
+  public code: i32;
+}
+function ioError(code: i32): IOError {
+  return {
+    code: code
+  };
+}
+export interface Reader {
+  read(bytes: * mut u8, length: usize): isize;
+}
+export interface Writer {
+  mut writeAll(bytes: & Bytes): void throws IOError;
+  mut flush(): void throws IOError;
+}
+@Conform(Writer)export struct Stdout {
+  public fd: i32;
+  mut writeAll(bytes: & Bytes): void throws IOError {
+    let status: i32 = 0i32;
+    unsafe {
+      status = tn_io_write_all(this.fd, bytes.pointer, bytes.length);
+    }
+    if (status !== 0i32) {
+      throw ioError(status);
+    }
+  }
+  mut flush(): void throws IOError {
+    let status: i32 = 0i32;
+    unsafe {
+      status = tn_io_flush(this.fd);
+    }
+    if (status !== 0i32) {
+      throw ioError(status);
+    }
+  }
+}
+@Conform(Writer)export struct Stderr {
+  public fd: i32;
+  mut writeAll(bytes: & Bytes): void throws IOError {
+    let status: i32 = 0i32;
+    unsafe {
+      status = tn_io_write_all(this.fd, bytes.pointer, bytes.length);
+    }
+    if (status !== 0i32) {
+      throw ioError(status);
+    }
+  }
+  mut flush(): void throws IOError {
+    let status: i32 = 0i32;
+    unsafe {
+      status = tn_io_flush(this.fd);
+    }
+    if (status !== 0i32) {
+      throw ioError(status);
+    }
+  }
+}
+@Drop export struct BufferedWriter {
+  public fd: i32;
+  public pointer: * mut u8;
+  public length: usize;
+  public capacity: usize;
+  mut drop(): void {
+    if (this.length !== 0usize) {
+      unsafe {
+        tn_io_write_all(this.fd, this.pointer as * const u8, this.length);
+      }
+    }
+    unsafe {
+      rawFree(this.pointer);
+    }
+  }
+}
+export function stdout(): Stdout {
+  return {
+    fd: 1i32
+  };
+}
+export function stderr(): Stderr {
+  return {
+    fd: 2i32
+  };
+}
+export function writeAll(output: & mut Stdout, bytes: & Bytes): void throws IOError {
+  let status: i32 = 0i32;
+  unsafe {
+    status = tn_io_write_all(output.fd, bytes.pointer, bytes.length);
+  }
+  if (status !== 0i32) {
+    throw ioError(status);
+  }
+}
+export function flush(output: & mut Stdout): void throws IOError {
+  let status: i32 = 0i32;
+  unsafe {
+    status = tn_io_flush(output.fd);
+  }
+  if (status !== 0i32) {
+    throw ioError(status);
+  }
+}
+export function writeError(output: & mut Stderr, bytes: & Bytes): void throws IOError {
+  let status: i32 = 0i32;
+  unsafe {
+    status = tn_io_write_all(output.fd, bytes.pointer, bytes.length);
+  }
+  if (status !== 0i32) {
+    throw ioError(status);
+  }
+}
+export function bufferedWriter(fd: i32, capacity: usize): BufferedWriter {
+  let actual = capacity;
+  if (actual === 0usize) {
+    actual = 1usize;
+  }
+  return {
+    fd: fd, pointer: rawAlloc(actual), length: 0usize, capacity: actual
+  };
+}
+export function flushBuffered(output: & mut BufferedWriter): void throws IOError {
+  let status: i32 = 0i32;
+  unsafe {
+    status = tn_io_write_all(output.fd, output.pointer as * const u8, output.length);
+  }
+  if (status !== 0i32) {
+    throw ioError(status);
+  }
+  output.length = 0usize;
+}
+export function writeBuffered(output: & mut BufferedWriter, bytes: & Bytes): void throws IOError {
+  if (bytes.length > output.capacity) {
+    let flushStatus: i32 = 0i32;
+    unsafe {
+      flushStatus = tn_io_write_all(output.fd, output.pointer as * const u8, output.length);
+    }
+    if (flushStatus !== 0i32) {
+      throw ioError(flushStatus);
+    }
+    output.length = 0usize;
+    let status: i32 = 0i32;
+    unsafe {
+      status = tn_io_write_all(output.fd, bytes.pointer, bytes.length);
+    }
+    if (status !== 0i32) {
+      throw ioError(status);
+    }
+    return;
+  }
+  if (bytes.length > output.capacity - output.length) {
+    let flushStatus: i32 = 0i32;
+    unsafe {
+      flushStatus = tn_io_write_all(output.fd, output.pointer as * const u8, output.length);
+    }
+    if (flushStatus !== 0i32) {
+      throw ioError(flushStatus);
+    }
+    output.length = 0usize;
+  }
+  unsafe {
+    tn_bytes_copy_to_at(bytes.pointer, bytes.length, 0usize, bytes.length, output.pointer, output.capacity, output.length);
+  }
+  output.length = output.length + bytes.length;
+}

@@ -1,0 +1,561 @@
+//! Resolved `TypeNative` high-level intermediate representation.
+
+mod module_graph;
+mod semantic;
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use tn_diagnostics::SourceSpan;
+
+pub use module_graph::{ModuleGraphError, load_module_graph};
+pub use semantic::lower_program;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ModuleId(pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct DeclarationId(pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct TypeId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct MemberId(pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirLocalId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum Namespace {
+    Type,
+    Value,
+    Method,
+    Lifetime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeclarationKind {
+    Const,
+    Static,
+    TypeAlias,
+    Function,
+    Struct,
+    Class,
+    Interface,
+    Enum,
+    Impl,
+    ExternBlock,
+}
+
+impl DeclarationKind {
+    pub const fn namespace(self) -> Option<Namespace> {
+        match self {
+            Self::Const | Self::Static | Self::Function => Some(Namespace::Value),
+            Self::TypeAlias | Self::Struct | Self::Class | Self::Interface | Self::Enum => {
+                Some(Namespace::Type)
+            }
+            Self::Impl | Self::ExternBlock => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Attribute {
+    pub name: String,
+    pub arguments: Vec<String>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Declaration {
+    pub id: DeclarationId,
+    pub module: ModuleId,
+    pub kind: DeclarationKind,
+    pub name: Option<String>,
+    pub exported: bool,
+    pub attributes: Vec<Attribute>,
+    pub span: SourceSpan,
+    pub byte_start: u32,
+    pub byte_end: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImportName {
+    pub imported: String,
+    pub local: String,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ImportClause {
+    SideEffect,
+    Named(Vec<ImportName>),
+    Namespace { local: String, span: SourceSpan },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Import {
+    pub specifier: String,
+    pub target: ModuleId,
+    pub clause: ImportClause,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Module {
+    pub id: ModuleId,
+    pub path: PathBuf,
+    pub source: String,
+    pub imports: Vec<Import>,
+    pub declarations: Vec<Declaration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModuleGraph {
+    pub root: PathBuf,
+    pub entry: ModuleId,
+    pub modules: Vec<Module>,
+}
+
+impl ModuleGraph {
+    pub fn module(&self, id: ModuleId) -> Option<&Module> {
+        self.modules.iter().find(|module| module.id == id)
+    }
+
+    pub fn declaration(&self, id: DeclarationId) -> Option<&Declaration> {
+        self.modules
+            .iter()
+            .flat_map(|module| &module.declarations)
+            .find(|declaration| declaration.id == id)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum PrimitiveType {
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    F32,
+    F64,
+    Char,
+    Void,
+    Never,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum Type {
+    Primitive(PrimitiveType),
+    String,
+    Str,
+    Promise {
+        result: Box<Type>,
+        effects: Vec<DeclarationId>,
+    },
+    Nominal(DeclarationId, Vec<Type>),
+    Optional(Box<Type>),
+    Array(Box<Type>, u64),
+    Slice(Box<Type>),
+    Tuple(Vec<Type>),
+    Reference {
+        mutable: bool,
+        lifetime: String,
+        referent: Box<Type>,
+    },
+    RawPointer {
+        mutable: bool,
+        pointee: Box<Type>,
+    },
+    Function(FunctionType),
+    Template(Vec<Type>),
+    DynamicInterface(DeclarationId, Vec<Type>),
+    Generic(String),
+    Lifetime(String),
+    ErrorUnion(Vec<DeclarationId>),
+    Error,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct FunctionType {
+    pub parameters: Vec<Type>,
+    pub result: Box<Type>,
+    pub effects: Vec<DeclarationId>,
+    pub generics: Vec<GenericConstraint>,
+    pub is_async: bool,
+    pub is_unsafe: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct GenericConstraint {
+    pub name: String,
+    pub namespace: Namespace,
+    pub bounds: Vec<GenericBound>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum Visibility {
+    Private,
+    Protected,
+    Public,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GenericParameter {
+    pub name: String,
+    pub namespace: Namespace,
+    pub bounds: Vec<GenericBound>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum GenericBound {
+    Interface(DeclarationId, Vec<Type>),
+    Static,
+    Outlives(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Parameter {
+    pub name: String,
+    pub ty: Type,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Function {
+    pub parameters: Vec<Parameter>,
+    pub result: Type,
+    pub effects: Vec<DeclarationId>,
+    pub generics: Vec<GenericParameter>,
+    pub is_async: bool,
+    pub is_unsafe: bool,
+    pub body_start: u32,
+    pub body_end: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Field {
+    pub id: MemberId,
+    pub name: String,
+    pub ty: Type,
+    pub visibility: Visibility,
+    pub readonly: bool,
+    pub optional: bool,
+    pub has_initializer: bool,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum ReceiverMode {
+    Shared,
+    Mutable,
+    Move,
+    Static,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Method {
+    pub id: MemberId,
+    pub name: String,
+    pub function: Function,
+    pub visibility: Visibility,
+    pub receiver: ReceiverMode,
+    pub is_abstract: bool,
+    pub is_final: bool,
+    pub is_override: bool,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnumField {
+    pub name: Option<String>,
+    pub ty: Type,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnumVariant {
+    pub id: MemberId,
+    pub name: String,
+    pub fields: Vec<EnumField>,
+    pub discriminant: Option<i128>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DefinitionData {
+    Constant {
+        ty: Type,
+        mutable_static: bool,
+    },
+    TypeAlias(Type),
+    Function(Function),
+    Struct {
+        fields: Vec<Field>,
+        methods: Vec<Method>,
+    },
+    Enum {
+        variants: Vec<EnumVariant>,
+    },
+    Interface {
+        methods: Vec<Method>,
+    },
+    Class {
+        base: Option<DeclarationId>,
+        interfaces: Vec<Type>,
+        fields: Vec<Field>,
+        constructor: Option<Method>,
+        methods: Vec<Method>,
+        is_abstract: bool,
+        is_final: bool,
+    },
+    Implementation {
+        interface: Option<Type>,
+        target: Type,
+        methods: Vec<Method>,
+        is_unsafe: bool,
+    },
+    Extern {
+        functions: Vec<Method>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Definition {
+    pub declaration: DeclarationId,
+    pub generics: Vec<GenericParameter>,
+    pub data: DefinitionData,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Program {
+    pub graph: ModuleGraph,
+    pub definitions: Vec<Definition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum BodyOwner {
+    Declaration(DeclarationId),
+    Member {
+        declaration: DeclarationId,
+        member: MemberId,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirLocal {
+    pub id: HirLocalId,
+    pub name: String,
+    pub ty: Type,
+    pub mutable: bool,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirExpressionId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirStatementId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirClosureId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirTemplateId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum BuiltinValue {
+    StringFromStatic,
+    StringFromUtf8,
+    StringToAsciiUppercase,
+    UsizeParseAscii,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum ResolvedValue {
+    Local(HirLocalId),
+    Declaration(DeclarationId),
+    Member(MemberId),
+    Closure(HirClosureId),
+    Template(HirTemplateId),
+    Builtin(BuiltinValue),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum HirCaptureMode {
+    SharedBorrow,
+    MutableBorrow,
+    Move,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirClosureCapture {
+    pub local: HirLocalId,
+    pub name: String,
+    pub ty: Type,
+    pub mode: HirCaptureMode,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirClosure {
+    pub id: HirClosureId,
+    pub function: FunctionType,
+    pub parameters: Vec<HirLocalId>,
+    pub captures: Vec<HirClosureCapture>,
+    pub moved: bool,
+    pub body: SourceSpan,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum HirTemplateStorage {
+    SharedBorrow,
+    Owned,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HirTemplatePart {
+    Literal(String),
+    Interpolation {
+        expression: HirExpressionId,
+        ty: Type,
+        storage: HirTemplateStorage,
+        origin: SourceSpan,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirTemplate {
+    pub id: HirTemplateId,
+    pub parts: Vec<HirTemplatePart>,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum HirExpressionKind {
+    Literal,
+    Value,
+    Borrow { mutable: bool },
+    Move,
+    Unary,
+    Binary,
+    Conditional,
+    Call,
+    Member,
+    Index,
+    Aggregate,
+    Closure,
+    Cast,
+    Switch,
+    Await,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirExpression {
+    pub id: HirExpressionId,
+    pub kind: HirExpressionKind,
+    pub ty: Type,
+    pub optional_chain_value: Option<Type>,
+    pub effects: Vec<DeclarationId>,
+    pub resolution: Option<ResolvedValue>,
+    pub children: Vec<HirExpressionId>,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum HirStatementKind {
+    Block,
+    Local(HirLocalId),
+    Expression,
+    Return,
+    Throw,
+    If,
+    While,
+    For {
+        binding: HirLocalId,
+        witness: Option<Box<IterationWitness>>,
+    },
+    Try,
+    Unsafe,
+    Break,
+    Continue,
+    Using {
+        local: HirLocalId,
+        awaited: bool,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct IterationWitness {
+    pub into_iterator_implementation: DeclarationId,
+    pub into_iterator_method: MemberId,
+    pub iterator_implementation: DeclarationId,
+    pub next_method: MemberId,
+    pub iterator_type: Type,
+    pub item_type: Type,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirStatement {
+    pub id: HirStatementId,
+    pub kind: HirStatementKind,
+    pub expressions: Vec<HirExpressionId>,
+    pub children: Vec<HirStatementId>,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirPatternBinding {
+    pub local: HirLocalId,
+    pub ty: Type,
+    pub projection: Vec<HirPatternProjection>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum HirPatternProjection {
+    Variant(MemberId),
+    Field(u32),
+    OptionalPayload,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirPattern {
+    pub scrutinee: Type,
+    pub constructor: Option<MemberId>,
+    pub bindings: Vec<HirPatternBinding>,
+    pub guarded: bool,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyHir {
+    pub owner: BodyOwner,
+    pub locals: Vec<HirLocal>,
+    pub expressions: Vec<HirExpression>,
+    pub patterns: Vec<HirPattern>,
+    pub statements: Vec<HirStatement>,
+    pub closures: Vec<HirClosure>,
+    pub templates: Vec<HirTemplate>,
+    pub roots: Vec<HirStatementId>,
+}
+
+impl Program {
+    pub fn definition(&self, declaration: DeclarationId) -> Option<&Definition> {
+        self.definitions
+            .iter()
+            .find(|definition| definition.declaration == declaration)
+    }
+}

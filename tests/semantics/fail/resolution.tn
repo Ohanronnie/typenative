@@ -1,0 +1,5 @@
+import { hidden } from "./resolution-helper";
+
+function useHidden(): void {
+  hidden();
+}

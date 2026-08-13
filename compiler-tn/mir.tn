@@ -1,0 +1,260 @@
+import { isNull } from "std/alloc";
+import { Vec, vecPush, vecWithCapacity } from "std/collections";
+import { Source, Token, TokenKind, firstByte, isKeyword, next } from "./lexer";
+import { isEnd } from "./parser";
+import { SemanticProgram } from "./semantic";
+
+export struct MirProgram {
+  public blocks: usize;
+  public locals: usize;
+  public errors: usize;
+  public functions: usize;
+  public borrowOperations: usize;
+  public moveOperations: usize;
+  public awaitOperations: usize;
+  public sourceIdentity: u64;
+  public sourceLength: usize;
+  public entryBlock: usize;
+  public exitBlock: usize;
+  public recordPointer: * mut u8;
+  public recordCapacity: usize;
+  public recordElementSize: usize;
+  public recordLength: usize;
+  public records: Vec<usize>;
+}
+function mutableUsizePointer(value: & mut usize): * mut usize {
+  unsafe {
+    return value as * mut usize;
+  }
+}
+function mutableBytePointer(value: & mut usize): * mut u8 {
+  unsafe {
+    return value as * mut u8;
+  }
+}
+function pushWord(words: & mut Vec<usize>, value: usize): void {
+  let writable: usize = value;
+  unsafe {
+    const pointer = mutableUsizePointer( & mut writable);
+    vecPush(words, pointer as * const u8);
+  }
+}
+function vecPointer(words: & Vec<usize >): * mut u8 {
+  unsafe {
+    return words.pointer as * mut u8;
+  }
+}
+function recordWord(recordPointer: * mut u8, recordCapacity: usize, recordElementSize: usize, index: usize): usize {
+  let value: usize = 0usize;
+  unsafe {
+    tn_bytes_copy_at(recordPointer as * const u8, recordCapacity * recordElementSize, index * recordElementSize, recordElementSize, mutableUsizePointer( & mut value)as * mut u8);
+  }
+  return value;
+}
+extern "C" {
+  function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
+}
+function writeWord(words: & mut Vec<usize>, index: usize, value: usize): void {
+  let writable: usize = value;
+  unsafe {
+    tn_bytes_copy_to_at(mutableUsizePointer( & mut writable)as * const u8, words.elementSize, 0usize, words.elementSize, words.pointer as * mut u8, words.capacity * words.elementSize, index * words.elementSize);
+  }
+}
+function rawVectorWord(pointer: * mut u8, capacity: usize, elementSize: usize, index: usize): usize {
+  let value: usize = 0usize;
+  unsafe {
+    tn_bytes_copy_at(pointer as * const u8, capacity * elementSize, index * elementSize, elementSize, mutableBytePointer( & mut value));
+  }
+  return value;
+}
+function appendRawWord(words: & mut Vec<usize>, pointer: * mut u8, capacity: usize, elementSize: usize, index: usize): void {
+  const value = rawVectorWord(pointer, capacity, elementSize, index);
+  pushWord(words, value);
+}
+function recordPointerIsNull(pointer: * mut u8): bool {
+  unsafe {
+    return isNull(pointer as * const u8);
+  }
+}
+export function lower(source: Source, semantic: SemanticProgram): MirProgram {
+  let records = vecWithCapacity<usize>(8usize, semantic.blockCount * 8usize + 8usize);
+  let starts = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let endings = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let functionFlags = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let borrowCounts = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let moveCounts = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let awaitCounts = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let operationCounts = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  let active = vecWithCapacity<usize>(8usize, semantic.blockCount + 1usize);
+  const startsPointer = vecPointer( & starts);
+  const startsCapacity = starts.capacity;
+  const startsElementSize = starts.elementSize;
+  const endingsPointer = vecPointer( & endings);
+  const endingsCapacity = endings.capacity;
+  const endingsElementSize = endings.elementSize;
+  const functionFlagsPointer = vecPointer( & functionFlags);
+  const functionFlagsCapacity = functionFlags.capacity;
+  const functionFlagsElementSize = functionFlags.elementSize;
+  const borrowCountsPointer = vecPointer( & borrowCounts);
+  const borrowCountsCapacity = borrowCounts.capacity;
+  const borrowCountsElementSize = borrowCounts.elementSize;
+  const moveCountsPointer = vecPointer( & moveCounts);
+  const moveCountsCapacity = moveCounts.capacity;
+  const moveCountsElementSize = moveCounts.elementSize;
+  const awaitCountsPointer = vecPointer( & awaitCounts);
+  const awaitCountsCapacity = awaitCounts.capacity;
+  const awaitCountsElementSize = awaitCounts.elementSize;
+  const operationCountsPointer = vecPointer( & operationCounts);
+  const operationCountsCapacity = operationCounts.capacity;
+  const operationCountsElementSize = operationCounts.elementSize;
+  const activePointer = vecPointer( & active);
+  const activeCapacity = active.capacity;
+  const activeElementSize = active.elementSize;
+  let offset: usize = 0usize;
+  let blockIndex: usize = 0usize;
+  let previousWasFunction = false;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "function")) {
+      previousWasFunction = true;
+    }
+    const byte = firstByte(source, token);
+    if (byte === 123i32) {
+      pushWord( & mut starts, token.start);
+      pushWord( & mut endings, source.length);
+      pushWord( & mut functionFlags, previousWasFunction?1usize: 0usize);
+      pushWord( & mut borrowCounts, 0usize);
+      pushWord( & mut moveCounts, 0usize);
+      pushWord( & mut awaitCounts, 0usize);
+      pushWord( & mut operationCounts, 0usize);
+      pushWord( & mut active, blockIndex);
+      blockIndex = blockIndex + 1usize;
+      previousWasFunction = false;
+    } else if (byte === 125i32 && active.length > 0usize) {
+      const activeBlock = rawVectorWord(activePointer, activeCapacity, activeElementSize, active.length - 1usize);
+      active.length = active.length - 1usize;
+      writeWord( & mut endings, activeBlock, token.end);
+    }
+    let operationKind: usize = 0usize;
+    if (byte === 38i32) {
+      operationKind = 1usize;
+    } else if (isKeyword(source, token, "move")) {
+      operationKind = 2usize;
+    } else if (isKeyword(source, token, "await")) {
+      operationKind = 3usize;
+    }
+    if (operationKind > 0usize && active.length > 0usize) {
+      let activeIndex: usize = 0usize;
+      while (activeIndex<active.length) {
+        const activeBlock = rawVectorWord(activePointer, activeCapacity, activeElementSize, activeIndex);
+        let value: usize = 0usize;
+        if (operationKind === 1usize) {
+          value = rawVectorWord(borrowCountsPointer, borrowCountsCapacity, borrowCountsElementSize, activeBlock);
+          writeWord( & mut borrowCounts, activeBlock, value + 1usize);
+        } else if (operationKind === 2usize) {
+          value = rawVectorWord(moveCountsPointer, moveCountsCapacity, moveCountsElementSize, activeBlock);
+          writeWord( & mut moveCounts, activeBlock, value + 1usize);
+        } else {
+          value = rawVectorWord(awaitCountsPointer, awaitCountsCapacity, awaitCountsElementSize, activeBlock);
+          writeWord( & mut awaitCounts, activeBlock, value + 1usize);
+        }
+        value = rawVectorWord(operationCountsPointer, operationCountsCapacity, operationCountsElementSize, activeBlock);
+        writeWord( & mut operationCounts, activeBlock, value + 1usize);
+        activeIndex = activeIndex + 1usize;
+      }
+    }
+    if (token.end <= offset) {
+      break;
+    }
+    offset = token.end;
+  }
+  if (blockIndex === 0usize) {
+    {
+      pushWord( & mut records, 0usize);
+    }
+    {
+      pushWord( & mut records, source.length);
+    }
+    {
+      pushWord( & mut records, 0usize);
+    }
+    {
+      pushWord( & mut records, 0usize);
+    }
+    {
+      pushWord( & mut records, 0usize);
+    }
+    {
+      pushWord( & mut records, 0usize);
+    }
+    {
+      pushWord( & mut records, 0usize);
+    }
+    {
+      pushWord( & mut records, 0usize);
+    }
+    blockIndex = 1usize;
+  } else {
+    let index: usize = 0usize;
+    while (index<blockIndex) {
+      {
+        appendRawWord( & mut records, startsPointer, startsCapacity, startsElementSize, index);
+      }
+      {
+        appendRawWord( & mut records, endingsPointer, endingsCapacity, endingsElementSize, index);
+      }
+      {
+        appendRawWord( & mut records, functionFlagsPointer, functionFlagsCapacity, functionFlagsElementSize, index);
+      }
+      {
+        pushWord( & mut records, index + 1usize);
+      }
+      {
+        appendRawWord( & mut records, borrowCountsPointer, borrowCountsCapacity, borrowCountsElementSize, index);
+      }
+      {
+        appendRawWord( & mut records, moveCountsPointer, moveCountsCapacity, moveCountsElementSize, index);
+      }
+      {
+        appendRawWord( & mut records, awaitCountsPointer, awaitCountsCapacity, awaitCountsElementSize, index);
+      }
+      {
+        appendRawWord( & mut records, operationCountsPointer, operationCountsCapacity, operationCountsElementSize, index);
+      }
+      index = index + 1usize;
+    }
+  }
+  const recordPointer = vecPointer( & records);
+  const recordCapacity = records.capacity;
+  const recordElementSize = records.elementSize;
+  const recordLength = records.length;
+  return {
+    blocks: blockIndex, locals: semantic.tokenCount, errors: semantic.errors, functions: semantic.functionCount, borrowOperations: semantic.borrowOperationCount, moveOperations: semantic.moveOperationCount, awaitOperations: semantic.awaitOperationCount, sourceIdentity: semantic.sourceIdentity, sourceLength: source.length, entryBlock: 0usize, exitBlock: blockIndex - 1usize, recordPointer: recordPointer, recordCapacity: recordCapacity, recordElementSize: recordElementSize, recordLength: recordLength, records: records
+  };
+}
+export function validate(blocks: usize, entryBlock: usize, exitBlock: usize, sourceLength: usize, recordPointer: * mut u8, recordCapacity: usize, recordElementSize: usize, recordLength: usize): bool {
+  if (blocks === 0usize || entryBlock >= blocks || exitBlock >= blocks) {
+    return false;
+  }
+  if (recordPointerIsNull(recordPointer) || recordElementSize === 0usize || recordCapacity<recordLength) {
+    return false;
+  }
+  if (recordLength !== blocks * 8usize) {
+    return false;
+  }
+  let index: usize = 0usize;
+  while (index<blocks) {
+    const start = recordWord(recordPointer, recordCapacity, recordElementSize, index * 8usize);
+    const ending = recordWord(recordPointer, recordCapacity, recordElementSize, index * 8usize + 1usize);
+    const successor = recordWord(recordPointer, recordCapacity, recordElementSize, index * 8usize + 3usize);
+    if (start > ending || ending > sourceLength || successor > blocks) {
+      return false;
+    }
+    index = index + 1usize;
+  }
+  return true;
+}

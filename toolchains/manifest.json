@@ -1,0 +1,25 @@
+{
+  "llvm": {
+    "version": "22.1.8",
+    "major": 22,
+    "rustBinding": {
+      "crate": "inkwell",
+      "version": "0.10.0",
+      "feature": "llvm22-1"
+    },
+    "source": {
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz",
+      "sha256": "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888"
+    },
+    "hosts": {
+      "aarch64-apple-darwin": {
+        "recipe": "brew install llvm",
+        "llvmConfigCandidates": [
+          "/opt/homebrew/opt/llvm/bin/llvm-config",
+          "/usr/local/opt/llvm/bin/llvm-config",
+          "llvm-config"
+        ]
+      }
+    }
+  }
+}

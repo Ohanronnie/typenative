@@ -1,0 +1,8 @@
+import { fromStatic } from "std/bytes";
+import { IOError, stdout, writeAll } from "std/io";
+
+function main(): void throws IOError {
+  let out = stdout();
+  let bytes = fromStatic("hello\\n");
+  try writeAll( & mut out, & bytes);
+}

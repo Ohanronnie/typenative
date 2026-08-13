@@ -1,0 +1,4 @@
+
+@Export async function rejectedAsync(): Promise<i32, never> {
+  return 0i32;
+}

@@ -1,0 +1,5 @@
+struct Failure {
+}
+@Export function rejectedThrows(): i32 throws Failure {
+  return 0i32;
+}

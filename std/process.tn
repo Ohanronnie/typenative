@@ -1,0 +1,89 @@
+extern "C" {
+  function tn_runtime_abort(code: u32): void;
+  function tn_process_exit(code: i32): void;
+  function tn_process_id(): i32;
+  function tn_process_argc(): i32;
+  function tn_process_argv(index: i32): * const u8;
+  function tn_process_spawn(command: * const u8): i32;
+  function tn_process_wait(process: i32, exitCode: * mut i32): i32;
+  function tn_process_kill(process: i32, signal: i32): i32;
+}
+import { Drop } from "std/core";
+export struct ProcessError {
+  public code: i32;
+}
+export function abort(code: u32): void {
+  unsafe {
+    tn_runtime_abort(code);
+  }
+}
+export function exit(code: i32): void {
+  unsafe {
+    tn_process_exit(code);
+  }
+}
+export function processId(): i32 {
+  unsafe {
+    return tn_process_id();
+  }
+}
+export function argumentCount(): i32 {
+  unsafe {
+    return tn_process_argc();
+  }
+}
+export function argument(index: i32): * const u8 {
+  unsafe {
+    return tn_process_argv(index);
+  }
+}
+@Drop export struct Child {
+  public process: i32;
+  public waited: bool;
+  mut drop(): void {
+    if (!this.waited && this.process > 0i32) {
+      unsafe {
+        tn_process_kill(this.process, 15i32);
+        let exitCode: i32 = 0i32;
+        const output = & mut exitCode;
+        tn_process_wait(this.process, output as * mut i32);
+      }
+    }
+  }
+}
+export function spawn(command: & str): Child {
+  unsafe {
+    return {
+      process: tn_process_spawn(command as * const u8), waited: false
+    };
+  }
+}
+function processError(code: i32): ProcessError {
+  return {
+    code: code
+  };
+}
+export function spawnChecked(command: & str): Child throws ProcessError {
+  const child = spawn(command);
+  if (child.process <= 0i32) {
+    throw processError(child.process);
+  }
+  return child;
+}
+export function wait(child: & mut Child, exitCode: * mut i32): i32 {
+  if (child.waited) {
+    return 10i32;
+  }
+  unsafe {
+    const status = tn_process_wait(child.process, exitCode);
+    if (status === 0i32) {
+      child.waited = true;
+    }
+    return status;
+  }
+}
+export function kill(child: & Child, signal: i32): i32 {
+  unsafe {
+    return tn_process_kill(child.process, signal);
+  }
+}

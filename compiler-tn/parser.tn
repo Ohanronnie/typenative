@@ -1,0 +1,249 @@
+import { Lexer, Source, Token, TokenKind, byteAt, firstByte, isInvalid, isKeyword, isNumberValid, isTemplateInvalid, lexer, next, numericErrorStart } from "./lexer";
+export struct Parser {
+  public source: Source;
+  public offset: usize;
+}
+export function parser(lexer: Lexer): Parser {
+  return {
+    source: lexer.source, offset: lexer.offset
+  };
+}
+export function parseOne(input: & mut Parser): Token {
+  const token = next(input.source, input.offset);
+  input.offset = token.end;
+  return token;
+}
+export function isEnd(token: Token): bool {
+  return token.start === token.end;
+}
+@derive(Copy)export struct ParseSummary {
+  public tokenCount: usize;
+  public errorCount: usize;
+  public declarationCount: usize;
+  public maxDelimiterDepth: usize;
+  public firstErrorCode: i32;
+  public firstErrorStart: usize;
+  public firstErrorEnd: usize;
+}
+@derive(Copy)struct ErrorState {
+  public count: usize;
+  public firstCode: i32;
+  public firstStart: usize;
+  public firstEnd: usize;
+}
+function recordError(state: & mut ErrorState, code: i32, start: usize, end: usize): void {
+  state.count = state.count + 1usize;
+  if (state.firstCode === 0i32) {
+    state.firstCode = code;
+    state.firstStart = start;
+    state.firstEnd = end;
+  }
+}
+function isOpen(byte: i32): bool {
+  return byte === 40i32 || byte === 91i32 || byte === 123i32;
+}
+function isClose(byte: i32): bool {
+  return byte === 41i32 || byte === 93i32 || byte === 125i32;
+}
+function isDeclaration(source: Source, token: Token): bool {
+  return isKeyword(source, token, "function") || isKeyword(source, token, "struct") || isKeyword(source, token, "enum") || isKeyword(source, token, "class") || isKeyword(source, token, "interface") || isKeyword(source, token, "impl") || isKeyword(source, token, "type") || isKeyword(source, token, "const") || isKeyword(source, token, "static") || isKeyword(source, token, "extern");
+}
+function isIdentifierToken(token: Token): bool {
+  match (token.kind) {
+    case TokenKind.Identifier: {
+      return true;
+    }
+    case TokenKind.Number: {
+      return false;
+    }
+    case TokenKind.String: {
+      return false;
+    }
+    case TokenKind.Punctuation: {
+      return false;
+    }
+    case TokenKind.Invalid: {
+      return false;
+    }
+    case TokenKind.End: {
+      return false;
+    }
+  };
+  return false;
+}
+function isWordByte(value: i32): bool {
+  return(value >= 65i32 && value <= 90i32) ||(value >= 97i32 && value <= 122i32) ||(value >= 48i32 && value <= 57i32) || value === 95i32 || value >= 128i32;
+}
+function tokenEndsWithWord(source: Source, token: Token): bool {
+  return token.end > token.start && isWordByte(byteAt(source, token.end - 1usize));
+}
+function isLooseEquality(source: Source, token: Token): bool {
+  const byte = firstByte(source, token);
+  if (byte === 33i32 && token.end<source.length && byteAt(source, token.end) === 61i32) {
+    return token.end + 1usize >= source.length || byteAt(source, token.end + 1usize) !== 61i32;
+  }
+  if (byte !== 61i32 || token.end >= source.length || byteAt(source, token.end) !== 61i32) {
+    return false;
+  }
+  if (token.end + 1usize < source.length && byteAt(source, token.end + 1usize) === 61i32) {
+    return false;
+  }
+  if (token.start >= 1usize && byteAt(source, token.start - 1usize) === 33i32) {
+    return false;
+  }
+  if (token.start >= 1usize && byteAt(source, token.start - 1usize) === 61i32 && token.end<source.length && byteAt(source, token.end) === 61i32) {
+    return false;
+  }
+  if (token.start >= 2usize && byteAt(source, token.start - 1usize) === 61i32 && byteAt(source, token.start - 2usize) === 33i32) {
+    return false;
+  }
+  return true;
+}
+function endsGenericContext(byte: i32): bool {
+  return byte === 33i32 || byte === 37i32 || byte === 38i32 || byte === 40i32 || byte === 41i32 || byte === 42i32 || byte === 43i32 || byte === 45i32 || byte === 47i32 || byte === 58i32 || byte === 59i32 || byte === 61i32 || byte === 63i32 || byte === 91i32 || byte === 93i32 || byte === 123i32 || byte === 124i32 || byte === 125i32;
+}
+export function parse(source: Source): ParseSummary {
+  let state: Lexer = lexer(source);
+  let tokenCount: usize = 0usize;
+  let errors: ErrorState = {
+    count: 0usize, firstCode: 0i32, firstStart: 0usize, firstEnd: 0usize
+  };
+  let declarationCount: usize = 0usize;
+  let depth: usize = 0usize;
+  let maxDepth: usize = 0usize;
+  let expected: u64 = 0u64;
+  let hasPrevious = false;
+  let previous: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+  let typeAlias = false;
+  let throwsClause = false;
+  let optionalBarPending = false;
+  let angleDepth: usize = 0usize;
+  let angleLastIdentifier = false;
+  while (true) {
+    const token = next(state.source, state.offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (token.end <= state.offset) {
+      recordError( & mut errors, 1010i32, token.start, token.end);
+      break;
+    }
+    if (isInvalid(token) || isTemplateInvalid(source, token)) {
+      recordError( & mut errors, 1001i32, token.start, token.end);
+    }
+    const tokenByte = firstByte(source, token);
+    if (tokenByte >= 48i32 && tokenByte <= 57i32 && isNumberValid(source, token) === 0i32) {
+      recordError( & mut errors, 1015i32, numericErrorStart(source, token), token.end);
+    }
+    if (isKeyword(source, token, "null")) {
+      recordError( & mut errors, 1002i32, token.start, token.end);
+    }
+    if (optionalBarPending) {
+      if (!isKeyword(source, token, "undefined")) {
+        recordError( & mut errors, 1003i32, token.start, token.end);
+      }
+      optionalBarPending = false;
+    }
+    if (isLooseEquality(source, token)) {
+      recordError( & mut errors, 1004i32, token.start, token.end);
+    }
+    if (firstByte(source, token) === 33i32 && !isLooseEquality(source, token) && token.end <= source.length &&(token.end >= source.length || byteAt(source, token.end) !== 61i32) && hasPrevious && !isKeyword(source, previous, "return") && !isKeyword(source, previous, "throw") && !isKeyword(source, previous, "try") &&(isIdentifierToken(previous) || tokenEndsWithWord(source, previous) || firstByte(source, previous) === 41i32 || firstByte(source, previous) === 93i32 || firstByte(source, previous) === 125i32)) {
+      recordError( & mut errors, 1005i32, token.start, token.end);
+    }
+    if (firstByte(source, token) === 46i32 && token.start + 2usize < source.length && byteAt(source, token.start + 1usize) === 46i32 && byteAt(source, token.start + 2usize) === 46i32 && depth > 0usize && expected % 4u64 === 3u64) {
+      recordError( & mut errors, 1006i32, token.start, token.end);
+    }
+    if (typeAlias && firstByte(source, token) === 124i32 && !throwsClause) {
+      optionalBarPending = true;
+    }
+    if (typeAlias && firstByte(source, token) === 38i32 && !throwsClause && hasPrevious && firstByte(source, previous) !== 61i32 && firstByte(source, previous) !== 40i32 && firstByte(source, previous) !== 44i32 && firstByte(source, previous) !== 60i32) {
+      recordError( & mut errors, 1007i32, token.start, token.end);
+    }
+    if (hasPrevious && isKeyword(source, previous, "function") && isKeyword(source, token, "return")) {
+      recordError( & mut errors, 1008i32, previous.start, token.end);
+    }
+    if (isKeyword(source, token, "type")) {
+      typeAlias = true;
+      throwsClause = false;
+    } else if (typeAlias && isKeyword(source, token, "throws")) {
+      throwsClause = true;
+    }
+    if (typeAlias && firstByte(source, token) === 59i32) {
+      typeAlias = false;
+      throwsClause = false;
+      optionalBarPending = false;
+    }
+    const syntaxByte = firstByte(source, token);
+    if (angleDepth > 0usize && endsGenericContext(syntaxByte)) {
+      angleDepth = 0usize;
+      angleLastIdentifier = false;
+    }
+    if (syntaxByte === 60i32) {
+      angleDepth = angleDepth + 1usize;
+      angleLastIdentifier = false;
+    } else if (syntaxByte === 62i32) {
+      if (angleDepth > 0usize) {
+        angleDepth = angleDepth - 1usize;
+      }
+      angleLastIdentifier = false;
+    } else if (tokenEndsWithWord(source, token)) {
+      if (angleDepth > 0usize) {
+        const lifetimeParameter = hasPrevious &&(isKeyword(source, previous, "lifetime") || isKeyword(source, previous, "throws"));
+        if (angleLastIdentifier && !lifetimeParameter) {
+          recordError( & mut errors, 1009i32, previous.start, token.end);
+        }
+        angleLastIdentifier = true;
+      }
+    } else if (syntaxByte === 44i32 || syntaxByte === 46i32) {
+      angleLastIdentifier = false;
+    } else if (syntaxByte !== 60i32 && syntaxByte !== 62i32) {
+      angleLastIdentifier = false;
+    }
+    if (isDeclaration(source, token)) {
+      declarationCount = declarationCount + 1usize;
+    }
+    const byte = firstByte(source, token);
+    if (isOpen(byte)) {
+      if (depth >= 32usize) {
+        recordError( & mut errors, 1011i32, token.start, token.end);
+      } else {
+        let marker: u64 = 3u64;
+        if (byte === 40i32) {
+          marker = 1u64;
+        } else if (byte === 91i32) {
+          marker = 2u64;
+        }
+        expected = expected * 4u64 + marker;
+        depth = depth + 1usize;
+        if (depth > maxDepth) {
+          maxDepth = depth;
+        }
+      }
+    } else if (isClose(byte)) {
+      let marker: u64 = 3u64;
+      if (byte === 41i32) {
+        marker = 1u64;
+      } else if (byte === 93i32) {
+        marker = 2u64;
+      }
+      if (depth === 0usize || expected % 4u64 !== marker) {
+        recordError( & mut errors, 1012i32, token.start, token.end);
+      } else {
+        expected = expected / 4u64;
+        depth = depth - 1usize;
+      }
+    }
+    tokenCount = tokenCount + 1usize;
+    previous = token;
+    hasPrevious = true;
+    state.offset = token.end;
+  }
+  if (depth > 0usize) {
+    recordError( & mut errors, 1013i32, source.length, source.length);
+  }
+  return {
+    tokenCount: tokenCount, errorCount: errors.count, declarationCount: declarationCount, maxDelimiterDepth: maxDepth, firstErrorCode: errors.firstCode, firstErrorStart: errors.firstStart, firstErrorEnd: errors.firstEnd
+  };
+}

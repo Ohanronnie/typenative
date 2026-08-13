@@ -1,0 +1,25 @@
+[package]
+name = "tn-codegen-llvm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+inkwell.workspace = true
+thiserror.workspace = true
+tn-diagnostics = { path = "../tn-diagnostics" }
+tn-hir = { path = "../tn-hir" }
+tn-mir = { path = "../tn-mir" }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[dev-dependencies]
+tempfile.workspace = true

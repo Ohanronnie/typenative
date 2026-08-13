@@ -1,0 +1,4 @@
+import { main as redisMain } from "./redis-server";
+function main(): i32 {
+  return redisMain();
+}

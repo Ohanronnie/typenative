@@ -1,0 +1,2 @@
+function broken<T(value: T): void { const result = call(1i32, ]; }
+

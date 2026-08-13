@@ -1,0 +1,79 @@
+import { Drop } from "std/core";
+import { Duration } from "std/time";
+
+extern "C" {
+  function tn_thread_sleep_ns(nanoseconds: u64): void;
+  function tn_thread_yield(): void;
+  function tn_thread_spawn_raw(entry: usize, argument: * mut u8): * mut u8;
+  function tn_thread_join(handle: * mut u8, result: * mut u8): i32;
+  function tn_thread_detach(handle: * mut u8): i32;
+  function tn_thread_id(): u64;
+}
+@Drop export struct Thread {
+  public handle: * mut u8;
+  public joined: bool;
+  mut drop(): void {
+    if (!this.joined) {
+      unsafe {
+        tn_thread_detach(this.handle);
+      }
+    }
+  }
+}
+@Drop export struct JoinHandle<T> {
+  public handle: * mut u8;
+  public joined: bool;
+  mut drop(): void {
+    if (!this.joined) {
+      unsafe {
+        tn_thread_detach(this.handle);
+      }
+    }
+  }
+}
+export function sleep(duration: Duration): void {
+  unsafe {
+    tn_thread_sleep_ns(duration.nanoseconds);
+  }
+}
+export function yieldNow(): void {
+  unsafe {
+    tn_thread_yield();
+  }
+}
+export function threadId(): u64 {
+  unsafe {
+    return tn_thread_id();
+  }
+}
+export function spawnRaw(entry: usize, argument: * mut u8): JoinHandle<u8> {
+  unsafe {
+    return {
+      handle: tn_thread_spawn_raw(entry, argument), joined: false
+    };
+  }
+}
+export function join<T>(handle: & mut JoinHandle<T>, result: * mut u8): i32 {
+  if (handle.joined) {
+    return 114i32;
+  }
+  unsafe {
+    const status = tn_thread_join(handle.handle, result);
+    if (status === 0i32) {
+      handle.joined = true;
+    }
+    return status;
+  }
+}
+export function detach<T>(handle: & mut JoinHandle<T >): i32 {
+  if (handle.joined) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_thread_detach(handle.handle);
+    if (status === 0i32) {
+      handle.joined = true;
+    }
+    return status;
+  }
+}

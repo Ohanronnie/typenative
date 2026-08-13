@@ -1,0 +1,1 @@
+{"condition":"SYNTAX_EXCLUDED_CONSTRUCT","message":"`constructor` is not part of canonical TypeNative","start":15,"end":26}

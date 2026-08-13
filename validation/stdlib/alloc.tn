@@ -1,0 +1,9 @@
+import { Arc } from "std/alloc";
+function main(): i32 {
+  let owner = new Arc(4i32);
+  let clone = owner.clone();
+  if (!clone.alive) {
+    return 1i32;
+  }
+  return 42i32;
+}

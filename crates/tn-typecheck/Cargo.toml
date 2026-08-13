@@ -1,0 +1,19 @@
+[package]
+name = "tn-typecheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+indexmap.workspace = true
+tn-diagnostics = { path = "../tn-diagnostics" }
+tn-hir = { path = "../tn-hir" }
+tn-mir = { path = "../tn-mir" }
+tn-syntax = { path = "../tn-syntax" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

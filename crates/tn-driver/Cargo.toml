@@ -1,0 +1,24 @@
+[package]
+name = "tn-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lsp-server.workspace = true
+lsp-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+tn-codegen-llvm = { path = "../tn-codegen-llvm" }
+tn-diagnostics = { path = "../tn-diagnostics" }
+tn-hir = { path = "../tn-hir" }
+tn-mir = { path = "../tn-mir" }
+tn-node-api = { path = "../tn-node-api" }
+tn-syntax = { path = "../tn-syntax" }
+tn-typecheck = { path = "../tn-typecheck" }
+
+[lints]
+workspace = true

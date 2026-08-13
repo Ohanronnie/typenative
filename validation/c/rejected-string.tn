@@ -1,0 +1,4 @@
+
+@Export function rejectedString(value: string): i32 {
+  return 0i32;
+}

@@ -1,0 +1,432 @@
+extern "C" {
+  function tn_selfhost_byte_n(source: * const u8, length: usize, offset: usize): i32;
+  function tn_selfhost_token_is(source: * const u8, start: usize, end: usize, word: * const u8): i32;
+  function tn_selfhost_hash_source(source: * const u8, length: usize): u64;
+  function tn_selfhost_validate_numeric_literal(source: * const u8, start: usize, end: usize): i32;
+}
+@derive(Copy)export struct Source {
+  public pointer: * const u8;
+  public length: usize;
+}
+@derive(Copy, Equal)export enum TokenKind {
+  Identifier, Number, String, Punctuation, Invalid, End,
+}
+@derive(Copy)export struct Token {
+  public kind: TokenKind;
+  public start: usize;
+  public end: usize;
+}
+@derive(Copy)export struct Lexer {
+  public source: Source;
+  public offset: usize;
+}
+@derive(Copy)struct TemplateScan {
+  public end: usize;
+  public invalid: bool;
+}
+export function lexer(source: Source): Lexer {
+  return {
+    source: source, offset: 0usize
+  };
+}
+export function byteAt(source: Source, offset: usize): i32 {
+  unsafe {
+    return tn_selfhost_byte_n(source.pointer, source.length, offset);
+  }
+}
+export function sourceIdentity(source: Source): u64 {
+  unsafe {
+    return tn_selfhost_hash_source(source.pointer, source.length);
+  }
+}
+function hasTwo(source: Source, offset: usize): bool {
+  return offset<source.length && source.length - offset >= 2usize;
+}
+function isWhitespace(value: i32): bool {
+  return value === 32i32 || value === 9i32 || value === 10i32 || value === 13i32 || value === 12i32;
+}
+function isIdentifierStartByte(value: i32): bool {
+  return(value >= 65i32 && value <= 90i32) ||(value >= 97i32 && value <= 122i32) || value === 95i32 || value >= 128i32;
+}
+function isIdentifierContinueByte(value: i32): bool {
+  return isIdentifierStartByte(value) ||(value >= 48i32 && value <= 57i32);
+}
+export function next(source: Source, offset: usize): Token {
+  let cursor = offset;
+  while (cursor<source.length) {
+    const current = byteAt(source, cursor);
+    if (isWhitespace(current)) {
+      cursor = cursor + 1usize;
+      continue;
+    }
+    if (hasTwo(source, cursor) && current === 47i32 && byteAt(source, cursor + 1usize) === 47i32) {
+      cursor = cursor + 2usize;
+      while (cursor<source.length && byteAt(source, cursor) !== 10i32) {
+        cursor = cursor + 1usize;
+      }
+      continue;
+    }
+    if (hasTwo(source, cursor) && current === 47i32 && byteAt(source, cursor + 1usize) === 42i32) {
+      const start = cursor;
+      let depth: usize = 1usize;
+      cursor = cursor + 2usize;
+      while (cursor<source.length && depth > 0usize) {
+        if (hasTwo(source, cursor) && byteAt(source, cursor) === 47i32 && byteAt(source, cursor + 1usize) === 42i32) {
+          depth = depth + 1usize;
+          cursor = cursor + 2usize;
+        } else if (hasTwo(source, cursor) && byteAt(source, cursor) === 42i32 && byteAt(source, cursor + 1usize) === 47i32) {
+          depth = depth - 1usize;
+          cursor = cursor + 2usize;
+        } else {
+          cursor = cursor + 1usize;
+        }
+      }
+      if (depth !== 0usize) {
+        return {
+          kind: TokenKind.Invalid, start: start, end: source.length
+        };
+      }
+      continue;
+    }
+    break;
+  }
+  const start = cursor;
+  if (cursor >= source.length) {
+    return {
+      kind: TokenKind.End, start: start, end: start
+    };
+  }
+  const first = byteAt(source, cursor);
+  cursor = cursor + 1usize;
+  if (isIdentifierStartByte(first)) {
+    while (cursor<source.length && isIdentifierContinueByte(byteAt(source, cursor))) {
+      cursor = cursor + 1usize;
+    }
+    return {
+      kind: TokenKind.Identifier, start: start, end: cursor
+    };
+  }
+  if (first >= 48i32 && first <= 57i32) {
+    while (cursor<source.length) {
+      const value = byteAt(source, cursor);
+      if (!((value >= 65i32 && value <= 90i32) ||(value >= 97i32 && value <= 122i32) ||(value >= 48i32 && value <= 57i32) || value === 95i32 || value === 46i32)) {
+        break;
+      }
+      cursor = cursor + 1usize;
+    }
+    return {
+      kind: TokenKind.Number, start: start, end: cursor
+    };
+  }
+  if (first === 96i32) {
+    const scan = scanTemplate(source, start);
+    return {
+      kind: scan.invalid?TokenKind.Invalid: TokenKind.String, start: start, end: scan.end
+    };
+  }
+  if (first === 34i32 || first === 39i32) {
+    const terminator = first;
+    let escaped = false;
+    while (cursor<source.length) {
+      const value = byteAt(source, cursor);
+      cursor = cursor + 1usize;
+      if (escaped) {
+        escaped = false;
+      } else if (value === 92i32) {
+        escaped = true;
+      } else if (value === terminator) {
+        return {
+          kind: TokenKind.String, start: start, end: cursor
+        };
+      } else if (terminator !== 96i32 &&(value === 10i32 || value === 13i32)) {
+        return {
+          kind: TokenKind.Invalid, start: start, end: cursor
+        };
+      }
+    }
+    return {
+      kind: TokenKind.Invalid, start: start, end: cursor
+    };
+  }
+  if (first === 0i32) {
+    return {
+      kind: TokenKind.Invalid, start: start, end: cursor
+    };
+  }
+  return {
+    kind: TokenKind.Punctuation, start: start, end: cursor
+  };
+}
+export function isInvalid(token: Token): bool {
+  match (token.kind) {
+    case TokenKind.Invalid: {
+      return true;
+    }
+    case TokenKind.Identifier: {
+      return false;
+    }
+    case TokenKind.Number: {
+      return false;
+    }
+    case TokenKind.String: {
+      return false;
+    }
+    case TokenKind.Punctuation: {
+      return false;
+    }
+    case TokenKind.End: {
+      return false;
+    }
+  };
+  return false;
+}
+function skipQuoted(source: Source, offset: usize, end: usize, quote: i32): usize {
+  let cursor = offset + 1usize;
+  let escaped = false;
+  while (cursor<end) {
+    const value = byteAt(source, cursor);
+    cursor = cursor + 1usize;
+    if (escaped) {
+      escaped = false;
+    } else if (value === 92i32) {
+      escaped = true;
+    } else if (value === quote) {
+      break;
+    }
+  }
+  return cursor;
+}
+function isExpressionTerminator(value: i32): bool {
+  if (value === 33i32 || value === 37i32 || value === 38i32 || value === 42i32) {
+    return true;
+  }
+  if (value === 43i32 || value === 45i32 || value === 47i32 || value === 58i32) {
+    return true;
+  }
+  if (value === 60i32 || value === 61i32 || value === 62i32 || value === 63i32) {
+    return true;
+  }
+  return value === 94i32 || value === 124i32 || value === 44i32 || value === 46i32;
+}
+function expressionIsIncomplete(source: Source, start: usize, end: usize): bool {
+  let last = end;
+  while (last > start && isWhitespace(byteAt(source, last - 1usize))) {
+    last = last - 1usize;
+  }
+  while (last >= start + 2usize && byteAt(source, last - 2usize) === 42i32 && byteAt(source, last - 1usize) === 47i32) {
+    let cursor = start;
+    let depth: usize = 0usize;
+    let opening = start;
+    let matched = false;
+    while (cursor + 1usize < last) {
+      if (byteAt(source, cursor) === 47i32 && byteAt(source, cursor + 1usize) === 42i32) {
+        depth = depth + 1usize;
+        if (depth === 1usize) {
+          opening = cursor;
+        }
+        cursor = cursor + 2usize;
+        continue;
+      }
+      if (byteAt(source, cursor) === 42i32 && byteAt(source, cursor + 1usize) === 47i32) {
+        if (depth > 0usize) {
+          depth = depth - 1usize;
+          if (depth === 0usize && cursor + 2usize === last) {
+            matched = true;
+          }
+        }
+        cursor = cursor + 2usize;
+        continue;
+      }
+      cursor = cursor + 1usize;
+    }
+    if (!matched) {
+      break;
+    }
+    last = opening;
+    while (last > start && isWhitespace(byteAt(source, last - 1usize))) {
+      last = last - 1usize;
+    }
+  }
+  return last === start || isExpressionTerminator(byteAt(source, last - 1usize));
+}
+function skipBlockComment(source: Source, offset: usize): TemplateScan {
+  let cursor = offset + 2usize;
+  let depth: usize = 1usize;
+  while (cursor<source.length && depth > 0usize) {
+    if (hasTwo(source, cursor) && byteAt(source, cursor) === 47i32 && byteAt(source, cursor + 1usize) === 42i32) {
+      depth = depth + 1usize;
+      cursor = cursor + 2usize;
+    } else if (hasTwo(source, cursor) && byteAt(source, cursor) === 42i32 && byteAt(source, cursor + 1usize) === 47i32) {
+      depth = depth - 1usize;
+      cursor = cursor + 2usize;
+    } else {
+      cursor = cursor + 1usize;
+    }
+  }
+  return {
+    end: cursor, invalid: depth !== 0usize
+  };
+}
+function scanTemplate(source: Source, start: usize): TemplateScan {
+  if (start >= source.length || byteAt(source, start) !== 96i32) {
+    return {
+      end: start, invalid: true
+    };
+  }
+  let cursor = start + 1usize;
+  while (cursor<source.length) {
+    const value = byteAt(source, cursor);
+    if (value === 92i32) {
+      if (cursor + 1usize >= source.length) {
+        return {
+          end: source.length, invalid: true
+        };
+      }
+      cursor = cursor + 2usize;
+      continue;
+    }
+    if (value === 96i32) {
+      return {
+        end: cursor + 1usize, invalid: false
+      };
+    }
+    if (value === 36i32 && cursor + 1usize < source.length && byteAt(source, cursor + 1usize) === 123i32) {
+      const expressionStart = cursor + 2usize;
+      cursor = expressionStart;
+      let depth: usize = 1usize;
+      while (cursor<source.length && depth > 0usize) {
+        const expressionByte = byteAt(source, cursor);
+        if (expressionByte === 92i32) {
+          if (cursor + 1usize >= source.length) {
+            return {
+              end: source.length, invalid: true
+            };
+          }
+          cursor = cursor + 2usize;
+          continue;
+        }
+        if (expressionByte === 34i32 || expressionByte === 39i32) {
+          const quotedEnd = skipQuoted(source, cursor, source.length, expressionByte);
+          if (quotedEnd === source.length &&(source.length === 0usize || byteAt(source, source.length - 1usize) !== expressionByte)) {
+            return {
+              end: source.length, invalid: true
+            };
+          }
+          cursor = quotedEnd;
+          continue;
+        }
+        if (expressionByte === 96i32) {
+          const nested = scanTemplate(source, cursor);
+          if (nested.invalid) {
+            return nested;
+          }
+          cursor = nested.end;
+          continue;
+        }
+        if (expressionByte === 47i32 && cursor + 1usize < source.length && byteAt(source, cursor + 1usize) === 47i32) {
+          cursor = cursor + 2usize;
+          while (cursor<source.length && byteAt(source, cursor) !== 10i32) {
+            cursor = cursor + 1usize;
+          }
+          continue;
+        }
+        if (expressionByte === 47i32 && cursor + 1usize < source.length && byteAt(source, cursor + 1usize) === 42i32) {
+          const comment = skipBlockComment(source, cursor);
+          if (comment.invalid) {
+            return comment;
+          }
+          cursor = comment.end;
+          continue;
+        }
+        if (expressionByte === 123i32) {
+          depth = depth + 1usize;
+          cursor = cursor + 1usize;
+          continue;
+        }
+        if (expressionByte === 125i32) {
+          depth = depth - 1usize;
+          if (depth === 0usize && expressionIsIncomplete(source, expressionStart, cursor)) {
+            return {
+              end: cursor + 1usize, invalid: true
+            };
+          }
+          cursor = cursor + 1usize;
+          continue;
+        }
+        cursor = cursor + 1usize;
+      }
+      if (depth !== 0usize) {
+        return {
+          end: source.length, invalid: true
+        };
+      }
+      continue;
+    }
+    cursor = cursor + 1usize;
+  }
+  return {
+    end: source.length, invalid: true
+  };
+}
+export function isTemplateInvalid(source: Source, token: Token): bool {
+  if (token.start >= token.end || byteAt(source, token.start) !== 96i32) {
+    return false;
+  }
+  const scan = scanTemplate(source, token.start);
+  return scan.invalid || scan.end !== token.end;
+}
+export function isNumberValid(source: Source, token: Token): i32 {
+  if (token.start >= token.end) {
+    return 0i32;
+  }
+  unsafe {
+    return tn_selfhost_validate_numeric_literal(source.pointer, token.start, token.end) === 0i32?1i32: 0i32;
+  }
+}
+export function numericErrorStart(source: Source, token: Token): usize {
+  if (token.start >= token.end) {
+    return token.start;
+  }
+  let cursor = token.start;
+  if (cursor + 2usize <= token.end && byteAt(source, cursor) === 48i32) {
+    const prefix = byteAt(source, cursor + 1usize);
+    if (prefix === 98i32 || prefix === 66i32 || prefix === 111i32 || prefix === 79i32 || prefix === 120i32 || prefix === 88i32) {
+      cursor = cursor + 2usize;
+    }
+  }
+  let sawDigit = false;
+  while (cursor<token.end) {
+    const value = byteAt(source, cursor);
+    if ((value >= 48i32 && value <= 57i32) || value === 95i32) {
+      sawDigit = true;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    break;
+  }
+  if (sawDigit && cursor<token.end) {
+    return cursor;
+  }
+  return token.start;
+}
+export function firstByte(source: Source, token: Token): i32 {
+  return byteAt(source, token.start);
+}
+export function tokenEqual(source: Source, left: Token, right: Token): bool {
+  if (left.end - left.start !== right.end - right.start) {
+    return false;
+  }
+  let offset: usize = 0usize;
+  while (offset<left.end - left.start) {
+    if (byteAt(source, left.start + offset) !== byteAt(source, right.start + offset)) {
+      return false;
+    }
+    offset = offset + 1usize;
+  }
+  return true;
+}
+export function isKeyword(source: Source, token: Token, word: & static str): bool {
+  unsafe {
+    return tn_selfhost_token_is(source.pointer, token.start, token.end, word as * const u8) !== 0i32;
+  }
+}

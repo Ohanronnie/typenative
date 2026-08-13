@@ -1,0 +1,1 @@
+type Pending = Promise<i32>;

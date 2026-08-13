@@ -1,0 +1,60 @@
+extern "C" {
+  function tn_selfhost_llvm_major(): i32;
+  function tn_selfhost_llvm_c_api_smoke(): i32;
+  function tn_selfhost_llvm_context_create(): * mut u8;
+  function tn_selfhost_llvm_module_create(name: * const u8, context: * mut u8): * mut u8;
+  function tn_selfhost_llvm_module_dispose(module: * mut u8): void;
+  function tn_selfhost_llvm_context_dispose(context: * mut u8): void;
+  function tn_selfhost_llvm_module_roundtrip(name: * const u8): i32;
+  function tn_selfhost_llvm_emit_i32_return(output: * const u8, module: * const u8, functionName: * const u8, value: i32): i32;
+}
+@derive(Copy)export struct LlvmContext {
+  public handle: * mut u8;
+}
+@derive(Copy)export struct LlvmModule {
+  public handle: * mut u8;
+}
+export function createContext(): LlvmContext {
+  unsafe {
+    return {
+      handle: tn_selfhost_llvm_context_create()
+    };
+  }
+}
+export function createModule(context: & LlvmContext, name: & static str): LlvmModule {
+  unsafe {
+    return {
+      handle: tn_selfhost_llvm_module_create(name as * const u8, context.handle)
+    };
+  }
+}
+export function disposeModule(module: & mut LlvmModule): void {
+  unsafe {
+    tn_selfhost_llvm_module_dispose(module.handle);
+  }
+}
+export function disposeContext(context: & mut LlvmContext): void {
+  unsafe {
+    tn_selfhost_llvm_context_dispose(context.handle);
+  }
+}
+export function llvmModuleRoundtrip(): bool {
+  unsafe {
+    return tn_selfhost_llvm_module_roundtrip("typenative-selfhost" as * const u8) === 0i32;
+  }
+}
+export function emitI32Return(output: * const u8, module: & static str, functionName: & static str, value: i32): i32 {
+  unsafe {
+    return tn_selfhost_llvm_emit_i32_return(output, module as * const u8, functionName as * const u8, value);
+  }
+}
+export function llvmMajorMatches(expected: i32): bool {
+  unsafe {
+    return tn_selfhost_llvm_major() === expected && tn_selfhost_llvm_module_roundtrip("typenative-selfhost" as * const u8) === 0i32;
+  }
+}
+export function llvmBindingsAvailable(): bool {
+  unsafe {
+    return tn_selfhost_llvm_c_api_smoke() === 0i32 && tn_selfhost_llvm_module_roundtrip("typenative-selfhost" as * const u8) === 0i32;
+  }
+}

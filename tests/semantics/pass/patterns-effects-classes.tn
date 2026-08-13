@@ -1,0 +1,39 @@
+struct Failure {}
+struct SpecificFailure {}
+
+enum Message {
+  Number(i32),
+  Record { value: i32; },
+  Empty,
+}
+
+function mayFail(): void throws Failure {}
+
+function patterns(message: Message, optional: i32 | undefined): void throws Failure {
+  switch (message) {
+    case Message.Number(value): { value; }
+    case Message.Record { value }: { value; }
+    case Message.Empty: {}
+  };
+  switch (optional) {
+    case undefined: {}
+    case value: { value; }
+  };
+  try mayFail();
+}
+
+class Animal {}
+class Dog extends Animal {}
+
+function casts(dog: Dog, animal: Animal): void {
+  const upcast: Animal = dog;
+  const downcast: &Dog | undefined = animal as? Dog;
+  const test: bool = animal instanceof Dog;
+}
+
+function borrowedCasts(shared: &Animal, mutable: &mut Animal): void {
+  const sharedDog: &Dog | undefined = shared as? Dog;
+  const mutableDog: &mut Dog | undefined = mutable as? Dog;
+  sharedDog;
+  mutableDog;
+}

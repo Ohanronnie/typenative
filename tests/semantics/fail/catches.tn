@@ -1,0 +1,20 @@
+class Failure {}
+class Specific extends Failure {}
+class Other {}
+
+function fail(): void throws Specific {}
+
+function catches(): void {
+  try {
+    try fail();
+  }
+  catch (failure: Failure) {}
+  catch (specific: Specific) {}
+}
+
+function missing(): void {
+  try {
+    try fail();
+  }
+  catch (other: Other) {}
+}

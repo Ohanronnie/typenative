@@ -1,0 +1,1287 @@
+import { Vec, vecGet } from "std/collections";
+import { HirProgram } from "./hir";
+import { Source, Token, TokenKind, firstByte, isKeyword, tokenEqual, next } from "./lexer";
+import { ParseSummary, isEnd, parse } from "./parser";
+
+extern "C" {
+  function tn_selfhost_word_occurs_after(source: * const u8, length: usize, wordStart: usize, wordEnd: usize, after: usize): i32;
+  function tn_selfhost_spans_equal(source: * const u8, length: usize, leftStart: usize, leftEnd: usize, rightStart: usize, rightEnd: usize): i32;
+}
+@derive(Copy)export struct SemanticProgram {
+  public tokenCount: usize;
+  public declarationCount: usize;
+  public errors: usize;
+  public firstErrorCode: i32;
+  public firstErrorStart: usize;
+  public firstErrorEnd: usize;
+  public functionCount: usize;
+  public typeCount: usize;
+  public valueCount: usize;
+  public blockCount: usize;
+  public borrowOperationCount: usize;
+  public moveOperationCount: usize;
+  public awaitOperationCount: usize;
+  public sourceIdentity: u64;
+  public declarationIdentity: u64;
+}
+function isDeclaration(source: Source, token: Token): bool {
+  return isKeyword(source, token, "function") || isKeyword(source, token, "struct") || isKeyword(source, token, "enum") || isKeyword(source, token, "class") || isKeyword(source, token, "interface") || isKeyword(source, token, "type");
+}
+function isOpen(byte: i32): bool {
+  return byte === 40i32 || byte === 91i32 || byte === 123i32;
+}
+function isClose(byte: i32): bool {
+  return byte === 41i32 || byte === 93i32 || byte === 125i32;
+}
+function declarationName(source: Source, declaration: Token): Token {
+  return next(source, declaration.end);
+}
+@derive(Copy)struct SemanticError {
+  public code: i32;
+  public start: usize;
+  public end: usize;
+}
+function noSemanticError(): SemanticError {
+  return {
+    code: 0i32, start: 0usize, end: 0usize
+  };
+}
+function semanticError(code: i32, token: Token): SemanticError {
+  return {
+    code: code, start: token.start, end: token.end
+  };
+}
+function isTrue(source: Source, token: Token): bool {
+  return isKeyword(source, token, "true");
+}
+function isFalse(source: Source, token: Token): bool {
+  return isKeyword(source, token, "false");
+}
+function isNumber(token: Token): bool {
+  match (token.kind) {
+    case TokenKind.Number: {
+      return true;
+    }
+    case TokenKind.Identifier: {
+      return false;
+    }
+    case TokenKind.String: {
+      return false;
+    }
+    case TokenKind.Punctuation: {
+      return false;
+    }
+    case TokenKind.Invalid: {
+      return false;
+    }
+    case TokenKind.End: {
+      return false;
+    }
+  };
+  return false;
+}
+function isString(token: Token): bool {
+  match (token.kind) {
+    case TokenKind.String: {
+      return true;
+    }
+    case TokenKind.Identifier: {
+      return false;
+    }
+    case TokenKind.Number: {
+      return false;
+    }
+    case TokenKind.Punctuation: {
+      return false;
+    }
+    case TokenKind.Invalid: {
+      return false;
+    }
+    case TokenKind.End: {
+      return false;
+    }
+  };
+  return false;
+}
+function looksLikeName(source: Source, token: Token): bool {
+  if (token.end <= token.start) {
+    return false;
+  }
+  const byte = firstByte(source, token);
+  return(byte >= 65i32 && byte <= 90i32) ||(byte >= 97i32 && byte <= 122i32) || byte === 95i32 || byte >= 128i32;
+}
+function isNumericType(source: Source, token: Token): bool {
+  return isKeyword(source, token, "i8") || isKeyword(source, token, "i16") || isKeyword(source, token, "i32") || isKeyword(source, token, "i64") || isKeyword(source, token, "i128") || isKeyword(source, token, "isize") || isKeyword(source, token, "u8") || isKeyword(source, token, "u16") || isKeyword(source, token, "u32") || isKeyword(source, token, "u64") || isKeyword(source, token, "u128") || isKeyword(source, token, "usize") || isKeyword(source, token, "f32") || isKeyword(source, token, "f64") || isKeyword(source, token, "number");
+}
+function findConditionError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "if") || isKeyword(source, token, "while")) {
+      const opening = next(source, token.end);
+      const condition = next(source, opening.end);
+      if (isNumber(condition) || isString(condition)) {
+        return semanticError(2003i32, condition);
+      }
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findInitializerError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (isKeyword(source, declaration, "const")) {
+      const name = next(source, declaration.end);
+      const colon = next(source, name.end);
+      if (firstByte(source, colon) === 58i32) {
+        const typeToken = next(source, colon.end);
+        const equal = next(source, typeToken.end);
+        const value = next(source, equal.end);
+        if (firstByte(source, equal) === 61i32) {
+          if (isKeyword(source, typeToken, "bool") &&(isNumber(value) || isString(value))) {
+            return semanticError(2002i32, value);
+          }
+          if (isNumericType(source, typeToken) &&(isTrue(source, value) || isFalse(source, value))) {
+            return semanticError(2002i32, value);
+          }
+        }
+      }
+    }
+    offset = declaration.end;
+  }
+  return noSemanticError();
+}
+function findUnsafePointerError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "return")) {
+      const operation = next(source, token.end);
+      const operand = next(source, operation.end);
+      if (firstByte(source, operation) === 42i32 && looksLikeName(source, operand)) {
+        return semanticError(2004i32, operation);
+      }
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findMoveError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  let previous: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "move") &&(firstByte(source, previous) === 61i32 || isKeyword(source, previous, "return"))) {
+      const moved = next(source, token.end);
+      if (looksLikeName(source, moved)) {
+        let occurs: i32 = 0i32;
+        unsafe {
+          occurs = tn_selfhost_word_occurs_after(source.pointer, source.length, moved.start, moved.end, moved.end);
+        }
+        if (occurs !== 0i32) {
+          return semanticError(2005i32, moved);
+        }
+      }
+    }
+    previous = token;
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findBorrowError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  let previous: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (firstByte(source, token) === 38i32 && firstByte(source, previous) === 61i32) {
+      const mode = next(source, token.end);
+      let name = mode;
+      if (isKeyword(source, mode, "mut")) {
+        name = next(source, mode.end);
+        let cursor: usize = 0usize;
+        while (cursor<token.start) {
+          const previous = next(source, cursor);
+          if (isEnd(previous)) {
+            break;
+          }
+          if (firstByte(source, previous) === 38i32) {
+            const previousMode = next(source, previous.end);
+            const previousName = isKeyword(source, previousMode, "mut")?next(source, previousMode.end): previousMode;
+            if (!isKeyword(source, previousMode, "mut") && tokenEqual(source, previousName, name)) {
+              return semanticError(2006i32, name);
+            }
+          }
+          cursor = previous.end;
+        }
+      }
+    }
+    previous = token;
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findReturnedBorrowError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "const")) {
+      const borrowed = next(source, token.end);
+      const equal = next(source, borrowed.end);
+      const reference = next(source, equal.end);
+      const local = next(source, reference.end);
+      if (firstByte(source, equal) === 61i32 && firstByte(source, reference) === 38i32 && looksLikeName(source, local)) {
+        let cursor = local.end;
+        while (cursor<source.length) {
+          const use = next(source, cursor);
+          if (isEnd(use)) {
+            break;
+          }
+          if (isKeyword(source, use, "return")) {
+            const returned = next(source, use.end);
+            if (tokenEqual(source, returned, borrowed)) {
+              return semanticError(2007i32, returned);
+            }
+          }
+          cursor = use.end;
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findEffectError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  let hasThrowingFunction = false;
+  let hasTry = false;
+  let firstTry: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+  let previous: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "throws")) {
+      hasThrowingFunction = true;
+    }
+    if (isKeyword(source, token, "try")) {
+      hasTry = true;
+      if (firstTry.start === firstTry.end) {
+        firstTry = token;
+      }
+    }
+    if (hasThrowingFunction && isKeyword(source, token, "fail")) {
+      if (!isKeyword(source, previous, "try")) {
+        return semanticError(2008i32, token);
+      }
+    }
+    previous = token;
+    offset = token.end;
+  }
+  if (hasTry && !hasThrowingFunction) {
+    return semanticError(2009i32, firstTry);
+  }
+  return noSemanticError();
+}
+function thrownTypeFor(source: Source, callName: Token): Token {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "function")) {
+      const name = next(source, token.end);
+      if (tokenEqual(source, name, callName)) {
+        let cursor = name.end;
+        while (cursor<source.length) {
+          const part = next(source, cursor);
+          if (isEnd(part) || firstByte(source, part) === 123i32 || firstByte(source, part) === 59i32) {
+            break;
+          }
+          if (isKeyword(source, part, "throws")) {
+            return next(source, part.end);
+          }
+          cursor = part.end;
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+}
+function typeExtends(source: Source, child: Token, parent: Token): bool {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "class")) {
+      const name = next(source, token.end);
+      const extendsToken = next(source, name.end);
+      const base = next(source, extendsToken.end);
+      if (tokenEqual(source, name, child) && isKeyword(source, extendsToken, "extends")) {
+        return tokenEqual(source, base, parent);
+      }
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function functionPropagates(source: Source, position: usize, thrown: Token): bool {
+  let offset: usize = 0usize;
+  let braceDepth: usize = 0usize;
+  let functionDepth: usize = 0usize;
+  let propagates = false;
+  while (offset<position) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= position) {
+      break;
+    }
+    if (isKeyword(source, token, "function")) {
+      let cursor = token.end;
+      let signatureThrows = false;
+      let signatureType: Token = {
+        kind: TokenKind.End, start: 0usize, end: 0usize
+      };
+      while (cursor<position) {
+        const part = next(source, cursor);
+        if (isEnd(part) || part.start >= position || firstByte(source, part) === 123i32) {
+          break;
+        }
+        if (isKeyword(source, part, "throws")) {
+          signatureThrows = true;
+          signatureType = next(source, part.end);
+        }
+        cursor = part.end;
+      }
+      if (signatureThrows) {
+        propagates = tokenEqual(source, signatureType, thrown);
+      } else {
+        propagates = false;
+      }
+    }
+    const byte = firstByte(source, token);
+    if (byte === 123i32) {
+      braceDepth = braceDepth + 1usize;
+      if (functionDepth === 0usize && propagates) {
+        functionDepth = braceDepth;
+      }
+    } else if (byte === 125i32) {
+      if (functionDepth === braceDepth) {
+        functionDepth = 0usize;
+        propagates = false;
+      }
+      if (braceDepth > 0usize) {
+        braceDepth = braceDepth - 1usize;
+      }
+    }
+    offset = token.end;
+  }
+  return functionDepth !== 0usize && propagates;
+}
+function findCatchError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (!isKeyword(source, token, "try")) {
+      offset = token.end;
+      continue;
+    }
+    let cursor = token.end;
+    let callName: Token = {
+      kind: TokenKind.End, start: 0usize, end: 0usize
+    };
+    let scanDepth: usize = 0usize;
+    while (cursor<source.length) {
+      const part = next(source, cursor);
+      if (isEnd(part) || isKeyword(source, part, "function")) {
+        break;
+      }
+      const byte = firstByte(source, part);
+      if (byte === 123i32) {
+        scanDepth = scanDepth + 1usize;
+      } else if (byte === 125i32 && scanDepth > 0usize) {
+        scanDepth = scanDepth - 1usize;
+      }
+      const nextPart = next(source, part.end);
+      if (callName.start === callName.end && looksLikeName(source, part) && firstByte(source, nextPart) === 40i32 && !isKeyword(source, part, "try") && !isKeyword(source, part, "catch")) {
+        callName = part;
+      }
+      if (scanDepth === 0usize && firstByte(source, part) === 59i32) {
+        cursor = part.end;
+        break;
+      }
+      cursor = part.end;
+    }
+    const thrown = thrownTypeFor(source, callName);
+    if (isEnd(thrown)) {
+      offset = token.end;
+      continue;
+    }
+    while (cursor<source.length) {
+      const boundary = next(source, cursor);
+      if (firstByte(source, boundary) !== 125i32) {
+        break;
+      }
+      cursor = boundary.end;
+    }
+    let catchCursor = cursor;
+    let covered = false;
+    let sawCatch = false;
+    while (catchCursor<source.length) {
+      const catchToken = next(source, catchCursor);
+      if (!isKeyword(source, catchToken, "catch")) {
+        break;
+      }
+      sawCatch = true;
+      const opening = next(source, catchToken.end);
+      const variable = next(source, opening.end);
+      const colon = next(source, variable.end);
+      const catchType = next(source, colon.end);
+      if (firstByte(source, opening) === 40i32 && firstByte(source, colon) === 58i32 &&(tokenEqual(source, catchType, thrown) || isKeyword(source, catchType, "Error") || typeExtends(source, thrown, catchType))) {
+        covered = true;
+      }
+      let body = next(source, catchType.end);
+      while (!isEnd(body) && firstByte(source, body) !== 123i32 && firstByte(source, body) !== 59i32) {
+        body = next(source, body.end);
+      }
+      if (firstByte(source, body) === 123i32) {
+        let bodyDepth: usize = 1usize;
+        body = next(source, body.end);
+        while (!isEnd(body) && bodyDepth > 0usize) {
+          const byte = firstByte(source, body);
+          if (byte === 123i32) {
+            bodyDepth = bodyDepth + 1usize;
+          } else if (byte === 125i32 && bodyDepth > 0usize) {
+            bodyDepth = bodyDepth - 1usize;
+          }
+          body = next(source, body.end);
+        }
+      }
+      catchCursor = body.start;
+      if (body.end > body.start) {
+        catchCursor = body.end;
+      }
+    }
+    if (sawCatch && !covered && !functionPropagates(source, token.start, thrown)) {
+      return semanticError(2021i32, thrown);
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function variantHasField(source: Source, variant: Token, field: Token): bool {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (tokenEqual(source, token, variant)) {
+      const opening = next(source, token.end);
+      if (firstByte(source, opening) === 123i32) {
+        let cursor = next(source, opening.end);
+        let bodyDepth: usize = 1usize;
+        while (!isEnd(cursor) && bodyDepth > 0usize) {
+          if (bodyDepth === 1usize && tokenEqual(source, cursor, field)) {
+            const after = next(source, cursor.end);
+            if (firstByte(source, after) === 58i32 || firstByte(source, after) === 44i32 || firstByte(source, after) === 125i32) {
+              return true;
+            }
+          }
+          const byte = firstByte(source, cursor);
+          if (byte === 123i32) {
+            bodyDepth = bodyDepth + 1usize;
+          } else if (byte === 125i32 && bodyDepth > 0usize) {
+            bodyDepth = bodyDepth - 1usize;
+          }
+          cursor = next(source, cursor.end);
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function variantTupleArity(source: Source, variant: Token): usize {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (tokenEqual(source, token, variant)) {
+      const opening = next(source, token.end);
+      if (firstByte(source, opening) === 40i32) {
+        let cursor = next(source, opening.end);
+        let depth: usize = 1usize;
+        let commas: usize = 0usize;
+        let values: usize = 0usize;
+        let hasValue = false;
+        while (!isEnd(cursor) && depth > 0usize) {
+          const byte = firstByte(source, cursor);
+          if (depth === 1usize && byte === 44i32) {
+            commas = commas + 1usize;
+          } else if (depth === 1usize && byte !== 41i32) {
+            hasValue = true;
+          }
+          if (byte === 40i32) {
+            depth = depth + 1usize;
+          } else if (byte === 41i32 && depth > 0usize) {
+            depth = depth - 1usize;
+          }
+          cursor = next(source, cursor.end);
+        }
+        if (!hasValue) {
+          return 0usize;
+        }
+        values = commas + 1usize;
+        return values;
+      }
+    }
+    offset = token.end;
+  }
+  return 0usize;
+}
+function repeatedCaseBefore(source: Source, first: Token, second: Token, dotted: bool, before: usize): bool {
+  let offset: usize = 0usize;
+  while (offset<before) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= before) {
+      break;
+    }
+    if (isKeyword(source, token, "case") && !isKeyword(source, next(source, token.end), "TokenKind")) {
+      const candidateFirst = next(source, token.end);
+      const dot = next(source, candidateFirst.end);
+      let candidateSecond = candidateFirst;
+      let candidateDotted = false;
+      if (firstByte(source, dot) === 46i32) {
+        candidateDotted = true;
+        candidateSecond = next(source, dot.end);
+      }
+      if (candidateDotted === dotted && tokenEqual(source, candidateFirst, first) && tokenEqual(source, candidateSecond, second)) {
+        return true;
+      }
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function findPatternError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "case") && !isKeyword(source, next(source, token.end), "TokenKind")) {
+      const first = next(source, token.end);
+      const dot = next(source, first.end);
+      let second = first;
+      let dotted = false;
+      if (firstByte(source, dot) === 46i32) {
+        dotted = true;
+        second = next(source, dot.end);
+      }
+      if (repeatedCaseBefore(source, first, second, dotted, token.start)) {
+        return semanticError(2022i32, second);
+      }
+      let cursor = next(source, dotted?second.end: first.end);
+      while (!isEnd(cursor) && firstByte(source, cursor) !== 58i32 && firstByte(source, cursor) !== 123i32 && firstByte(source, cursor) !== 40i32) {
+        cursor = next(source, cursor.end);
+      }
+      if (firstByte(source, cursor) === 123i32 && dotted) {
+        let fieldCursor = next(source, cursor.end);
+        let fieldDepth: usize = 1usize;
+        let expectField = true;
+        let previousField: Token = {
+          kind: TokenKind.End, start: 0usize, end: 0usize
+        };
+        while (!isEnd(fieldCursor) && fieldDepth > 0usize) {
+          const byte = firstByte(source, fieldCursor);
+          if (fieldDepth === 1usize && byte === 44i32) {
+            expectField = true;
+          } else if (fieldDepth === 1usize && byte === 58i32) {
+            expectField = false;
+          } else if (fieldDepth === 1usize && expectField && looksLikeName(source, fieldCursor)) {
+            if (previousField.start !== previousField.end && tokenEqual(source, previousField, fieldCursor)) {
+              return semanticError(2023i32, fieldCursor);
+            }
+            if (!variantHasField(source, second, fieldCursor)) {
+              return semanticError(2024i32, fieldCursor);
+            }
+            previousField = fieldCursor;
+            expectField = false;
+          }
+          if (byte === 123i32) {
+            fieldDepth = fieldDepth + 1usize;
+          } else if (byte === 125i32 && fieldDepth > 0usize) {
+            fieldDepth = fieldDepth - 1usize;
+          }
+          fieldCursor = next(source, fieldCursor.end);
+        }
+      } else if (firstByte(source, cursor) === 40i32 && dotted) {
+        let payloadCursor = next(source, cursor.end);
+        let payloadDepth: usize = 1usize;
+        let commas: usize = 0usize;
+        let hasPayload = false;
+        while (!isEnd(payloadCursor) && payloadDepth > 0usize) {
+          const byte = firstByte(source, payloadCursor);
+          if (payloadDepth === 1usize && byte === 44i32) {
+            commas = commas + 1usize;
+          } else if (payloadDepth === 1usize && byte !== 41i32) {
+            hasPayload = true;
+          }
+          if (byte === 40i32) {
+            payloadDepth = payloadDepth + 1usize;
+          } else if (byte === 41i32 && payloadDepth > 0usize) {
+            payloadDepth = payloadDepth - 1usize;
+          }
+          payloadCursor = next(source, payloadCursor.end);
+        }
+        const expected = variantTupleArity(source, second);
+        const actual = hasPayload?commas + 1usize: 0usize;
+        if (expected !== 0usize && expected !== actual) {
+          return semanticError(2025i32, second);
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+@derive(Copy)struct ImplHeader {
+  public trait: Token;
+  public target: Token;
+  public valid: bool;
+}
+function invalidImplHeader(): ImplHeader {
+  return {
+    trait: {
+      kind: TokenKind.End, start: 0usize, end: 0usize
+    }, target: {
+      kind: TokenKind.End, start: 0usize, end: 0usize
+    }, valid: false
+  };
+}
+function implHeader(source: Source, implementation: Token): ImplHeader {
+  let cursor = next(source, implementation.end);
+  if (firstByte(source, cursor) === 60i32) {
+    return invalidImplHeader();
+  }
+  const trait = cursor;
+  const forToken = next(source, trait.end);
+  if (!isKeyword(source, forToken, "for")) {
+    return invalidImplHeader();
+  }
+  const target = next(source, forToken.end);
+  if (!looksLikeName(source, trait) || !looksLikeName(source, target)) {
+    return invalidImplHeader();
+  }
+  return {
+    trait: trait, target: target, valid: true
+  };
+}
+function declarationIsClass(source: Source, name: Token): bool {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (depth === 0usize && isKeyword(source, token, "class")) {
+      const candidate = next(source, token.end);
+      if (tokenEqual(source, candidate, name)) {
+        return true;
+      }
+    }
+    const byte = firstByte(source, token);
+    if (isOpen(byte)) {
+      depth = depth + 1usize;
+    } else if (isClose(byte) && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function declarationIsStruct(source: Source, name: Token): bool {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (depth === 0usize && isKeyword(source, token, "struct")) {
+      const candidate = next(source, token.end);
+      if (tokenEqual(source, candidate, name)) {
+        return true;
+      }
+    }
+    const byte = firstByte(source, token);
+    if (isOpen(byte)) {
+      depth = depth + 1usize;
+    } else if (isClose(byte) && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function declarationBodyHasString(source: Source, name: Token): bool {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  while (offset<source.length) {
+    const declaration = next(source, offset);
+    if (isEnd(declaration)) {
+      break;
+    }
+    if (depth === 0usize &&(isKeyword(source, declaration, "struct") || isKeyword(source, declaration, "class"))) {
+      const candidate = next(source, declaration.end);
+      if (tokenEqual(source, candidate, name)) {
+        let cursor = next(source, candidate.end);
+        while (!isEnd(cursor) && firstByte(source, cursor) !== 123i32 && firstByte(source, cursor) !== 59i32) {
+          cursor = next(source, cursor.end);
+        }
+        if (firstByte(source, cursor) !== 123i32) {
+          return false;
+        }
+        let bodyDepth: usize = 1usize;
+        cursor = next(source, cursor.end);
+        while (!isEnd(cursor) && bodyDepth > 0usize) {
+          if (isKeyword(source, cursor, "string")) {
+            return true;
+          }
+          const byte = firstByte(source, cursor);
+          if (isOpen(byte)) {
+            bodyDepth = bodyDepth + 1usize;
+          } else if (isClose(byte) && bodyDepth > 0usize) {
+            bodyDepth = bodyDepth - 1usize;
+          }
+          cursor = next(source, cursor.end);
+        }
+        return false;
+      }
+    }
+    const byte = firstByte(source, declaration);
+    if (isOpen(byte)) {
+      depth = depth + 1usize;
+    } else if (isClose(byte) && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = declaration.end;
+  }
+  return false;
+}
+function hasImpl(source: Source, trait: Token, target: Token, before: usize): bool {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  while (offset<before) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= before) {
+      break;
+    }
+    if (depth === 0usize && isKeyword(source, token, "impl")) {
+      const header = implHeader(source, token);
+      if (header.valid && tokenEqual(source, header.trait, trait) && tokenEqual(source, header.target, target)) {
+        return true;
+      }
+    }
+    const byte = firstByte(source, token);
+    if (isOpen(byte)) {
+      depth = depth + 1usize;
+    } else if (isClose(byte) && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function findTraitError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (depth === 0usize && isKeyword(source, token, "impl")) {
+      const header = implHeader(source, token);
+      if (header.valid) {
+        if (hasImpl(source, header.trait, header.target, token.start)) {
+          return semanticError(2010i32, header.target);
+        }
+        if (isKeyword(source, header.trait, "Copy")) {
+          if (declarationIsClass(source, header.target) || declarationBodyHasString(source, header.target)) {
+            return semanticError(2011i32, header.target);
+          }
+          let prior: usize = 0usize;
+          while (prior<token.start) {
+            const priorToken = next(source, prior);
+            if (isEnd(priorToken)) {
+              break;
+            }
+            if (isKeyword(source, priorToken, "impl")) {
+              const priorHeader = implHeader(source, priorToken);
+              if (priorHeader.valid && isKeyword(source, priorHeader.trait, "Drop") && tokenEqual(source, priorHeader.target, header.target)) {
+                return semanticError(2011i32, header.target);
+              }
+            }
+            prior = priorToken.end;
+          }
+        }
+        if (isKeyword(source, header.trait, "Send")) {
+          let previous: Token = {
+            kind: TokenKind.End, start: 0usize, end: 0usize
+          };
+          let previousOffset: usize = 0usize;
+          while (previousOffset<token.start) {
+            const candidate = next(source, previousOffset);
+            if (isEnd(candidate) || candidate.end >= token.start) {
+              break;
+            }
+            previous = candidate;
+            previousOffset = candidate.end;
+          }
+          if (!isKeyword(source, previous, "unsafe")) {
+            return semanticError(2012i32, header.target);
+          }
+        }
+      }
+    }
+    const byte = firstByte(source, token);
+    if (isOpen(byte)) {
+      depth = depth + 1usize;
+    } else if (isClose(byte) && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findClassError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "final")) {
+      const classToken = next(source, token.end);
+      const finalName = next(source, classToken.end);
+      if (isKeyword(source, classToken, "class") && looksLikeName(source, finalName)) {
+        let cursor: usize = 0usize;
+        while (cursor<source.length) {
+          const candidate = next(source, cursor);
+          if (isEnd(candidate)) {
+            break;
+          }
+          if (isKeyword(source, candidate, "class")) {
+            const name = next(source, candidate.end);
+            const extendsToken = next(source, name.end);
+            const base = next(source, extendsToken.end);
+            if (isKeyword(source, extendsToken, "extends") && tokenEqual(source, base, finalName)) {
+              return semanticError(2013i32, base);
+            }
+          }
+          cursor = candidate.end;
+        }
+      }
+    }
+    if (isKeyword(source, token, "implements")) {
+      const implemented = next(source, token.end);
+      if (declarationIsClass(source, implemented) || declarationIsStruct(source, implemented)) {
+        return semanticError(2014i32, implemented);
+      }
+    }
+    if (isKeyword(source, token, "override")) {
+      const method = next(source, token.end);
+      let cursor: usize = 0usize;
+      while (cursor<token.start) {
+        const candidate = next(source, cursor);
+        if (isEnd(candidate)) {
+          break;
+        }
+        if (isKeyword(source, candidate, "final")) {
+          const finalMethod = next(source, candidate.end);
+          if (tokenEqual(source, finalMethod, method)) {
+            return semanticError(2015i32, method);
+          }
+        }
+        cursor = candidate.end;
+      }
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function findLifetimeError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  let exportPending = false;
+  let functionPending = false;
+  let inParameters = false;
+  let afterParameters = false;
+  let resultColon = false;
+  let resultReference = false;
+  let parameterReferences: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    const byte = firstByte(source, token);
+    if (isKeyword(source, token, "export")) {
+      exportPending = true;
+      functionPending = false;
+    } else if (exportPending && isKeyword(source, token, "function")) {
+      functionPending = true;
+    } else if (functionPending && byte === 40i32) {
+      inParameters = true;
+      afterParameters = false;
+      resultColon = false;
+      resultReference = false;
+      parameterReferences = 0usize;
+      functionPending = false;
+    } else if (inParameters && byte === 38i32) {
+      parameterReferences = parameterReferences + 1usize;
+    } else if (inParameters && byte === 41i32) {
+      inParameters = false;
+      afterParameters = true;
+    } else if (afterParameters && byte === 58i32) {
+      resultColon = true;
+    } else if (resultColon && byte === 38i32) {
+      resultColon = false;
+      resultReference = true;
+      if (parameterReferences > 1usize) {
+        return semanticError(2017i32, token);
+      }
+    } else if (resultReference) {
+      if (!isKeyword(source, token, "static") && !isKeyword(source, token, "mut")) {
+        return semanticError(2017i32, token);
+      }
+      if (parameterReferences === 0usize && !isKeyword(source, token, "static")) {
+        return semanticError(2017i32, token);
+      }
+      resultReference = false;
+      afterParameters = false;
+      exportPending = false;
+    }
+    if (byte === 123i32 || byte === 59i32) {
+      exportPending = false;
+      functionPending = false;
+      inParameters = false;
+      afterParameters = false;
+      resultColon = false;
+      resultReference = false;
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function isWithinUnsafe(source: Source, position: usize): bool {
+  let offset: usize = 0usize;
+  let braceDepth: usize = 0usize;
+  let unsafeDepth: usize = 0usize;
+  let pendingUnsafe = false;
+  while (offset<position) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= position) {
+      break;
+    }
+    if (isKeyword(source, token, "unsafe")) {
+      pendingUnsafe = true;
+    }
+    const byte = firstByte(source, token);
+    if (byte === 123i32) {
+      braceDepth = braceDepth + 1usize;
+      if (pendingUnsafe) {
+        unsafeDepth = braceDepth;
+        pendingUnsafe = false;
+      }
+    } else if (byte === 125i32) {
+      if (unsafeDepth === braceDepth) {
+        unsafeDepth = 0usize;
+      }
+      if (braceDepth > 0usize) {
+        braceDepth = braceDepth - 1usize;
+      }
+    }
+    offset = token.end;
+  }
+  return unsafeDepth !== 0usize;
+}
+function findStaticError(source: Source): SemanticError {
+  let offset: usize = 0usize;
+  let braceDepth: usize = 0usize;
+  let previous: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize
+  };
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (braceDepth === 0usize && isKeyword(source, token, "const")) {
+      let cursor = token.end;
+      while (cursor<source.length) {
+        const part = next(source, cursor);
+        if (isEnd(part)) {
+          break;
+        }
+        if (firstByte(source, part) === 61i32) {
+          const value = next(source, part.end);
+          if (isKeyword(source, value, "new")) {
+            return semanticError(2018i32, value);
+          }
+          break;
+        }
+        if (firstByte(source, part) === 59i32) {
+          break;
+        }
+        cursor = part.end;
+      }
+    }
+    const previousByte = firstByte(source, previous);
+    if (isKeyword(source, token, "static") &&(previous.start === previous.end || previousByte === 59i32 || previousByte === 123i32)) {
+      const mutToken = next(source, token.end);
+      const name = isKeyword(source, mutToken, "mut")?next(source, mutToken.end): mutToken;
+      let cursor = name.end;
+      while (cursor<source.length) {
+        const part = next(source, cursor);
+        if (isEnd(part) || firstByte(source, part) === 61i32 || firstByte(source, part) === 59i32) {
+          break;
+        }
+        if (firstByte(source, part) === 42i32) {
+          return semanticError(2019i32, name);
+        }
+        cursor = part.end;
+      }
+      if (isKeyword(source, mutToken, "mut")) {
+        let useOffset = cursor;
+        while (useOffset<source.length) {
+          const use = next(source, useOffset);
+          if (isEnd(use)) {
+            break;
+          }
+          if (tokenEqual(source, use, name) && !isWithinUnsafe(source, use.start)) {
+            return semanticError(2020i32, use);
+          }
+          useOffset = use.end;
+        }
+      }
+    }
+    previous = token;
+    const byte = firstByte(source, token);
+    if (byte === 123i32) {
+      braceDepth = braceDepth + 1usize;
+    } else if (byte === 125i32 && braceDepth > 0usize) {
+      braceDepth = braceDepth - 1usize;
+    }
+    offset = token.end;
+  }
+  return noSemanticError();
+}
+function firstSemanticError(source: Source): SemanticError {
+  const initializer = findInitializerError(source);
+  if (initializer.code !== 0i32) {
+    return initializer;
+  }
+  const condition = findConditionError(source);
+  if (condition.code !== 0i32) {
+    return condition;
+  }
+  const pointer = findUnsafePointerError(source);
+  if (pointer.code !== 0i32) {
+    return pointer;
+  }
+  const moveError = findMoveError(source);
+  if (moveError.code !== 0i32) {
+    return moveError;
+  }
+  const returned = findReturnedBorrowError(source);
+  if (returned.code !== 0i32) {
+    return returned;
+  }
+  const traits = findTraitError(source);
+  if (traits.code !== 0i32) {
+    return traits;
+  }
+  const classes = findClassError(source);
+  if (classes.code !== 0i32) {
+    return classes;
+  }
+  const lifeError = findLifetimeError(source);
+  if (lifeError.code !== 0i32) {
+    return lifeError;
+  }
+  const statics = findStaticError(source);
+  if (statics.code !== 0i32) {
+    return statics;
+  }
+  const catches = findCatchError(source);
+  if (catches.code !== 0i32) {
+    return catches;
+  }
+  const patterns = findPatternError(source);
+  if (patterns.code !== 0i32) {
+    return patterns;
+  }
+  return findEffectError(source);
+}
+function duplicateCountBefore(source: Source, limit: usize, name: Token): usize {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  let duplicates: usize = 0usize;
+  while (offset<limit) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= limit) {
+      break;
+    }
+    if (depth === 0usize && isDeclaration(source, token)) {
+      const candidate = declarationName(source, token);
+      if (candidate.end <= limit && tokenEqual(source, candidate, name)) {
+        duplicates = duplicates + 1usize;
+      }
+    }
+    const byte = firstByte(source, token);
+    if (isOpen(byte)) {
+      depth = depth + 1usize;
+    } else if (isClose(byte) && depth > 0usize) {
+      depth = depth - 1usize;
+    }
+    offset = token.end;
+  }
+  return duplicates;
+}
+function mutableUsizePointer(value: & mut usize): * mut usize {
+  unsafe {
+    return value as * mut usize;
+  }
+}
+function declarationWord(declarations: & Vec<usize>, index: usize, field: usize): usize {
+  let value: usize = 0usize;
+  unsafe {
+    vecGet<usize>(declarations, index * 8usize + field, mutableUsizePointer( & mut value)as * mut u8);
+  }
+  return value;
+}
+function hirDuplicateCount(source: Source, declarations: & Vec<usize>, index: usize): usize {
+  const declarationStart = declarationWord(declarations, index, 1usize);
+  const declarationKeyword = next(source, declarationStart);
+  if (isKeyword(source, declarationKeyword, "impl") || isKeyword(source, declarationKeyword, "extern")) {
+    return 0usize;
+  }
+  const nameStart = declarationWord(declarations, index, 3usize);
+  const nameEnd = declarationWord(declarations, index, 4usize);
+  let prior: usize = 0usize;
+  let duplicates: usize = 0usize;
+  while (prior<index) {
+    const candidateDeclarationStart = declarationWord(declarations, prior, 1usize);
+    const candidateKeyword = next(source, candidateDeclarationStart);
+    const candidateNameStart = declarationWord(declarations, prior, 3usize);
+    const candidateNameEnd = declarationWord(declarations, prior, 4usize);
+    let equal: i32 = 0i32;
+    const sameLength = candidateNameEnd - candidateNameStart === nameEnd - nameStart;
+    unsafe {
+      equal = tn_selfhost_spans_equal(source.pointer, source.length, candidateNameStart, candidateNameEnd, nameStart, nameEnd);
+    }
+    if (!isKeyword(source, candidateKeyword, "impl") && !isKeyword(source, candidateKeyword, "extern") && candidateNameEnd > candidateNameStart) {
+      if (sameLength) {
+        if (equal === 1i32) {
+          duplicates = duplicates + 1usize;
+        }
+      }
+    }
+    prior = prior + 1usize;
+  }
+  return duplicates;
+}
+export function checkSemantic(source: Source, hir: HirProgram): SemanticProgram {
+  const summary: ParseSummary = parse(source);
+  const functionCount = hir.functionCount;
+  const typeCount = hir.typeCount;
+  const valueCount = hir.valueCount;
+  const blockCount = hir.blockCount;
+  const borrowOperationCount = hir.borrowOperationCount;
+  const moveOperationCount = hir.moveOperationCount;
+  const awaitOperationCount = hir.awaitOperationCount;
+  const sourceIdentity = hir.sourceIdentity;
+  const declarations = hir.declarations;
+  let declarationIndex: usize = 0usize;
+  let duplicateErrors: usize = 0usize;
+  let duplicateFirstCode: i32 = 0i32;
+  let duplicateFirstStart: usize = 0usize;
+  let duplicateFirstEnd: usize = 0usize;
+  while (declarationIndex * 8usize < declarations.length) {
+    const nameStart = declarationWord( & declarations, declarationIndex, 3usize);
+    const nameEnd = declarationWord( & declarations, declarationIndex, 4usize);
+    if (nameEnd > nameStart) {
+      const duplicates = hirDuplicateCount(source, & declarations, declarationIndex);
+      duplicateErrors = duplicateErrors + duplicates;
+      if (duplicates > 0usize && duplicateFirstCode === 0i32) {
+        duplicateFirstCode = 2001i32;
+        duplicateFirstStart = nameStart;
+        duplicateFirstEnd = nameEnd;
+      }
+    }
+    declarationIndex = declarationIndex + 1usize;
+  }
+  const extra = firstSemanticError(source);
+  let extraErrors: usize = 0usize;
+  if (extra.code !== 0i32) {
+    extraErrors = 1usize;
+  }
+  let firstCode = summary.firstErrorCode;
+  let firstStart = summary.firstErrorStart;
+  let firstEnd = summary.firstErrorEnd;
+  if (firstCode === 0i32 && duplicateFirstCode !== 0i32) {
+    firstCode = duplicateFirstCode;
+    firstStart = duplicateFirstStart;
+    firstEnd = duplicateFirstEnd;
+  }
+  if (firstCode === 0i32 && extra.code !== 0i32) {
+    firstCode = extra.code;
+    firstStart = extra.start;
+    firstEnd = extra.end;
+  }
+  return {
+    tokenCount: summary.tokenCount, declarationCount: summary.declarationCount, errors: duplicateErrors + extraErrors, firstErrorCode: firstCode, firstErrorStart: firstStart, firstErrorEnd: firstEnd, functionCount: functionCount, typeCount: typeCount, valueCount: valueCount, blockCount: blockCount, borrowOperationCount: borrowOperationCount, moveOperationCount: moveOperationCount, awaitOperationCount: awaitOperationCount, sourceIdentity: sourceIdentity, declarationIdentity: sourceIdentity
+  };
+}

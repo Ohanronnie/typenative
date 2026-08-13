@@ -1,0 +1,95 @@
+import { Drop } from "std/core";
+extern "C" {
+  function tn_library_open(path: * const u8): * mut u8;
+  function tn_library_symbol(handle: * mut u8, name: * const u8): * mut u8;
+  function tn_library_close(handle: * mut u8): i32;
+  function strlen(bytes: * const u8): usize;
+  function tn_cstring_alloc(bytes: * const u8, length: usize): * mut u8;
+  function tn_cstring_validate(bytes: * const u8, length: usize): i32;
+  function tn_runtime_free(pointer: * mut u8): void;
+}
+export type c_char = i8;
+export type c_int = i32;
+export type c_uint = u32;
+export type c_size = usize;
+@Drop export struct CString {
+  public pointer: * mut u8;
+  public freed: bool;
+  mut drop(): void {
+    if (!this.freed) {
+      unsafe {
+        tn_runtime_free(this.pointer);
+      }
+    }
+  }
+}
+export struct InteriorNulError {
+  public offset: usize;
+}
+export struct FfiError {
+  public code: i32;
+}
+@Drop export struct Library {
+  public handle: * mut u8;
+  public closed: bool;
+  mut drop(): void {
+    if (!this.closed) {
+      unsafe {
+        tn_library_close(this.handle);
+      }
+    }
+  }
+}
+export function openLibrary(path: & static str): Library {
+  unsafe {
+    return {
+      handle: tn_library_open(path as * const u8), closed: false
+    };
+  }
+}
+function interiorNul(offset: usize): InteriorNulError {
+  return {
+    offset: offset
+  };
+}
+export function fromStr(text: & static str): CString throws InteriorNulError {
+  unsafe {
+    const length = strlen(text as * const u8);
+    const validation = tn_cstring_validate(text as * const u8, length);
+    if (validation !== 0i32) {
+      throw interiorNul(length);
+    }
+    const pointer = tn_cstring_alloc(text as * const u8, length);
+    return {
+      pointer: pointer, freed: false
+    };
+  }
+}
+export function asPtr(text: & CString): * const u8 {
+  unsafe {
+    return text.pointer as * const u8;
+  }
+}
+export function freeCString(text: & mut CString): void {
+  if (!text.freed) {
+    unsafe {
+      tn_runtime_free(text.pointer);
+    }
+    text.freed = true;
+  }
+}
+export function symbol(library: & Library, name: & static str): * mut u8 {
+  unsafe {
+    return tn_library_symbol(library.handle, name as * const u8);
+  }
+}
+export function closeLibrary(library: & mut Library): i32 {
+  if (library.closed) {
+    return 0i32;
+  }
+  unsafe {
+    const status = tn_library_close(library.handle);
+    library.closed = true;
+    return status;
+  }
+}

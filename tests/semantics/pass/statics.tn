@@ -1,0 +1,7 @@
+static shared: i32 = 1;
+static mut counter: i32 = 0;
+
+function access(): void {
+  const value: i32 = shared;
+  unsafe { counter; }
+}

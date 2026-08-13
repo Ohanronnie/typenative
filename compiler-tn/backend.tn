@@ -1,0 +1,397 @@
+import { rawAlloc, rawFree } from "std/alloc";
+import { Vec, vecGet, vecWithCapacity, vecPush } from "std/collections";
+import { Drop } from "std/core";
+import { HirProgram } from "./hir";
+import { Source, Token, TokenKind, isKeyword, next } from "./lexer";
+import { I32Operation, I32Program, lowerFunctionSpan, programPointer } from "./lowering";
+import { isEnd } from "./parser";
+
+extern "C" {
+  function tn_selfhost_byte_n(source: * const u8, length: usize, offset: usize): i32;
+  function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
+}
+/*
+ * This is the first source-level boundary owned by the hosted compiler rather
+ * than by the CLI driver.  HIR deliberately keeps declaration discovery
+ * lossless; the backend view resolves the function header into a small,
+ * deterministic record that later lowering passes can consume without
+ * rescanning the whole module.  The record is word-based for the same reason
+ * as the HIR/MIR tables: it has a stable serialized shape and can be checked
+ * without depending on a target ABI.
+ */
+@derive(Copy)export enum BackendResultKind {
+  Unknown, Void, I32,
+}
+@derive(Copy)export struct BackendFunction {
+  public nameStart: usize;
+  public nameEnd: usize;
+  public bodyStart: usize;
+  public bodyEnd: usize;
+  public parameterCount: usize;
+  public resultStart: usize;
+  public resultEnd: usize;
+  public resultKind: usize;
+  public statementCount: usize;
+  public returnCount: usize;
+  public callCount: usize;
+  public loweringValid: usize;
+  public operationCount: usize;
+}
+export struct BackendProgram {
+  public functions: Vec<usize>;
+  public functionData: * const u8;
+  public operations: Vec<i32>;
+  public operationData: * const u8;
+  public operationWords: usize;
+  public functionCount: usize;
+  public entryIndex: usize;
+  public malformedFunctions: usize;
+  public lowerableFunctions: usize;
+}
+impl Drop for BackendProgram {
+  mut drop(): void {
+    unsafe {
+      rawFree(self.operationData as * mut u8);
+    }
+  }
+}
+function isPunctuation(token: Token): bool {
+  match (token.kind) {
+    case TokenKind.Punctuation: {
+      return true;
+    }
+    case TokenKind.Identifier: {
+      return false;
+    }
+    case TokenKind.Number: {
+      return false;
+    }
+    case TokenKind.String: {
+      return false;
+    }
+    case TokenKind.Invalid: {
+      return false;
+    }
+    case TokenKind.End: {
+      return false;
+    }
+  };
+  return false;
+}
+function isIdentifier(token: Token): bool {
+  match (token.kind) {
+    case TokenKind.Identifier: {
+      return true;
+    }
+    case TokenKind.Number: {
+      return false;
+    }
+    case TokenKind.String: {
+      return false;
+    }
+    case TokenKind.Punctuation: {
+      return false;
+    }
+    case TokenKind.Invalid: {
+      return false;
+    }
+    case TokenKind.End: {
+      return false;
+    }
+  };
+  return false;
+}
+function byteAt(source: Source, offset: usize): i32 {
+  unsafe {
+    return tn_selfhost_byte_n(source.pointer, source.length, offset);
+  }
+}
+function tokenByte(source: Source, token: Token): i32 {
+  return byteAt(source, token.start);
+}
+function isByte(source: Source, token: Token, value: i32): bool {
+  return isPunctuation(token) && tokenByte(source, token) === value;
+}
+function emptyToken(source: Source): Token {
+  return {
+    kind: TokenKind.End, start: source.length, end: source.length
+  };
+}
+function mutableUsizePointer(value: & mut usize): * mut u8 {
+  unsafe {
+    return value as * mut usize as * mut u8;
+  }
+}
+function pushWord(words: & mut Vec<usize>, value: usize): void {
+  let writable = value;
+  unsafe {
+    vecPush(words, mutableUsizePointer( & mut writable)as * const u8);
+  }
+}
+function readWord(words: & Vec<usize>, index: usize): usize {
+  let value: usize = 0usize;
+  vecGet<usize>(words, index, mutableUsizePointer( & mut value));
+  return value;
+}
+function mutableOperationPointer(value: & mut I32Operation): * mut u8 {
+  unsafe {
+    return value as * mut u8;
+  }
+}
+function mutableI32Pointer(value: & mut i32): * mut u8 {
+  unsafe {
+    return value as * mut i32 as * mut u8;
+  }
+}
+function appendOperation(operations: & mut Vec<i32>, storage: * mut u8, storageLength: usize, kind: i32, value: i32): void {
+  let first = kind;
+  let second = value;
+  unsafe {
+    tn_bytes_copy_to_at(mutableI32Pointer( & mut first)as * const u8, 4usize, 0usize, 4usize, storage, storageLength, operations.length * 4usize);
+    operations.length = operations.length + 1usize;
+    tn_bytes_copy_to_at(mutableI32Pointer( & mut second)as * const u8, 4usize, 0usize, 4usize, storage, storageLength, operations.length * 4usize);
+    operations.length = operations.length + 1usize;
+  }
+}
+function readLoweredOperation(data: * const u8, length: usize, index: usize): I32Operation {
+  let operation: I32Operation = {
+    kind: 0i32, value: 0i32
+  };
+  unsafe {
+    tn_bytes_copy_at(data, length, index * 8usize, 8usize, mutableOperationPointer( & mut operation));
+  }
+  return operation;
+}
+function functionBytes(functions: & Vec<usize >): * const u8 {
+  unsafe {
+    return functions.pointer as * const u8;
+  }
+}
+function operationBytes(storage: * mut u8): * const u8 {
+  unsafe {
+    return storage as * const u8;
+  }
+}
+function resultKind(source: Source, token: Token): usize {
+  if (token.end - token.start === 4usize && byteAt(source, token.start) === 118i32 && byteAt(source, token.start + 1usize) === 111i32 && byteAt(source, token.start + 2usize) === 105i32 && byteAt(source, token.start + 3usize) === 100i32) {
+    return 1usize;
+  }
+  if (token.end - token.start === 3usize && byteAt(source, token.start) === 105i32 && byteAt(source, token.start + 1usize) === 51i32 && byteAt(source, token.start + 2usize) === 50i32) {
+    return 2usize;
+  }
+  return 0usize;
+}
+function functionHeader(source: Source, name: Token, body: Token, bodyEnd: usize): BackendFunction {
+  let opening = emptyToken(source);
+  let closing = emptyToken(source);
+  let cursor = name.end;
+  let parameterCount: usize = 0usize;
+  let parameterDepth: usize = 0usize;
+  while (cursor<body.start) {
+    const token = next(source, cursor);
+    if (isEnd(token) || token.start >= body.start) {
+      break;
+    }
+    if (isByte(source, token, 40i32) && isEnd(opening)) {
+      opening = token;
+      parameterDepth = 1usize;
+    } else if (!isEnd(opening) && parameterDepth > 0usize) {
+      if (isByte(source, token, 40i32)) {
+        parameterDepth = parameterDepth + 1usize;
+      } else if (isByte(source, token, 41i32)) {
+        parameterDepth = parameterDepth - 1usize;
+        if (parameterDepth === 0usize) {
+          closing = token;
+        }
+      } else if (parameterDepth === 1usize && isByte(source, token, 58i32)) {
+        parameterCount = parameterCount + 1usize;
+      }
+    }
+    cursor = token.end;
+  }
+  parameterCount = 0usize;
+  cursor = name.end;
+  parameterDepth = 0usize;
+  while (cursor<body.start) {
+    const byte = byteAt(source, cursor);
+    if (byte === 40i32) {
+      parameterDepth = parameterDepth + 1usize;
+    } else if (byte === 41i32) {
+      if (parameterDepth === 0usize) {
+        break;
+      }
+      parameterDepth = parameterDepth - 1usize;
+      if (parameterDepth === 0usize) {
+        break;
+      }
+    } else if (parameterDepth === 1usize && byte === 58i32) {
+      parameterCount = parameterCount + 1usize;
+    }
+    cursor = cursor + 1usize;
+  }
+  let resultStart: usize = 0usize;
+  let resultEnd: usize = 0usize;
+  let result: usize = 0usize;
+  cursor = body.start;
+  while (cursor > name.end) {
+    cursor = cursor - 1usize;
+    if (byteAt(source, cursor) === 58i32) {
+      const typeToken = next(source, cursor + 1usize);
+      if (!isEnd(typeToken) && typeToken.start<body.start) {
+        resultStart = typeToken.start;
+        resultEnd = typeToken.end;
+        result = resultKind(source, typeToken);
+      }
+      break;
+    }
+  }
+  let statementCount: usize = 0usize;
+  let returnCount: usize = 0usize;
+  let callCount: usize = 0usize;
+  cursor = body.end;
+  let depth: usize = 1usize;
+  while (cursor<bodyEnd && depth > 0usize) {
+    const token = next(source, cursor);
+    if (isEnd(token)) {
+      break;
+    }
+    const byte = tokenByte(source, token);
+    if (byte === 123i32) {
+      depth = depth + 1usize;
+    } else if (byte === 125i32 && depth > 0usize) {
+      depth = depth - 1usize;
+    } else if (depth > 0usize && isByte(source, token, 59i32)) {
+      statementCount = statementCount + 1usize;
+    } else if (depth > 0usize && isKeyword(source, token, "return")) {
+      returnCount = returnCount + 1usize;
+    } else if (depth > 0usize && isIdentifier(token)) {
+      const nextToken = next(source, token.end);
+      if (isByte(source, nextToken, 40i32)) {
+        callCount = callCount + 1usize;
+      }
+    }
+    cursor = token.end;
+  }
+  return {
+    nameStart: name.start, nameEnd: name.end, bodyStart: body.start, bodyEnd: bodyEnd, parameterCount: parameterCount, resultStart: resultStart, resultEnd: resultEnd, resultKind: result, statementCount: statementCount, returnCount: returnCount, callCount: callCount, loweringValid: 0usize, operationCount: 0usize
+  };
+}
+function pushFunction(words: Vec<usize>, nameStart: usize, nameEnd: usize, bodyStart: usize, bodyEnd: usize, parameterCount: usize, resultStart: usize, resultEnd: usize, resultKind: usize, statementCount: usize, returnCount: usize, callCount: usize, loweringValid: usize, operationCount: usize): Vec<usize> {
+  pushWord( & mut words, nameStart);
+  pushWord( & mut words, nameEnd);
+  pushWord( & mut words, bodyStart);
+  pushWord( & mut words, bodyEnd);
+  pushWord( & mut words, parameterCount);
+  pushWord( & mut words, resultStart);
+  pushWord( & mut words, resultEnd);
+  pushWord( & mut words, resultKind);
+  pushWord( & mut words, statementCount);
+  pushWord( & mut words, returnCount);
+  pushWord( & mut words, callCount);
+  pushWord( & mut words, loweringValid);
+  pushWord( & mut words, operationCount);
+  pushWord( & mut words, 1usize);
+  return words;
+}
+export function backendFunction(program: & BackendProgram, index: usize): BackendFunction {
+  const base = index * 14usize;
+  const nameStart = readWord(program.functions, base);
+  const nameEnd = readWord(program.functions, base + 1usize);
+  const bodyStart = readWord(program.functions, base + 2usize);
+  const bodyEnd = readWord(program.functions, base + 3usize);
+  const parameterCount = readWord(program.functions, base + 4usize);
+  const resultStart = readWord(program.functions, base + 5usize);
+  const resultEnd = readWord(program.functions, base + 6usize);
+  const result = readWord(program.functions, base + 7usize);
+  const statementCount = readWord(program.functions, base + 8usize);
+  const returnCount = readWord(program.functions, base + 9usize);
+  const callCount = readWord(program.functions, base + 10usize);
+  const loweringValid = readWord(program.functions, base + 11usize);
+  const operationCount = readWord(program.functions, base + 12usize);
+  return {
+    nameStart: nameStart, nameEnd: nameEnd, bodyStart: bodyStart, bodyEnd: bodyEnd, parameterCount: parameterCount, resultStart: resultStart, resultEnd: resultEnd, resultKind: result, statementCount: statementCount, returnCount: returnCount, callCount: callCount, loweringValid: loweringValid, operationCount: operationCount
+  };
+}
+export function validate(functions: & Vec<usize>, operations: & Vec<i32>, functionCount: usize, entryIndex: usize, malformedFunctions: usize, sourceLength: usize): bool {
+  if (functionCount * 14usize > functions.length) {
+    return false;
+  }
+  if (entryIndex !== sourceLength && entryIndex >= functionCount) {
+    return false;
+  }
+  let index: usize = 0usize;
+  let expectedOperationCount: usize = 0usize;
+  while (index<functionCount) {
+    const base = index * 14usize;
+    const nameStart = readWord(functions, base);
+    const nameEnd = readWord(functions, base + 1usize);
+    const bodyStart = readWord(functions, base + 2usize);
+    const bodyEnd = readWord(functions, base + 3usize);
+    const resultKind = readWord(functions, base + 7usize);
+    const loweringValid = readWord(functions, base + 11usize);
+    const operationCount = readWord(functions, base + 12usize);
+    if (nameStart >= nameEnd || nameEnd > sourceLength || bodyStart >= bodyEnd || bodyEnd > sourceLength || resultKind > 2usize || loweringValid > 1usize) {
+      return false;
+    }
+    expectedOperationCount = expectedOperationCount + operationCount;
+    index = index + 1usize;
+  }
+  return malformedFunctions === 0usize && expectedOperationCount * 2usize === operations.length;
+}
+export function lower(source: Source, hir: & HirProgram): BackendProgram {
+  let functions = vecWithCapacity<usize>(8usize, hir.functionCount * 14usize + 8usize);
+  const operationCapacity = source.length * 2usize + 2usize;
+  let operations = vecWithCapacity<i32>(4usize, 1usize);
+  const operationStorage = rawAlloc(operationCapacity * 4usize);
+  let functionCount: usize = 0usize;
+  let entryIndex = source.length;
+  let malformedFunctions: usize = 0usize;
+  let lowerableFunctions: usize = 0usize;
+  let index: usize = 0usize;
+  while (index<hir.declarationCount) {
+    const base = index * 8usize;
+    const kind = readWord(hir.declarations, base);
+    if (kind === 1usize ||(hir.functionCount === hir.declarationCount && index<hir.functionCount)) {
+      const nameStart = readWord(hir.declarations, base + 3usize);
+      const nameEnd = readWord(hir.declarations, base + 4usize);
+      const bodyStart = readWord(hir.declarations, base + 5usize);
+      const bodyEnd = readWord(hir.declarations, base + 6usize);
+      const name: Token = {
+        kind: TokenKind.Identifier, start: nameStart, end: nameEnd
+      };
+      const body: Token = {
+        kind: TokenKind.Punctuation, start: bodyStart, end: bodyStart + 1usize
+      };
+      if (bodyStart === 0usize || bodyEnd <= bodyStart || bodyEnd > source.length) {
+        malformedFunctions = malformedFunctions + 1usize;
+      } else {
+        const candidate = functionHeader(source, name, body, bodyEnd);
+        const lowered: I32Program = lowerFunctionSpan(source, candidate.nameStart, candidate.nameEnd);
+        const loweredSummary = lowered.summary;
+        const loweringValid = loweredSummary.valid;
+        const operationCount = lowered.operationCount;
+        let operationIndex: usize = 0usize;
+        while (operationIndex<operationCount) {
+          const operation = readLoweredOperation(programPointer( & lowered),(source.length + 1usize) * 8usize, operationIndex);
+          appendOperation( & mut operations, operationStorage, operationCapacity * 4usize, operation.kind, operation.value);
+          operationIndex = operationIndex + 1usize;
+        }
+        const loweringFlag = loweringValid !== 0i32?1usize: 0usize;
+        if (loweringValid !== 0i32) {
+          lowerableFunctions = lowerableFunctions + 1usize;
+        }
+        functions = pushFunction(functions, candidate.nameStart, candidate.nameEnd, candidate.bodyStart, candidate.bodyEnd, candidate.parameterCount, candidate.resultStart, candidate.resultEnd, candidate.resultKind, candidate.statementCount, candidate.returnCount, candidate.callCount, loweringFlag, operationCount);
+        if (candidate.nameEnd - candidate.nameStart === 4usize && byteAt(source, candidate.nameStart) === 109i32 && byteAt(source, candidate.nameStart + 1usize) === 97i32 && byteAt(source, candidate.nameStart + 2usize) === 105i32 && byteAt(source, candidate.nameStart + 3usize) === 110i32) {
+          entryIndex = functionCount;
+        }
+        functionCount = functionCount + 1usize;
+      }
+    }
+    index = index + 1usize;
+  }
+  const operationWords = operations.length / 2usize;
+  return {
+    functions: functions, functionData: functionBytes( & functions), operations: operations, operationData: operationBytes(operationStorage), operationWords: operationWords, functionCount: functionCount, entryIndex: entryIndex, malformedFunctions: malformedFunctions, lowerableFunctions: lowerableFunctions
+  };
+}

@@ -1,0 +1,1 @@
+{"condition":"SYNTAX_EXCLUDED_IMPORT_FORM","message":"namespace imports are not part of canonical TypeNative","start":7,"end":8}

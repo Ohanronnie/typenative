@@ -1,0 +1,5 @@
+function templates(value: i32): string {
+  const nested = `outer=${call({ text: "}" }, `inner=${value}`) /* } */}`;
+  const escaped = `literal \${value} and backtick \``;
+  return nested + escaped;
+}

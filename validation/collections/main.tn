@@ -1,0 +1,258 @@
+import { Array, dequeAllocate, dequePop, dequePopBack, dequePush, dequePushFront, heapAllocate, heapPop, heapPush, mapAllocate, mapContains, mapGet, mapInsert, mapLength, mapRemove, orderedMapAllocate, orderedMapContains, orderedMapGet, orderedMapInsert, orderedSetAllocate, orderedSetContains, orderedSetInsert, queueAllocate, queuePop, queuePush, setAllocate, setContains, setInsert, setLength, setRemove } from "std/collections";
+function main(): i32 {
+  let key: i32 = 16i32;
+  let value: i32 = 42i32;
+  let canonicalMapOutput: i32 = 0i32;
+  let orderedMapOutput: i32 = 0i32;
+  let canonicalArrayOutput: i32 = 0i32;
+  let sliceOutput: i32 = 0i32;
+  let canonicalArrayPopOutput: i32 = 0i32;
+  let canonicalQueuePopOutput: i32 = 0i32;
+  let canonicalQueueSecondOutput: i32 = 0i32;
+  let canonicalDequePopOutput: i32 = 0i32;
+  let canonicalDequeBackOutput: i32 = 0i32;
+  let canonicalHeapPopOutput: i32 = 0i32;
+  let canonicalHeapSecondOutput: i32 = 0i32;
+  let legacyMapOutput: i32 = 0i32;
+  let array = new Array<i32>({
+    capacity: 4usize,
+  });
+  let queue = queueAllocate<i32>(4usize, 2usize);
+  let deque = dequeAllocate<i32>(4usize, 2usize);
+  let heap = heapAllocate<i32>(4usize, 2usize);
+  let canonical = mapAllocate<i32, i32>(4usize, 4usize);
+  let canonicalSetValue = setAllocate<i32>(4usize);
+  let ordered = orderedMapAllocate<i32, i32>(4usize, 4usize);
+  let orderedValues = orderedSetAllocate<i32>(4usize);
+  let map = mapAllocate<i32, i32>(4usize, 4usize);
+  unsafe {
+    array.push(value);
+    {
+      const valueRef = & value;
+      queuePush<i32>( & mut queue, valueRef as * const u8);
+    }
+    {
+      const keyRef = & key;
+      queuePush<i32>( & mut queue, keyRef as * const u8);
+    }
+    {
+      const valueRef = & value;
+      dequePush<i32>( & mut deque, valueRef as * const u8);
+    }
+    {
+      const keyRef = & key;
+      dequePushFront<i32>( & mut deque, keyRef as * const u8);
+    }
+    {
+      const valueRef = & value;
+      heapPush<i32>( & mut heap, valueRef as * const u8);
+    }
+    {
+      const keyRef = & key;
+      heapPush<i32>( & mut heap, keyRef as * const u8);
+    }
+    {
+      const keyRef = & key;
+      const valueRef = & value;
+      mapInsert<i32, i32>( & mut canonical, keyRef as * const i32, valueRef as * const i32);
+    }
+    {
+      const keyRef = & key;
+      const valueRef = & value;
+      orderedMapInsert<i32, i32>( & mut ordered, keyRef as * const i32, valueRef as * const i32);
+      orderedSetInsert<i32>( & mut orderedValues, keyRef as * const i32);
+    }
+    {
+      const keyRef = & key;
+      setInsert<i32>( & mut canonicalSetValue, keyRef as * const i32);
+    }
+    {
+      const keyRef = & key;
+      if (!setContains<i32>( & canonicalSetValue, keyRef as * const i32)) {
+        return 3i32;
+      }
+    }
+    {
+      const keyRef = & key;
+      const outputRef = & mut canonicalMapOutput;
+      if (!mapGet<i32, i32>( & canonical, keyRef as * const i32, outputRef as * mut i32)) {
+        return 4i32;
+      }
+    }
+    {
+      const output = array.get(0usize);
+      if (output === undefined) {
+        return 5i32;
+      }
+      canonicalArrayOutput = output!;
+    }
+    {
+      const slice = array.slice();
+      if (slice.length !== 1usize) {
+        return 18i32;
+      }
+      const output = slice.get(0usize);
+      if (output === undefined) {
+        return 19i32;
+      }
+      sliceOutput = output!;
+    }
+    {
+      const output = array.pop();
+      if (output === undefined) {
+        return 6i32;
+      }
+      canonicalArrayPopOutput = output!;
+    }
+    {
+      const outputRef = & mut canonicalQueuePopOutput;
+      if (!queuePop<i32>( & mut queue, outputRef as * mut u8)) {
+        return 7i32;
+      }
+    }
+    {
+      const outputRef = & mut canonicalQueueSecondOutput;
+      if (!queuePop<i32>( & mut queue, outputRef as * mut u8)) {
+        return 12i32;
+      }
+    }
+    {
+      const outputRef = & mut canonicalDequePopOutput;
+      if (!dequePop<i32>( & mut deque, outputRef as * mut u8)) {
+        return 8i32;
+      }
+    }
+    {
+      const outputRef = & mut canonicalDequeBackOutput;
+      if (!dequePopBack<i32>( & mut deque, outputRef as * mut u8)) {
+        return 9i32;
+      }
+    }
+    {
+      const outputRef = & mut canonicalHeapPopOutput;
+      if (!heapPop<i32>( & mut heap, outputRef as * mut u8)) {
+        return 13i32;
+      }
+    }
+    {
+      const outputRef = & mut canonicalHeapSecondOutput;
+      if (!heapPop<i32>( & mut heap, outputRef as * mut u8)) {
+        return 14i32;
+      }
+    }
+    {
+      let present = false;
+      {
+        const keyRef = & key;
+        present = mapContains<i32, i32>( & canonical, keyRef as * const i32);
+      }
+      if (!present) {
+        return 15i32;
+      }
+    }
+    {
+      if (mapLength<i32, i32>( & canonical) !== 1usize) {
+        return 15i32;
+      }
+    }
+    {
+      let removed = false;
+      {
+        const keyRef = & key;
+        removed = mapRemove<i32, i32>( & mut canonical, keyRef as * const i32);
+      }
+      if (!removed) {
+        return 16i32;
+      }
+    }
+    {
+      if (mapLength<i32, i32>( & canonical) !== 0usize) {
+        return 16i32;
+      }
+    }
+    {
+      const keyRef = & key;
+      const outputRef = & mut orderedMapOutput;
+      if (!orderedMapContains<i32, i32>( & ordered, keyRef as * const i32) || !orderedMapGet<i32, i32>( & ordered, keyRef as * const i32, outputRef as * mut i32)) {
+        return 20i32;
+      }
+      if (!orderedSetContains<i32>( & orderedValues, keyRef as * const i32)) {
+        return 21i32;
+      }
+    }
+    {
+      let removed = false;
+      {
+        const keyRef = & key;
+        removed = setRemove<i32>( & mut canonicalSetValue, keyRef as * const i32);
+      }
+      if (!removed) {
+        return 17i32;
+      }
+    }
+    {
+      if (setLength<i32>( & canonicalSetValue) !== 0usize) {
+        return 17i32;
+      }
+    }
+    {
+      const keyRef = & key;
+      const valueRef = & value;
+      mapInsert<i32, i32>( & mut map, keyRef as * const i32, valueRef as * const i32);
+    }
+    {
+      const keyRef = & key;
+      if (!mapContains<i32, i32>( & map, keyRef as * const i32)) {
+        return 1i32;
+      }
+    }
+    {
+      const keyRef = & key;
+      const outputRef = & mut legacyMapOutput;
+      if (!mapGet<i32, i32>( & map, keyRef as * const i32, outputRef as * mut i32)) {
+        return 2i32;
+      }
+    }
+    {
+      const keyRef = & key;
+      mapRemove<i32, i32>( & mut map, keyRef as * const i32);
+    }
+  }
+  if (canonicalMapOutput !== value) {
+    return 31i32;
+  }
+  if (orderedMapOutput !== value) {
+    return 32i32;
+  }
+  if (canonicalArrayOutput !== value) {
+    return 33i32;
+  }
+  if (sliceOutput !== value) {
+    return 34i32;
+  }
+  if (canonicalArrayPopOutput !== value) {
+    return 35i32;
+  }
+  if (canonicalQueuePopOutput !== value) {
+    return 36i32;
+  }
+  if (canonicalQueueSecondOutput !== key) {
+    return 37i32;
+  }
+  if (canonicalDequePopOutput !== key) {
+    return 38i32;
+  }
+  if (canonicalDequeBackOutput !== value) {
+    return 39i32;
+  }
+  if (canonicalHeapPopOutput !== key) {
+    return 40i32;
+  }
+  if (canonicalHeapSecondOutput !== value) {
+    return 41i32;
+  }
+  if (legacyMapOutput !== value) {
+    return 42i32;
+  }
+  return value;
+}

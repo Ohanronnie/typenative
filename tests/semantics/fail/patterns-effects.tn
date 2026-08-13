@@ -1,0 +1,15 @@
+struct Failure {}
+enum Choice { First, Second }
+
+function fail(): void throws Failure {}
+
+function invalid(choice: Choice): void {
+  fail();
+  switch (choice) {
+    case Choice.First: {}
+  };
+}
+
+function undeclared(): void {
+  try fail();
+}

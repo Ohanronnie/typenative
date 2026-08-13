@@ -1,0 +1,5 @@
+interface Marker {}
+
+@Conform(Marker)
+@Conform(Marker)
+struct Item {}
