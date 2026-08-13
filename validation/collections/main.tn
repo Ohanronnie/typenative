@@ -445,5 +445,81 @@ function main(): i32 {
   if (heapIterated !== 1626i32) {
     return 71i32;
   }
+  let iterableMap = new Map<i32, i32>({
+    capacity: 2usize
+  });
+  iterableMap.set(16i32, 10i32);
+  iterableMap.set(26i32, 32i32);
+  let mapIterated: i32 = 0i32;
+  for (const entry of iterableMap) {
+    mapIterated = mapIterated + entry.key + entry.value;
+  }
+  if (mapIterated !== 84i32) {
+    return 72i32;
+  }
+  let iterableSet = new Set<i32>({
+    capacity: 2usize
+  });
+  iterableSet.insert(16i32);
+  iterableSet.insert(26i32);
+  let setIterated: i32 = 0i32;
+  for (const item of move iterableSet) {
+    setIterated = setIterated + item;
+  }
+  if (setIterated !== value) {
+    return 73i32;
+  }
+  let iterableOrderedMap = new OrderedMap<i32, i32>({
+    capacity: 2usize
+  });
+  iterableOrderedMap.set(26i32, 2i32);
+  iterableOrderedMap.set(16i32, 1i32);
+  let orderedMapIterated: i32 = 0i32;
+  for (const entry of iterableOrderedMap) {
+    orderedMapIterated = orderedMapIterated * 100i32 + entry.key;
+  }
+  if (orderedMapIterated !== 1626i32) {
+    return 74i32;
+  }
+  let iterableOrderedSet = new OrderedSet<i32>({
+    capacity: 2usize
+  });
+  iterableOrderedSet.insert(26i32);
+  iterableOrderedSet.insert(16i32);
+  let orderedSetIterated: i32 = 0i32;
+  for (const item of move iterableOrderedSet) {
+    orderedSetIterated = orderedSetIterated * 100i32 + item;
+  }
+  if (orderedSetIterated !== 1626i32) {
+    return 75i32;
+  }
+  let iterableTextMap = new Map<string, string>({
+    capacity: 1usize
+  });
+  iterableTextMap.set("a", "b");
+  let textMapIterated: i32 = 0i32;
+  for (const entry of iterableTextMap) {
+    if (entry.key.bytes()[0usize] !== 97u8 || entry.value.bytes()[0usize] !== 98u8) {
+      return 76i32;
+    }
+    textMapIterated = 1i32;
+  }
+  if (textMapIterated !== 1i32) {
+    return 76i32;
+  }
+  let iterableTextSet = new Set<string>({
+    capacity: 1usize
+  });
+  iterableTextSet.insert("a");
+  let textSetIterated: i32 = 0i32;
+  for (const item of iterableTextSet) {
+    if (item.bytes()[0usize] !== 97u8) {
+      return 77i32;
+    }
+    textSetIterated = 1i32;
+  }
+  if (textSetIterated !== 1i32) {
+    return 77i32;
+  }
   return value;
 }

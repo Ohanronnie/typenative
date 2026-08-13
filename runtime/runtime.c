@@ -108,7 +108,11 @@ void tn_runtime_free(void *pointer) {
   free(pointer);
 }
 
-uint64_t tn_runtime_allocation_count(void) { return atomic_load(&tn_allocation_count); }
+void *tn_null_pointer(void) { return NULL; }
+
+uint64_t tn_runtime_allocation_count(void) {
+  return atomic_load(&tn_allocation_count);
+}
 uint64_t tn_runtime_free_count(void) { return atomic_load(&tn_free_count); }
 void tn_runtime_reset_allocation_count(void) {
   atomic_store(&tn_allocation_count, 0);

@@ -1018,6 +1018,40 @@ function consume(values: Bag<i32>): void {
 }
 
 #[test]
+fn iterator_calls_reinitialize_noncopy_optional_destinations() {
+    let program = source_program(
+        r"
+interface Iterator<Item> { mut next(): Item | undefined; }
+interface IntoIterator<Item, Iter extends Iterator<Item> > {
+  move intoIterator(): Iter;
+}
+struct Payload { public text: string; }
+@Conform(Iterator)
+struct PayloadIterator {
+  mut next(): Payload | undefined { return undefined; }
+}
+@Conform(IntoIterator)
+struct Payloads {
+  move intoIterator(): PayloadIterator { return {}; }
+}
+function consume(values: Payloads): void {
+  for (const value of values) { value.text; }
+}
+",
+    );
+    let facts = tn_typecheck::derive_ownership_facts(&program);
+    for body in lower_mir(&program) {
+        tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+        let checked = tn_typecheck::check_ownership(&body, &facts);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "{:?}\n{body}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
 fn lowers_closed_enum_match_with_payloads_to_switch_cfg() {
     let program = source_program(
         r"

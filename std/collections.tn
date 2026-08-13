@@ -2,6 +2,7 @@ import { AllocError, rawAlloc, rawFree } from "std/alloc";
 import { Drop } from "std/core";
 
 extern "C" {
+  function tn_null_pointer(): * mut u8;
   function tn_runtime_free(pointer: * mut u8): void;
   function tn_bytes_write_u8(bytes: * mut u8, length: usize, index: usize, value: u8): i32;
   function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
@@ -981,7 +982,12 @@ export struct HeapOptions {
 export struct MapOptions {
   public capacity: usize;
 }
-@Drop export class Map<K extends Equal<K > & Hash, V> {
+export struct MapEntry<K, V> {
+  public key: K;
+  public value: V;
+}
+@Drop
+@Conform(IntoIterator)export class Map<K extends Equal<K > & Hash, V> {
   private handle: * mut u8;
   public readonly length: usize;
   private keySize: usize;
@@ -1061,6 +1067,49 @@ export struct MapOptions {
       this.capacity = tn_map_capacity(this.handle);
     }
   }
+  move intoIterator(): MapIterator<K, V> {
+    const handle = this.handle;
+    unsafe {
+      this.handle = tn_null_pointer();
+    }
+    return new MapIterator<K, V>(handle, this.keySize, this.valueSize);
+  }
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop
+@Conform(Iterator)class MapIterator<K extends Equal<K > & Hash, V> {
+  private handle: * mut u8;
+  private keySize: usize;
+  private valueSize: usize;
+  private cursor: usize;
+  public constructor(handle: * mut u8, keySize: usize, valueSize: usize) {
+    this.handle = handle;
+    this.keySize = keySize;
+    this.valueSize = valueSize;
+    this.cursor = 0usize;
+  }
+  mut next(): MapEntry<K, V > | undefined {
+    unsafe {
+      const keyOutput = rawAlloc(this.keySize)as * mut K;
+      const valueOutput = rawAlloc(this.valueSize)as * mut V;
+      if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, keyOutput as * mut u8, valueOutput as * mut u8) !== 1i32) {
+        rawFree(keyOutput as * mut u8);
+        rawFree(valueOutput as * mut u8);
+        return undefined;
+      }
+      const key = * keyOutput;
+      const value = * valueOutput;
+      rawFree(keyOutput as * mut u8);
+      rawFree(valueOutput as * mut u8);
+      return {
+        key: move key, value: move value
+      };
+    }
+  }
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
@@ -1070,7 +1119,8 @@ export struct MapOptions {
 export struct SetOptions {
   public capacity: usize;
 }
-@Drop export class Set<T extends Equal<T > & Hash> {
+@Drop
+@Conform(IntoIterator)export class Set<T extends Equal<T > & Hash> {
   private handle: * mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
@@ -1131,6 +1181,41 @@ export struct SetOptions {
     }
     this.length = 0usize;
   }
+  move intoIterator(): SetIterator<T> {
+    const handle = this.handle;
+    unsafe {
+      this.handle = tn_null_pointer();
+    }
+    return new SetIterator<T>(handle, this.elementSize);
+  }
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop
+@Conform(Iterator)class SetIterator<T extends Equal<T > & Hash> {
+  private handle: * mut u8;
+  private elementSize: usize;
+  private cursor: usize;
+  public constructor(handle: * mut u8, elementSize: usize) {
+    this.handle = handle;
+    this.elementSize = elementSize;
+    this.cursor = 0usize;
+  }
+  mut next(): T | undefined {
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, output as * mut u8, output as * mut u8) !== 1i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      return value;
+    }
+  }
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
@@ -1140,7 +1225,8 @@ export struct SetOptions {
 export struct OrderedMapOptions {
   public capacity: usize;
 }
-@Drop export class OrderedMap<K extends Equal<K > & Hash, V> {
+@Drop
+@Conform(IntoIterator)export class OrderedMap<K extends Equal<K > & Hash, V> {
   private handle: * mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
@@ -1220,6 +1306,49 @@ export struct OrderedMapOptions {
     }
     this.length = 0usize;
   }
+  move intoIterator(): OrderedMapIterator<K, V> {
+    const handle = this.handle;
+    unsafe {
+      this.handle = tn_null_pointer();
+    }
+    return new OrderedMapIterator<K, V>(handle, this.keySize, this.valueSize);
+  }
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop
+@Conform(Iterator)class OrderedMapIterator<K extends Equal<K > & Hash, V> {
+  private handle: * mut u8;
+  private keySize: usize;
+  private valueSize: usize;
+  private cursor: usize;
+  public constructor(handle: * mut u8, keySize: usize, valueSize: usize) {
+    this.handle = handle;
+    this.keySize = keySize;
+    this.valueSize = valueSize;
+    this.cursor = 0usize;
+  }
+  mut next(): MapEntry<K, V > | undefined {
+    unsafe {
+      const keyOutput = rawAlloc(this.keySize)as * mut K;
+      const valueOutput = rawAlloc(this.valueSize)as * mut V;
+      if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, keyOutput as * mut u8, valueOutput as * mut u8) !== 1i32) {
+        rawFree(keyOutput as * mut u8);
+        rawFree(valueOutput as * mut u8);
+        return undefined;
+      }
+      const key = * keyOutput;
+      const value = * valueOutput;
+      rawFree(keyOutput as * mut u8);
+      rawFree(valueOutput as * mut u8);
+      return {
+        key: move key, value: move value
+      };
+    }
+  }
   mut drop(): void {
     unsafe {
       tn_map_destroy(this.handle);
@@ -1229,7 +1358,8 @@ export struct OrderedMapOptions {
 export struct OrderedSetOptions {
   public capacity: usize;
 }
-@Drop export class OrderedSet<T extends Equal<T > & Hash> {
+@Drop
+@Conform(IntoIterator)export class OrderedSet<T extends Equal<T > & Hash> {
   private handle: * mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
@@ -1289,6 +1419,41 @@ export struct OrderedSetOptions {
       tn_map_clear(this.handle);
     }
     this.length = 0usize;
+  }
+  move intoIterator(): OrderedSetIterator<T> {
+    const handle = this.handle;
+    unsafe {
+      this.handle = tn_null_pointer();
+    }
+    return new OrderedSetIterator<T>(handle, this.elementSize);
+  }
+  mut drop(): void {
+    unsafe {
+      tn_map_destroy(this.handle);
+    }
+  }
+}
+@Drop
+@Conform(Iterator)class OrderedSetIterator<T extends Equal<T > & Hash> {
+  private handle: * mut u8;
+  private elementSize: usize;
+  private cursor: usize;
+  public constructor(handle: * mut u8, elementSize: usize) {
+    this.handle = handle;
+    this.elementSize = elementSize;
+    this.cursor = 0usize;
+  }
+  mut next(): T | undefined {
+    unsafe {
+      const output = rawAlloc(this.elementSize)as * mut T;
+      if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, output as * mut u8, output as * mut u8) !== 1i32) {
+        rawFree(output as * mut u8);
+        return undefined;
+      }
+      const value = * output;
+      rawFree(output as * mut u8);
+      return value;
+    }
   }
   mut drop(): void {
     unsafe {

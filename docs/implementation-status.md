@@ -1093,6 +1093,13 @@ Current evidence:
   for heaps. Interface signature validation now infers shared generic
   substitutions consistently across requirements, and owner generic bounds
   propagate into nested generic construction;
+- `Map` and `OrderedMap` now iterate typed `MapEntry<K, V>` values; `Set` and
+  `OrderedSet` iterate values. Iterator classes remain module-private, take
+  ownership of the native handle without exposing it, and destroy it exactly
+  once. Primitive and owned-string map/set iteration passes native debug and
+  optimized checks, including deterministic ordered traversal. Call and
+  suspend destinations now reinitialize moved ownership paths, allowing
+  non-copy optional iterator payloads on repeated loop edges;
 - readonly field assignment is rejected outside the declaring type with
   `TYPE_READONLY_FIELD_ASSIGNMENT`, while constructors and declared methods can
   maintain their own public read-only state;

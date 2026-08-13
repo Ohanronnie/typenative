@@ -866,9 +866,11 @@ fn visit_terminator(
             visit_operand(body, value, facts, loans, moved, span, diagnostics);
             if let Some(destination) = destination {
                 check_write(destination, loans, span, diagnostics);
+                moved.retain(|(moved_place, _)| !place_contains(destination, moved_place));
             }
             if let Some(destination) = error_destination {
                 check_write(destination, loans, span, diagnostics);
+                moved.retain(|(moved_place, _)| !place_contains(destination, moved_place));
             }
         }
         TerminatorKind::Call {
@@ -894,9 +896,11 @@ fn visit_terminator(
             }
             if let Some(destination) = destination {
                 check_write(destination, loans, span, diagnostics);
+                moved.retain(|(moved_place, _)| !place_contains(destination, moved_place));
             }
             if let Some(destination) = error_destination {
                 check_write(destination, loans, span, diagnostics);
+                moved.retain(|(moved_place, _)| !place_contains(destination, moved_place));
             }
         }
         TerminatorKind::Return(value)

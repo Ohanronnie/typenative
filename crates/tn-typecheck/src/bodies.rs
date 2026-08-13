@@ -1561,6 +1561,10 @@ impl BodyChecker<'_> {
     #[allow(clippy::too_many_lines)]
     fn object_literal(&mut self, expected: Option<&Type>) -> Option<ExpressionType> {
         let token = self.bump().cloned()?;
+        let expected = match expected {
+            Some(Type::Optional(inner)) => Some(inner.as_ref()),
+            expected => expected,
+        };
         let Some(Type::Nominal(id, arguments)) = expected else {
             self.skip_object_fields();
             self.error(
@@ -1679,7 +1683,7 @@ impl BodyChecker<'_> {
     }
 
     fn skip_object_fields(&mut self) {
-        let mut depth = 0_u32;
+        let mut depth = 1_u32;
         while let Some(kind) = self.kind() {
             self.bump();
             match kind {

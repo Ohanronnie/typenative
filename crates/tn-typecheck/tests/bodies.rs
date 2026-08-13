@@ -416,6 +416,30 @@ class Factory<T extends Marker> {
 }
 
 #[test]
+fn contextualizes_object_literals_inside_optional_results() {
+    let diagnostics = conditions(
+        r"
+struct Pair { public left: i32; public right: i32; }
+function selected(): Pair | undefined {
+  return { left: 1i32, right: 2i32 };
+}
+function contextless(): void {
+  const value = { left: 1i32, right: 2i32 };
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_OBJECT_LITERAL_REQUIRES_CONTEXT")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+    assert!(!diagnostics.contains(&"TYPE_MISMATCH".into()));
+}
+
+#[test]
 fn selects_builtin_and_explicit_operator_interfaces() {
     let diagnostics = conditions(
         r"
