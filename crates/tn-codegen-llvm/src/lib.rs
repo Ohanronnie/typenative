@@ -57,6 +57,7 @@ pub struct Layouts {
     pub externs: BTreeMap<Callable, ExternLayout>,
     pub exports: BTreeMap<Callable, String>,
     pub drops: BTreeMap<DeclarationId, Callable>,
+    pub copies: BTreeSet<DeclarationId>,
     pub async_functions: BTreeMap<Callable, FunctionType>,
     pub abi_wrappers: BTreeMap<Callable, AbiWrapperKind>,
 }
@@ -2788,6 +2789,22 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ..
+            } if operation == "is_copy" => {
+                let operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("is_copy operation lacks a type marker".into())
+                })?;
+                let ty = self.operand_type(operand)?;
+                Ok(self
+                    .generator
+                    .context
+                    .bool_type()
+                    .const_int(u64::from(self.is_copy_type(&ty)), false)
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
             } if operation == "element_initialized" => {
                 let pointer = operands
                     .first()
@@ -3908,6 +3925,30 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             ty,
             Type::Nominal(_, _) if self.generator.is_class_type(ty)
         )
+    }
+
+    fn is_copy_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Primitive(_) | Type::RawPointer { .. } | Type::Function(_) => true,
+            Type::Reference { mutable, .. } => !mutable,
+            Type::Optional(inner) | Type::Array(inner, _) => self.is_copy_type(inner),
+            Type::Tuple(elements) | Type::Template(elements) => {
+                elements.iter().all(|element| self.is_copy_type(element))
+            }
+            Type::Nominal(declaration, _) => self.generator.layouts.copies.contains(declaration),
+            Type::ErrorUnion(effects) => effects
+                .iter()
+                .all(|effect| self.generator.layouts.copies.contains(effect)),
+            Type::Promise { .. }
+            | Type::String
+            | Type::Str
+            | Type::Slice(_)
+            | Type::DynamicInterface(_, _)
+            | Type::Generic(_)
+            | Type::Lifetime(_)
+            | Type::Error
+            | Type::Unknown => false,
+        }
     }
 
     fn error_union_type(&self) -> inkwell::types::StructType<'ctx> {

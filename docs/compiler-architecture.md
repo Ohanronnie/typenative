@@ -66,6 +66,11 @@ The same declared intrinsic-type registry binds `usize` to its private bundled
 method declaration. Numeric parsing therefore uses ordinary static-member
 resolution and typed error effects; it is not a compiler-known library call.
 
+Type-property intrinsics such as `is_copy` carry their queried type as a MIR
+operand. Generic MIR does not prematurely fold the result; monomorphization
+substitutes the concrete type, and LLVM lowering consults the same ownership
+facts supplied by the checked program.
+
 This boundary documents compiler-independent preparation only. The protected
 `compiler-tn/**` implementation and self-hosting orchestration are not used as
 evidence here, and a complete independent compiler chain remains an open

@@ -178,7 +178,7 @@ pub fn build_project_with_timings(
     let units = tn_mir::monomorphize_with_drops(&generic, roots, &drop_implementations)
         .map_err(|error| BuildError::Message(error.to_string()))?;
     timings.record("monomorphization", started);
-    let mut layouts = layouts(&program);
+    let mut layouts = layouts(&program, &ownership);
     if let Some(entry) = entry_instance.as_ref() {
         layouts
             .exports
@@ -1179,7 +1179,10 @@ fn type_parameters(program: &Program, body: &tn_mir::Body) -> Vec<String> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn layouts(program: &Program) -> tn_codegen_llvm::Layouts {
+fn layouts(
+    program: &Program,
+    ownership: &tn_typecheck::OwnershipFacts,
+) -> tn_codegen_llvm::Layouts {
     let nominals = program
         .definitions
         .iter()
@@ -1344,6 +1347,7 @@ fn layouts(program: &Program) -> tn_codegen_llvm::Layouts {
             })
             .collect(),
         drops: drop_layouts(program),
+        copies: ownership.copy.clone(),
         async_functions: async_function_layouts(program),
         abi_wrappers: std::collections::BTreeMap::new(),
     }

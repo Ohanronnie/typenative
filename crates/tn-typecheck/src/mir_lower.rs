@@ -2916,9 +2916,13 @@ impl OwnershipMirLowerer<'_> {
             self.statement(
                 StatementKind::Assign(
                     Place::local(destination),
-                    Box::new(Rvalue::Use(Operand::Constant(tn_mir::Constant::Bool(
-                        self.ownership_facts.is_copy(&type_argument),
-                    )))),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "is_copy".into(),
+                        operands: vec![Operand::Constant(tn_mir::Constant::Undefined(
+                            type_argument,
+                        ))],
+                        ty: result_type.clone(),
+                    }),
                 ),
                 self.span(self.tokens[start]),
             );

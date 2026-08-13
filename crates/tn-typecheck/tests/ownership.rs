@@ -140,6 +140,56 @@ function main(value: string): u8 {
 }
 
 #[test]
+fn preserves_copy_queries_until_generic_specialization() {
+    let program = source_program_with_workspace_standard_library(
+        "import { Array } from \"std/collections\";\nfunction main(): void {}\n",
+    );
+    let (array, push) = program
+        .definitions
+        .iter()
+        .find_map(|definition| {
+            let declaration = program.graph.declaration(definition.declaration)?;
+            let tn_hir::DefinitionData::Class { methods, .. } = &definition.data else {
+                return None;
+            };
+            (declaration.name.as_deref() == Some("Array")).then(|| {
+                (
+                    definition.declaration,
+                    methods
+                        .iter()
+                        .find(|method| method.name == "push")
+                        .expect("Array.push")
+                        .id,
+                )
+            })
+        })
+        .expect("Array declaration");
+    let bodies = lower_mir(&program);
+    let push_body = bodies
+        .iter()
+        .find(|body| body.declaration == array && body.member == Some(push))
+        .expect("Array.push MIR");
+    assert!(push_body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value)
+                    if matches!(
+                        value.as_ref(),
+                        Rvalue::RawOperation { operation, operands, .. }
+                            if operation == "is_copy"
+                                && matches!(
+                                    operands.as_slice(),
+                                    [Operand::Constant(Constant::Undefined(Type::Generic(name)))]
+                                        if name == "T"
+                                )
+                    )
+            )
+        })
+    }));
+}
+
+#[test]
 fn rejects_user_defined_intrinsic_type_bindings() {
     assert_eq!(
         source_conditions("@Intrinsic(\"string\") struct FakeString {}"),

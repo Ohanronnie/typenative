@@ -1056,6 +1056,10 @@ Current evidence:
   `@Intrinsic("operation")` arguments rather than compiler-known helper names;
   operation/module pairs are closed and user-defined intrinsic functions are
   rejected;
+- generic `is_copy` queries remain typed MIR operations until monomorphization,
+  so `Array<i32>` and other concrete copy types select the correct storage path;
+  the collection native fixture now returns 42 in both debug and optimized
+  products instead of its prior `Array.pop()` exit 6;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions
