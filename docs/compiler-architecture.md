@@ -62,6 +62,10 @@ temporary descriptor. `string.bytes()` constructs this view with the private
 `slice_from_raw_parts` primitive, ties the source-level borrow to the string
 receiver, and exposes no procedural string helper.
 
+The same declared intrinsic-type registry binds `usize` to its private bundled
+method declaration. Numeric parsing therefore uses ordinary static-member
+resolution and typed error effects; it is not a compiler-known library call.
+
 This boundary documents compiler-independent preparation only. The protected
 `compiler-tn/**` implementation and self-hosting orchestration are not used as
 evidence here, and a complete independent compiler chain remains an open

@@ -22,6 +22,11 @@ export struct Utf8Error {
     return & *(pointer as * const[T]);
   }
 }
+@Intrinsic("usize")struct PlatformUnsigned {
+  public static parseAscii(value: Bytes): usize throws ParseIntegerError {
+    return try parseAscii(value);
+  }
+}
 @Intrinsic("string")struct OwnedString {
   public static from(text: & str): string {
     return fromStatic(text);

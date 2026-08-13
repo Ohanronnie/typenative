@@ -1049,6 +1049,9 @@ Current evidence:
   debug/optimized tests pass;
 - legacy procedural functions in `std/string` are private implementation
   details and cannot be imported as the canonical user API;
+- the last HIR `BuiltinValue`, previously used for `usize.parseAscii`, has been
+  removed; the operation is a declared static member of the bundled
+  `@Intrinsic("usize")` definition, with user-defined binding fraud rejected;
 - the canonical parser example corpus is green;
 - canonical `validation/redis/*.tn` sources pass ordinary compiler checks; and
 - focused syntax, semantic, ownership, MIR, CLI, and full workspace regressions

@@ -37,15 +37,17 @@ fn resolves_canonical_string_operations_as_declared_members() {
     let (program, checked) = checked_with_workspace_standard_library(
         r#"
 import { fromStatic } from "std/bytes";
+import { ParseIntegerError } from "std/core";
 import { Utf8Error } from "std/string";
-function canonical(value: string): bool throws Utf8Error {
+function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
   const made = string.from("value");
   const decoded = try string.fromUtf8(fromStatic("value"));
+  const parsed = try usize.parseAscii(fromStatic("42"));
   const upper = value.toAsciiUppercase();
   const copy = value.clone();
   const view: &str = value.asStr();
   const raw: &[u8] = value.bytes();
-  return made === copy || decoded === upper || upper === view || raw[0usize] === 0u8;
+  return made === copy || decoded === upper || upper === view || raw[0usize] === 0u8 || parsed === 42usize;
 }
 "#,
     );
@@ -86,6 +88,21 @@ function canonical(value: string): bool throws Utf8Error {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(expected.len(), 6);
     assert!(expected.is_subset(&resolved));
+    let usize_declaration = program
+        .intrinsic_type_declaration(&tn_hir::Type::Primitive(tn_hir::PrimitiveType::Usize))
+        .expect("declared usize intrinsic");
+    let tn_hir::DefinitionData::Struct { methods, .. } = &program
+        .definition(usize_declaration)
+        .expect("usize definition")
+        .data
+    else {
+        panic!("usize intrinsic must be a struct declaration");
+    };
+    let parse_ascii = methods
+        .iter()
+        .find(|method| method.name == "parseAscii")
+        .expect("declared parseAscii method");
+    assert!(resolved.contains(&parse_ascii.id));
 }
 
 #[test]

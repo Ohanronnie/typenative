@@ -1,4 +1,5 @@
 import { fromStatic } from "std/bytes";
+import { ParseIntegerError } from "std/core";
 import { Utf8Error } from "std/string";
 
 function echo(value: string): string {
@@ -10,7 +11,11 @@ function sameText(left: & str, right: & str): bool {
 function make(): string {
   return "done";
 }
-function main(): i32 throws Utf8Error {
+function main(): i32 throws Utf8Error | ParseIntegerError {
+  const parsed = try usize.parseAscii(fromStatic("42"));
+  if (parsed !== 42usize) {
+    return 12i32;
+  }
   const made = string.from("made");
   if (made !== "made") {
     return 7i32;

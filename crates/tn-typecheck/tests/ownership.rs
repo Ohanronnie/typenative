@@ -147,6 +147,14 @@ fn rejects_user_defined_intrinsic_type_bindings() {
     );
 }
 
+#[test]
+fn rejects_user_defined_primitive_intrinsic_bindings() {
+    assert_eq!(
+        source_conditions("@Intrinsic(\"usize\") struct FakeUsize {}"),
+        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+    );
+}
+
 fn lower_mir(program: &tn_hir::Program) -> Vec<Body> {
     let checked = tn_typecheck::check_bodies(program);
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);

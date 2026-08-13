@@ -2277,30 +2277,6 @@ impl BodyChecker<'_> {
             } => (referent.as_ref(), Some((*mutable, lifetime.as_str()))),
             ty => (ty, None),
         };
-        let builtin = match (receiver.type_qualifier, base, name) {
-            (true, Type::Primitive(PrimitiveType::Usize), "parseAscii") => Some((
-                tn_hir::BuiltinValue::UsizeParseAscii,
-                vec![self.standard_type("Bytes")],
-                Type::Primitive(PrimitiveType::Usize),
-                self.standard_effect("ParseIntegerError"),
-            )),
-            _ => None,
-        };
-        if let Some((builtin, parameters, result, effects)) = builtin
-            && !optional
-        {
-            let mut expression = value_type(Type::Function(tn_hir::FunctionType {
-                parameters,
-                result: Box::new(result),
-                effects,
-                generics: Vec::new(),
-                is_async: false,
-                is_unsafe: false,
-            }));
-            expression.call_name = Some(name.to_owned());
-            expression.resolution = Some(ResolvedValue::Builtin(builtin));
-            return expression;
-        }
         let Some(id) = nominal_id(base).or_else(|| self.program.intrinsic_type_declaration(base))
         else {
             self.error(
@@ -2972,44 +2948,6 @@ impl BodyChecker<'_> {
                 Some(Type::DynamicInterface(declaration.id, Vec::new()))
             }
             _ => Some(Type::Nominal(declaration.id, Vec::new())),
-        }
-    }
-
-    fn standard_type(&self, name: &str) -> Type {
-        self.resolve_type_name(name).unwrap_or_else(|| {
-            let declaration = self
-                .program
-                .graph
-                .modules
-                .iter()
-                .flat_map(|module| &module.declarations)
-                .find(|declaration| {
-                    declaration.exported
-                        && declaration.name.as_deref() == Some(name)
-                        && declaration.kind.namespace() == Some(tn_hir::Namespace::Type)
-                });
-            match declaration.and_then(|declaration| self.program.definition(declaration.id)) {
-                Some(definition) => match &definition.data {
-                    DefinitionData::Interface { .. } => Type::DynamicInterface(
-                        declaration.expect("standard interface declaration").id,
-                        Vec::new(),
-                    ),
-                    _ => Type::Nominal(
-                        declaration.expect("standard type declaration").id,
-                        Vec::new(),
-                    ),
-                },
-                None => Type::Error,
-            }
-        })
-    }
-
-    fn standard_effect(&self, name: &str) -> Vec<DeclarationId> {
-        match self.standard_type(name) {
-            Type::Nominal(declaration, _) | Type::DynamicInterface(declaration, _) => {
-                vec![declaration]
-            }
-            _ => Vec::new(),
         }
     }
 

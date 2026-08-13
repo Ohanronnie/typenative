@@ -375,18 +375,12 @@ pub struct HirClosureId(pub u32);
 pub struct HirTemplateId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub enum BuiltinValue {
-    UsizeParseAscii,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum ResolvedValue {
     Local(HirLocalId),
     Declaration(DeclarationId),
     Member(MemberId),
     Closure(HirClosureId),
     Template(HirTemplateId),
-    Builtin(BuiltinValue),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -590,6 +584,7 @@ impl Program {
 fn intrinsic_type_key(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::String => Some("string"),
+        Type::Primitive(PrimitiveType::Usize) => Some("usize"),
         _ => None,
     }
 }
@@ -597,6 +592,7 @@ fn intrinsic_type_key(ty: &Type) -> Option<&'static str> {
 fn intrinsic_type_from_key(key: &str) -> Option<Type> {
     match key {
         "string" => Some(Type::String),
+        "usize" => Some(Type::Primitive(PrimitiveType::Usize)),
         _ => None,
     }
 }

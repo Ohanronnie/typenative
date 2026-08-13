@@ -250,7 +250,7 @@ fn check_declaration_attributes(
                                 && module.path.to_string_lossy().ends_with("std/string.tn"))
                     }
                     DefinitionData::Struct { .. } => {
-                        attribute.arguments.as_slice() == ["string"]
+                        matches!(attribute.arguments.as_slice(), [key] if key == "string" || key == "usize")
                             && module.path.to_string_lossy().ends_with("std/string.tn")
                     }
                     _ => false,

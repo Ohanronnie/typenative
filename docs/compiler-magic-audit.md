@@ -30,13 +30,12 @@ traceable even though those tags are not source names.
 
 ## Declared protocol names still inspected by semantic rules
 
-| Name                                | Current use                       | Disposition                                                                                                                                                                                       |
-| ----------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Display`                           | Template interpolation capability | Ordinary conformance lookup selects implementations, but the capability name is still compiler-known. Keep only if the language specification defines template display as a fundamental protocol. |
-| `IntoIterator`, `next`              | `for ... of` protocol             | The declarations and method identities are ordinary; the loop protocol names are language desugaring hooks and are justified by the loop syntax.                                                  |
-| `Drop`                              | Destructor implementation         | Fundamental ownership hook; prevents recursive implicit destruction inside its own body.                                                                                                          |
-| `run`, `detach`                     | async effect and lifetime checks  | Migration obligation: replace name tests with declared callable metadata.                                                                                                                         |
-| `usize.parseAscii` and `parseAscii` | numeric parsing convenience       | Migration obligation: replace the remaining `BuiltinValue` case with a declared intrinsic-type member or ordinary standard-library method.                                                        |
+| Name                   | Current use                       | Disposition                                                                                                                                                                                       |
+| ---------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Display`              | Template interpolation capability | Ordinary conformance lookup selects implementations, but the capability name is still compiler-known. Keep only if the language specification defines template display as a fundamental protocol. |
+| `IntoIterator`, `next` | `for ... of` protocol             | The declarations and method identities are ordinary; the loop protocol names are language desugaring hooks and are justified by the loop syntax.                                                  |
+| `Drop`                 | Destructor implementation         | Fundamental ownership hook; prevents recursive implicit destruction inside its own body.                                                                                                          |
+| `run`, `detach`        | async effect and lifetime checks  | Migration obligation: replace name tests with declared callable metadata.                                                                                                                         |
 
 ## Private intrinsic functions
 
@@ -64,3 +63,7 @@ No canonical string method name is compiler-known. `from`, `fromUtf8`,
 `toAsciiUppercase`, `clone`, `asStr`, and `bytes` are methods of the private
 bundled intrinsic declaration and follow ordinary member resolution, receiver
 checking, HIR identity, MIR direct dispatch, and native calling conventions.
+
+`usize.parseAscii` likewise resolves through the private bundled
+`@Intrinsic("usize")` declaration. The HIR has no `BuiltinValue` variant and
+contains no compiler-enumerated standard-library method names.

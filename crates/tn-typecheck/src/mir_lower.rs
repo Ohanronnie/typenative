@@ -2744,15 +2744,6 @@ impl OwnershipMirLowerer<'_> {
         }
         let generic_bounds = self.generic_call_bounds(start, open);
         let callee_end = generic_bounds.map_or(open, |(less, _)| less);
-        if let Some(builtin) = self
-            .hir_expression_range(start, callee_end)
-            .and_then(|expression| match expression.resolution {
-                Some(tn_hir::ResolvedValue::Builtin(builtin)) => Some(builtin),
-                _ => None,
-            })
-        {
-            return self.lower_standard_builtin(start, open, end, builtin);
-        }
         let direct_member = self
             .find_top_level(start, callee_end, TokenKind::Dot)
             .filter(|dot| *dot + 2 == callee_end)
@@ -3137,73 +3128,6 @@ impl OwnershipMirLowerer<'_> {
             argument_types.push(actual);
         }
         Some((arguments, argument_types))
-    }
-
-    fn lower_standard_builtin(
-        &mut self,
-        start: usize,
-        open: usize,
-        end: usize,
-        builtin: tn_hir::BuiltinValue,
-    ) -> Option<(Operand, Type)> {
-        let name = match builtin {
-            tn_hir::BuiltinValue::UsizeParseAscii => "parseAscii",
-        };
-        let (declaration, signature) = self.standard_function(name)?;
-        let arguments = self
-            .lower_call_arguments(self.argument_ranges(open + 1, end - 1), &signature)?
-            .0;
-        let function = Operand::Constant(tn_mir::Constant::Function(
-            declaration,
-            Type::Function(signature.clone()),
-        ));
-        self.emit_call(function, None, &signature, arguments, start)
-    }
-
-    fn standard_function(&self, name: &str) -> Option<(DeclarationId, tn_hir::FunctionType)> {
-        let declaration = self
-            .program
-            .graph
-            .modules
-            .iter()
-            .filter(|module| module.path.to_string_lossy().ends_with("std/string.tn"))
-            .chain(
-                self.program
-                    .graph
-                    .modules
-                    .iter()
-                    .filter(|module| !module.path.to_string_lossy().ends_with("std/string.tn")),
-            )
-            .flat_map(|module| &module.declarations)
-            .find(|declaration| declaration.name.as_deref() == Some(name))?;
-        let tn_hir::DefinitionData::Function(function) =
-            &self.program.definition(declaration.id)?.data
-        else {
-            return None;
-        };
-        Some((
-            declaration.id,
-            tn_hir::FunctionType {
-                parameters: function
-                    .parameters
-                    .iter()
-                    .map(|parameter| parameter.ty.clone())
-                    .collect(),
-                result: Box::new(function.result.clone()),
-                effects: function.effects.clone(),
-                generics: function
-                    .generics
-                    .iter()
-                    .map(|parameter| tn_hir::GenericConstraint {
-                        name: parameter.name.clone(),
-                        namespace: parameter.namespace,
-                        bounds: parameter.bounds.clone(),
-                    })
-                    .collect(),
-                is_async: function.is_async,
-                is_unsafe: function.is_unsafe,
-            },
-        ))
     }
 
     fn reborrow_argument(
