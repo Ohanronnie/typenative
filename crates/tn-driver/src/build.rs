@@ -1994,7 +1994,7 @@ fn compile_support_object(
 
 fn startup_source_text(entry: &str, mode: EntryMode) -> String {
     let preamble = format!(
-        "extern \"C\" {{\n  function tn_process_set_args(argc: i32, argv: * mut u8): void;\n  function {entry}"
+        "declare extern \"C\" {{\n  function tn_process_set_args(argc: i32, argv: * mut u8): void;\n  function {entry}"
     );
     match mode {
         EntryMode::Void => format!(

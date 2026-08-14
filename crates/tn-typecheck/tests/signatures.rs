@@ -14,6 +14,72 @@ fn signature_conditions(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn semantic_conditions(source: &str) -> Vec<String> {
+    let directory = tempfile::tempdir().expect("temporary semantic fixture");
+    let standard_library = directory.path().join("std");
+    std::fs::create_dir(&standard_library).expect("create standard library fixture");
+    let path = directory.path().join("main.tn");
+    std::fs::write(&path, source).expect("write semantic fixture");
+    let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+        .expect("load semantic graph");
+    let program = match tn_hir::lower_program(graph) {
+        Ok(program) => program,
+        Err(diagnostics) => {
+            return diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.condition.as_str().to_owned())
+                .collect();
+        }
+    };
+    let mut diagnostics = tn_typecheck::check_signatures(&program).diagnostics;
+    diagnostics.extend(tn_typecheck::check_source_rules(&program).diagnostics);
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.condition.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn lowers_canonical_foreign_declarations_and_rejects_non_c_abis() {
+    let diagnostics = semantic_conditions(
+        r#"
+declare extern "C" {
+  function add(left: i32, right: i32): i32;
+}
+"#,
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let diagnostics = semantic_conditions(
+        r#"
+declare extern "Rust" {
+  function add(left: i32, right: i32): i32;
+}
+"#,
+    );
+    assert!(diagnostics.contains(&"TYPE_UNSUPPORTED_FOREIGN_ABI".into()));
+
+    let diagnostics = semantic_conditions(
+        r#"
+class NotC {}
+declare extern "C" {
+  function invalid(value: NotC): void;
+}
+"#,
+    );
+    assert!(diagnostics.contains(&"TYPE_INVALID_C_ABI_SIGNATURE".into()));
+
+    let diagnostics = semantic_conditions(
+        r#"
+enum Failure { Value }
+declare extern "C" {
+  function throwing(): void throws Failure;
+}
+"#,
+    );
+    assert!(diagnostics.contains(&"TYPE_INVALID_FOREIGN_SIGNATURE".into()));
+}
+
 #[test]
 fn enforces_class_method_and_override_substitutability_rules() {
     let diagnostics = signature_conditions(

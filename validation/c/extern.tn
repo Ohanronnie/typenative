@@ -8,7 +8,7 @@ struct Pair {
 enum Kind {
   Zero, Answer = 42,
 }
-extern "C" {
+declare extern "C" {
   function tn_add(left: i32, right: i32): i32;
   function tn_pair_value(pair: Pair): i32;
   function tn_kind_value(kind: Kind): i32;

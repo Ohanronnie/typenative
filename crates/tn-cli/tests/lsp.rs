@@ -17,7 +17,7 @@ fn lsp_publishes_structured_syntax_diagnostics() {
     let messages = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#,
         r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#,
-        r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///test.tn","languageId":"typenative","version":1,"text":"function main(): void { const x = ; }"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///test.tn","languageId":"typenative","version":1,"text":"extern \"C\" { function f(): void; } function main(): void { const x = ; }"}}}"#,
         r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#,
         r#"{"jsonrpc":"2.0","method":"exit","params":null}"#,
     ]
@@ -38,5 +38,6 @@ fn lsp_publishes_structured_syntax_diagnostics() {
     );
     let stdout = String::from_utf8(output.stdout).expect("LSP output is UTF-8");
     assert!(stdout.contains("textDocument/publishDiagnostics"));
+    assert!(stdout.contains("SYNTAX_OBSOLETE_EXTERN_BLOCK"));
     assert!(stdout.contains("SYNTAX_EXPECTED_EXPRESSION"));
 }

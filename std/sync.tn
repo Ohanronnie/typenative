@@ -1,5 +1,5 @@
 import { AtomicI32, AtomicU64, AtomicUsize, Drop } from "std/core";
-extern "C" {
+declare extern "C" {
   function tn_mutex_create(): * mut u8;
   function tn_mutex_lock(handle: * mut u8): i32;
   function tn_mutex_unlock(handle: * mut u8): i32;

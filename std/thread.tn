@@ -1,7 +1,7 @@
 import { Drop } from "std/core";
 import { Duration } from "std/time";
 
-extern "C" {
+declare extern "C" {
   function tn_thread_sleep_ns(nanoseconds: u64): void;
   function tn_thread_yield(): void;
   function tn_thread_spawn_raw(entry: usize, argument: * mut u8): * mut u8;

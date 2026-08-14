@@ -1,7 +1,7 @@
 import { Bytes } from "std/bytes";
 import { ParseIntegerError } from "std/core";
 
-extern "C" {
+declare extern "C" {
   function tn_utf8_validate(bytes: * const u8, length: usize): i32;
   function tn_string_from_bytes(bytes: * const u8, length: usize): string;
   function tn_string_equals(left: * const u8, right: * const u8): i32;
@@ -61,7 +61,7 @@ struct OwnedString {
     }
   }
 }
-extern "C" {
+declare extern "C" {
   function tn_utf8_decode(bytes: * const u8, length: usize, offset: usize, codepoint: * mut u32, next: * mut usize): i32;
   function tn_utf8_slice_copy(bytes: * const u8, length: usize, start: usize, end: usize, destination: * mut u8, capacity: usize, written: * mut usize): i32;
 }

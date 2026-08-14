@@ -1,0 +1,1 @@
+{"condition":"SYNTAX_OBSOLETE_EXTERN_BLOCK","message":"foreign declaration blocks require `declare extern`","start":0,"end":6}

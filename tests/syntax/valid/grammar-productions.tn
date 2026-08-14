@@ -81,7 +81,7 @@ enum Color {
   Blue = 3u8,
 }
 
-extern "C" {
+declare extern "C" {
   @Export("sum") function sum(left: i32, right: i32): i32;
   function log(format: *const c_char, ...): c_int;
 }

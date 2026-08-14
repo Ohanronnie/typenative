@@ -35,7 +35,8 @@ boundaries as every other TypeNative program.
 
 Native functions are explicit ABI boundaries. The reviewed runtime functions
 used by allocation, strings, sockets, mutexes, promises, and task groups are
-declared in TypeNative standard-library modules and are not hidden compiler
+declared in TypeNative standard-library modules with `declare extern "C"` blocks
+and are not hidden compiler
 operations. The remaining project-owned C inventory and its retirement
 criteria are recorded in [`gate10-native-inventory.md`](gate10-native-inventory.md).
 Source-visible compiler hooks and internal operation tags are inventoried in

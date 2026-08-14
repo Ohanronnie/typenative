@@ -44,6 +44,7 @@ time_stage compiler scripts/check-native-sources.sh
 time_stage compiler cargo fmt --all -- --check
 time_stage compiler "$tn" fmt --check std
 time_stage compiler "$tn" fmt --check validation
+time_stage compiler scripts/check-foreign-syntax.sh
 for source in "$root"/std/*.tn; do
   [ -f "$source" ] || continue
   time_stage compiler "$tn" check "$source"

@@ -17,7 +17,7 @@ export struct Path {
 export struct PathError {
   public code: i32;
 }
-extern "C" {
+declare extern "C" {
   function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
   function tn_path_basename(path: * const u8, output: * mut u8, capacity: usize): i32;
   function tn_string_from_bytes(bytes: * const u8, length: usize): string;

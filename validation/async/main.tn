@@ -1,5 +1,5 @@
 import { runI32 } from "std/async";
-extern "C" {
+declare extern "C" {
   function tn_runtime_abort(code: u32): void;
 }
 async function coldProbe(): Promise<i32, never> {

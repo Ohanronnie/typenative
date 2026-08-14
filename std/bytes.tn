@@ -1,7 +1,7 @@
 import { AllocError, isNull, rawAlloc, rawRealloc, tryRawRealloc } from "std/alloc";
 import { Drop } from "std/core";
 
-extern "C" {
+declare extern "C" {
   function strlen(bytes: * const u8): usize;
   function tn_utf8_validate(bytes: * const u8, length: usize): i32;
   function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
@@ -105,7 +105,7 @@ export struct Cursor {
   public bytes: Bytes;
   public offset: usize;
 }
-extern "C" {
+declare extern "C" {
   function tn_runtime_free(pointer: * mut u8): void;
 }
 export function empty(): Bytes {

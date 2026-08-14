@@ -1,7 +1,7 @@
 import { AllocError, nullPointer, rawAlloc, rawFree } from "std/alloc";
 import { AsyncIterable, Drop, IntoIterator, Iterable, Iterator } from "std/core";
 
-extern "C" {
+declare extern "C" {
   function tn_runtime_free(pointer: * mut u8): void;
   function tn_bytes_write_u8(bytes: * mut u8, length: usize, index: usize, value: u8): i32;
   function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;

@@ -33,7 +33,7 @@ The canonical keywords are:
 
 ```text
 abstract  as  async  await  break  case  catch  class  const  constructor
-continue  default  else  enum  export  extends  extern  false  final  for
+continue  declare  default  else  enum  export  extends  extern  false  final  for
 from  function  if  implements  import  instanceof  interface  let  move
 mut  new  of  override  private  protected  public  readonly  return  static
 struct  super  switch  throw  throws  true  try  type  undefined  unknown
@@ -68,7 +68,7 @@ declaration       = const_declaration | static_declaration
                   | function_declaration | type_alias_declaration
                   | struct_declaration | class_declaration
                   | interface_declaration | enum_declaration
-                  | extern_block | macro_declaration ;
+                  | foreign_declaration_block | macro_declaration ;
 
 attribute         = "@" attribute_name [ "(" [ attribute_arguments ] ")" ] ;
 attribute_name    = identifier | "export" ;
@@ -117,7 +117,8 @@ enum_variant       = identifier
                    | identifier "(" type_list ")"
                    | identifier "{" { field_declaration } "}"
                    | identifier "=" const_expression ;
-extern_block       = "extern" string_literal "{" { extern_function } "}" ;
+foreign_declaration_block = "declare" "extern" string_literal
+                     "{" { extern_function } "}" ;
 extern_function    = { attribute } "function" identifier
                      extern_parameter_list ":" type ";" ;
 macro_declaration  = "macro" identifier "(" [ macro_parameters ] ")"
@@ -215,6 +216,13 @@ pattern             = "_" | literal | "undefined" | identifier
                     | type_path [ "(" [ patterns ] ")" ]
                     | type_path "{" [ pattern_fields ] "}" ;
 ```
+
+Foreign declaration blocks have exactly one spelling: `declare extern "C"`.
+The obsolete `extern "C" { ... }` block is rejected with
+`SYNTAX_OBSOLETE_EXTERN_BLOCK` and an applicability-ranked insertion of
+`declare `. The separate `extern "C" function(...)` production is a function
+pointer type and remains valid without `declare`. Only the `"C"` ABI is
+supported; other ABI strings receive `TYPE_UNSUPPORTED_FOREIGN_ABI`.
 
 `const_expression` is a side-effect-free expression containing literals,
 constant references, aggregate construction, and compiler-known operations.
@@ -459,7 +467,7 @@ function encode(reply: Reply): string {
 
 ## 10. Interoperability and compiler-owned metadata
 
-`extern "C"` declares foreign functions. Foreign calls are unsafe. C-compatible
+`declare extern "C"` declares foreign functions. Foreign calls are unsafe. C-compatible
 signatures contain only fixed-width integers, explicit `c_*` aliases, supported
 floats, raw pointers, C function pointers, and `@Layout("C")` structs or
 fieldless enums. They cannot contain classes, references, strings, slices,
@@ -503,7 +511,7 @@ struct Pair {
   public right: i32;
 }
 
-extern "C" {
+declare extern "C" {
   function puts(text: *const c_char): c_int;
 }
 

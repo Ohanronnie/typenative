@@ -1,5 +1,5 @@
 import { Drop } from "std/core";
-extern "C" {
+declare extern "C" {
   function tn_library_open(path: * const u8): * mut u8;
   function tn_library_symbol(handle: * mut u8, name: * const u8): * mut u8;
   function tn_library_close(handle: * mut u8): i32;

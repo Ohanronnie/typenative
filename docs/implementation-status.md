@@ -9,7 +9,7 @@ preserved below; current Gate 10 status is recorded in
 The ordinary hosted product no longer contains or requires project-owned C,
 C++, Objective-C, header, or handwritten-assembly implementation source.
 `runtime/runtime.tn` and generated TypeNative startup code provide the runtime
-and executable boundary, while explicit `extern "C"` declarations reach only
+and executable boundary, while explicit `declare extern "C"` declarations reach only
 external libc, pthread, operating-system, LLVM, and Node-API implementations.
 The TypeNative runtime, ABI, lifecycle, sanitizer, Redis, and source-scan checks
 are wired into `scripts/verify-all.sh`. The protected self-hosting paths remain
@@ -27,6 +27,19 @@ selection now enforce that decision: `aarch64-apple-darwin` is the only accepted
 After this target-surface cleanup, `cargo fmt --all -- --check`, `cargo test --workspace
 --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `RUSTDOCFLAGS=-Dwarnings
 cargo doc --workspace --no-deps`, and `sh -n scripts/*.sh` pass on macOS ARM64.
+
+## Foreign declaration syntax cleanup (2026-08-14)
+
+The ordinary Rust-bootstrap compiler now has one foreign declaration-block
+spelling: `declare extern "C" { ... }`. The lexer reserves `declare`, the
+parser rejects obsolete `extern "C" { ... }` blocks with
+`SYNTAX_OBSOLETE_EXTERN_BLOCK` and a machine-applicable `declare ` insertion,
+and `extern "C" function(...)` remains the distinct function-pointer type.
+Runtime, standard-library, validation, benchmark, tooling, fixture, and current
+documentation sources use the canonical block form. The deterministic
+`scripts/check-foreign-syntax.sh` scan excludes only protected compiler sources
+and intentionally negative syntax fixtures while checking active `.tn` sources
+and current documentation.
 
 ## Current controlled convergence record (2026-08-12)
 
@@ -261,7 +274,7 @@ Verified work in progress on 2026-08-09:
 - Deterministic exact-file local/std module graph loading, import cycles, export binding, duplicate
   namespace detection, package-specifier rejection, and stable SHA-256-derived semantic identities.
 - Resolved HIR signatures for primitives, generics, optionals, references, raw pointers, arrays,
-  slices, tuples, functions, structs, enums, interfaces, classes, implementations, and extern blocks.
+  slices, tuples, functions, structs, enums, interfaces, classes, implementations, and foreign declaration blocks.
 - Interface coherence/orphan checks, class-cycle validation, override/interface signature checks,
   public annotation rules, closed attributes, constant-initializer restrictions, and exact error
   effect checks are connected to `tn check` without loading LLVM.
@@ -764,7 +777,7 @@ operations). Borrow validation consumes that record stream through bounded runti
 fails closed on null, zero-sized, or short-capacity record streams, validates record shape and block
 successors, and reports checked block/operation totals without
 rejecting valid scopes merely because unrelated operations occur in the same function. Implementation
-and repeated extern-block names are excluded from namespace duplicate checks, matching the language's
+and repeated foreign declaration-block names are excluded from namespace duplicate checks, matching the language's
 coherence model. The TypeNative lowering boundary now owns a bounded postfix operation stream for
 `main(): i32` integer literals, unary negation, parentheses, checked `+`, `-`, `*`, `/`, and `%`, plus
 the hosted `argumentCount()` process primitive, and a separate empty `main(): void` path. Runtime
@@ -1207,7 +1220,7 @@ Planned scope:
 - Port project-owned runtime, standard-library, Redis, validation, and Node-API
   implementation logic to TypeNative.
 - Remove handwritten project-owned C/C++ implementation sources and replace
-  them with TypeNative code plus explicit `extern "C"` declarations for external
+  them with TypeNative code plus explicit `declare extern "C"` declarations for external
   OS, libc, LLVM, Node-API, and other native libraries.
 - Add source-tree, dependency-provenance, ABI, sanitizer, and clean-checkout
   evidence proving that normal TypeNative builds do not require project-owned C.

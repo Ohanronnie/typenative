@@ -201,7 +201,7 @@ fn run_one(project: &Project, program: &Program, test: &TestCase) -> Result<bool
             if async_test {
                 source.insert_str(
                     0,
-                    "extern \"C\" { function tn_runtime_promise_wait(promise: *mut u8): void; function tn_runtime_async_destroy(promise: *mut u8): i32; }\n",
+                    "declare extern \"C\" { function tn_runtime_promise_wait(promise: *mut u8): void; function tn_runtime_async_destroy(promise: *mut u8): i32; }\n",
                 );
             }
             let _ = write!(source, "function main(): void{effects} {{\n{call}}}\n");

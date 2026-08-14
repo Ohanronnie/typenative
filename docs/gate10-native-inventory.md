@@ -11,13 +11,17 @@ ordinary TypeNative under `runtime/runtime.tn` and the standard library.
 
 The only native implementations used by a TypeNative product are external
 system libraries and generated integration code. TypeNative declares those
-boundaries explicitly with `extern "C"`; the linker supplies libc, pthreads,
+boundaries explicitly with `declare extern "C"`; the linker supplies libc, pthreads,
 socket/file/clock/process facilities, LLVM, and Node-API. The generated startup
 module is TypeNative and links with the program and TypeNative runtime object.
 
 `scripts/check-native-sources.sh` scans the present worktree for native source
 suffixes, and the normal verification matrix runs that scan before building
 the compiler and validation products.
+
+`scripts/check-foreign-syntax.sh` separately scans active TypeNative sources and
+current documentation for obsolete block-shaped `extern "..." {` syntax while
+preserving valid `extern "C" function(...)` pointer types.
 
 ## Replacements
 

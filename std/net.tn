@@ -1,7 +1,7 @@
 import { Bytes, BytesMut } from "std/bytes";
 import { AsyncDisposable, Drop } from "std/core";
 
-extern "C" {
+declare extern "C" {
   function tn_net_tcp_connect(host: * const u8, port: u16): i32;
   function tn_net_tcp_listen(host: * const u8, port: u16, backlog: i32): i32;
   function tn_net_tcp_listen_address(address: * const u8, backlog: i32): i32;

@@ -1,4 +1,4 @@
-extern "C" {
+declare extern "C" {
   function tn_runtime_abort(code: u32): void;
   function tn_process_exit(code: i32): void;
   function tn_process_id(): i32;

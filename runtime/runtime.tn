@@ -1,4 +1,4 @@
-extern "C" {
+declare extern "C" {
   function calloc(count: usize, size: usize): * mut u8;
   function free(pointer: * mut u8): void;
   function malloc(size: usize): * mut u8;

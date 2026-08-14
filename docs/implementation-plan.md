@@ -441,15 +441,16 @@ later gates and are not prerequisites hidden inside this checkpoint.
   atomics, task groups, cancellation, and explicit detach semantics.
 - Implement named `import`/`export` modules with no default exports, no `use`,
   `mod`, `pub`, or `crate`, and deterministic local/std path resolution.
-- Implement `extern "C"`, raw pointers, `unsafe` blocks/functions, C layouts,
+- Implement `declare extern "C"` foreign declaration blocks, `extern "C" function(...)`
+  function-pointer types, raw pointers, `unsafe` blocks/functions, C layouts,
   exported symbols, and typed Node-API wrappers without hidden conversions.
 - Complete the `tn` command surface, formatter, linter, documentation generator,
   language server, test runner, diagnostics, and deterministic package/build
   configuration against the same resolved syntax and semantic model.
 - Implement typed user-defined declaration macros with deterministic,
   sandboxed, AST-level expansion and source-mapped diagnostics.
-- Keep `&`, `&mut`, `mut`, `move`, `unsafe`, and `extern "C"` as the canonical
-  low-level syntax.
+- Keep `&`, `&mut`, `mut`, `move`, `unsafe`, and `declare extern "C"` blocks as the
+  canonical low-level syntax; retain `extern "C" function(...)` for function-pointer types.
 - Remove obsolete parser, formatter, semantic, MIR, backend, standard-library,
   compiler-tn, documentation, and fixture spellings rather than accepting
   compatibility aliases.
@@ -508,7 +509,7 @@ removing required interoperability with external native systems.
   assign it to port, delete, or externalize with a recorded reason.
 - Port runtime logic, allocation helpers, strings, collections, Redis logic,
   validation services, and Node-API wrappers to TypeNative.
-- Replace project-owned C shims with TypeNative `extern "C"` declarations and
+- Replace project-owned C shims with TypeNative `declare extern "C"` declarations and
   safe TypeNative wrappers.
 - Keep libc, OS, LLVM, Node-API, and other external native libraries outside the
   repository; never copy their implementation sources into the project.
@@ -536,7 +537,7 @@ removing required interoperability with external native systems.
   standard-library validation, Redis validation, or Node-API validation.
 - All external ABI tests pass on macOS ARM64.
 - The repository contains no handwritten C implementation while retaining
-  explicit `extern "C"` interoperability.
+  explicit `declare extern "C"` interoperability.
 - TypeNative ownership and error rules remain visible at every foreign boundary.
 
 ## 13. Gate eleven: independent full self-hosting

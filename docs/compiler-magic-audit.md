@@ -10,6 +10,10 @@ traceable even though those tags are not source names.
 
 ## Fundamental type and syntax names
 
+Foreign declaration blocks use the grammar `declare extern "C" { ... }`. The
+separate `extern "C" function(...)` spelling remains a foreign function-pointer
+type and does not take `declare`.
+
 | Compiler-known item                                                                                               | Boundary               | Justification                                                                                                                         |
 | ----------------------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `bool`, fixed integers, `isize`, `usize`, `number`, `f32`, `f64`, `char`, `void`, `never`, `unknown`, `undefined` | lexer and type parser  | Closed primitive type grammar with target-independent semantics.                                                                      |

@@ -1,4 +1,4 @@
-extern "C" {
+declare extern "C" {
   function tn_runtime_free_count(): usize;
 }
 @Export("freeCount")

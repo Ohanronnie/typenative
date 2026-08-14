@@ -2,7 +2,7 @@ import { rawAlloc, rawFree } from "std/alloc";
 import { Bytes } from "std/bytes";
 import { Drop } from "std/core";
 
-extern "C" {
+declare extern "C" {
   function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
   function tn_io_write_all(fd: i32, bytes: * const u8, length: usize): i32;
   function tn_io_flush(fd: i32): i32;

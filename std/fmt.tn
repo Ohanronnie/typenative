@@ -1,4 +1,4 @@
-extern "C" {
+declare extern "C" {
   function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
   function strlen(bytes: * const u8): usize;
 }

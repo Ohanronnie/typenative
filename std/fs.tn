@@ -1,5 +1,5 @@
 import { Drop } from "std/core";
-extern "C" {
+declare extern "C" {
   function tn_file_open(path: * const u8, flags: i32, mode: i32): i32;
   function tn_file_open_create(path: * const u8, flags: i32, mode: i32): i32;
   function tn_file_read(handle: i32, bytes: * mut u8, length: usize): isize;

@@ -567,22 +567,7 @@ fn parse_primary_type(
             cursor.bump();
             parse_tuple_or_function_type(cursor, resolver, diagnostics)
         }
-        Some(TokenKind::Extern) => {
-            cursor.bump();
-            cursor.bump();
-            cursor.eat(TokenKind::Function);
-            let parameters = parse_type_list(cursor, resolver, diagnostics);
-            cursor.eat(TokenKind::Colon);
-            let result = parse_type(cursor, resolver, diagnostics);
-            Type::Function(crate::FunctionType {
-                parameters,
-                result: Box::new(result),
-                effects: Vec::new(),
-                generics: Vec::new(),
-                is_async: false,
-                is_unsafe: true,
-            })
-        }
+        Some(TokenKind::Extern) => parse_foreign_function_type(cursor, resolver, diagnostics),
         Some(TokenKind::Dyn) => {
             let span = cursor.span();
             cursor.bump();
@@ -611,6 +596,36 @@ fn parse_primary_type(
             Type::Error
         }
     }
+}
+
+fn parse_foreign_function_type(
+    cursor: &mut Cursor<'_, '_>,
+    resolver: &Resolver,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Type {
+    cursor.bump();
+    let abi_span = cursor.span();
+    if cursor.text() != Some("\"C\"") {
+        diagnostics.push(diag(
+            "TYPE_UNSUPPORTED_FOREIGN_ABI",
+            "only the C foreign ABI is supported",
+            &abi_span,
+            "use `extern \"C\"`",
+        ));
+    }
+    cursor.bump();
+    cursor.eat(TokenKind::Function);
+    let parameters = parse_type_list(cursor, resolver, diagnostics);
+    cursor.eat(TokenKind::Colon);
+    let result = parse_type(cursor, resolver, diagnostics);
+    Type::Function(crate::FunctionType {
+        parameters,
+        result: Box::new(result),
+        effects: Vec::new(),
+        generics: Vec::new(),
+        is_async: false,
+        is_unsafe: true,
+    })
 }
 
 fn parse_named_type(
@@ -1046,13 +1061,14 @@ fn lower_extern(
     resolver: &Resolver,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> DefinitionData {
-    cursor.bump();
+    cursor.eat(TokenKind::Declare);
+    cursor.eat(TokenKind::Extern);
     if cursor.text() != Some("\"C\"") {
         diagnostics.push(diag(
             "TYPE_UNSUPPORTED_FOREIGN_ABI",
             "only the C foreign ABI is supported",
             &cursor.span(),
-            "use `extern \"C\"`",
+            "use `declare extern \"C\"`",
         ));
     }
     cursor.bump();

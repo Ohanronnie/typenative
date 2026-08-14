@@ -33,6 +33,21 @@ fn checked_with_workspace_standard_library(
 }
 
 #[test]
+fn foreign_calls_require_an_unsafe_block() {
+    let diagnostics = conditions(
+        r#"
+declare extern "C" {
+  function puts(text: * const u8): void;
+}
+function main(): void {
+  puts("hello" as * const u8);
+}
+"#,
+    );
+    assert!(diagnostics.contains(&"TYPE_UNSAFE_CALL_REQUIRES_UNSAFE".into()));
+}
+
+#[test]
 fn resolves_canonical_string_operations_as_declared_members() {
     let (program, checked) = checked_with_workspace_standard_library(
         r#"

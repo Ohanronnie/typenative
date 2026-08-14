@@ -37,6 +37,8 @@ pub enum TokenKind {
     Continue,
     #[token("crate")]
     Crate,
+    #[token("declare")]
+    Declare,
     #[token("default")]
     Default,
     #[token("dyn")]
@@ -918,6 +920,12 @@ mod tests {
     }
 
     #[test]
+    fn reserves_declare_as_a_keyword() {
+        assert_eq!(kinds("declare"), vec![TokenKind::Declare]);
+        assert_ne!(kinds("declare"), vec![TokenKind::Identifier]);
+    }
+
+    #[test]
     fn scans_literals_without_losing_spelling() {
         let source = "\"hi\\n\" 'λ' `x=${value}`";
         let lexed = lex("literal.tn", source.as_bytes());
@@ -1011,6 +1019,7 @@ mod tests {
             ("const", TokenKind::Const),
             ("constructor", TokenKind::Constructor),
             ("continue", TokenKind::Continue),
+            ("declare", TokenKind::Declare),
             ("dyn", TokenKind::Dyn),
             ("else", TokenKind::Else),
             ("enum", TokenKind::Enum),

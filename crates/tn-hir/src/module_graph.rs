@@ -410,7 +410,7 @@ const fn declaration_kind(kind: TokenKind) -> Option<DeclarationKind> {
         TokenKind::Interface => Some(DeclarationKind::Interface),
         TokenKind::Enum => Some(DeclarationKind::Enum),
         TokenKind::Impl => Some(DeclarationKind::Impl),
-        TokenKind::Extern => Some(DeclarationKind::ExternBlock),
+        TokenKind::Declare => Some(DeclarationKind::ExternBlock),
         TokenKind::Macro => Some(DeclarationKind::Macro),
         _ => None,
     }

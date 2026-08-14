@@ -297,6 +297,7 @@ impl Writer {
                     TokenKind::Import
                         | TokenKind::Export
                         | TokenKind::Const
+                        | TokenKind::Declare
                         | TokenKind::Let
                         | TokenKind::Static
                         | TokenKind::Mut
@@ -419,6 +420,7 @@ fn needs_word_separator(kind: TokenKind) -> bool {
             | TokenKind::Catch
             | TokenKind::Class
             | TokenKind::Const
+            | TokenKind::Declare
             | TokenKind::Constructor
             | TokenKind::Continue
             | TokenKind::Crate
@@ -597,6 +599,25 @@ function main(): void {
         assert_eq!(
             formatted.output,
             format("nested-generics.tn", formatted.output.as_bytes()).output
+        );
+    }
+
+    #[test]
+    fn formats_canonical_foreign_declaration_blocks_idempotently() {
+        let formatted = format(
+            "foreign.tn",
+            b"declare extern \"C\"{function puts(text:* mut u8):void;}type Callback=extern \"C\" function(i32):void;",
+        );
+        assert!(formatted.is_success(), "{:?}", formatted.diagnostics);
+        assert!(formatted.output.starts_with("declare extern \"C\" {\n"));
+        assert!(
+            formatted
+                .output
+                .contains("type Callback = extern \"C\" function(i32): void;")
+        );
+        assert_eq!(
+            formatted.output,
+            format("foreign.tn", formatted.output.as_bytes()).output
         );
     }
 

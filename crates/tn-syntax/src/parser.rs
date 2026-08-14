@@ -2,7 +2,7 @@ use crate::lexer::{lex_range, template_interpolations};
 use crate::{Token, TokenKind, lex};
 use rowan::{GreenNode, GreenNodeBuilder, Language};
 use std::ops::Range;
-use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
+use tn_diagnostics::{Applicability, ConditionId, Diagnostic, Edit, Label, SourceSpan};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SyntaxKind(pub u16);
@@ -269,7 +269,13 @@ impl Parser<'_, '_> {
                 let name = self.current_text().unwrap_or("excluded").to_owned();
                 self.excluded_construct(&name);
             }
-            Some(TokenKind::Extern) => self.extern_block(),
+            Some(TokenKind::Declare) => self.foreign_declaration_block(false),
+            Some(TokenKind::Extern)
+                if self.nth(1) == Some(TokenKind::StringLiteral)
+                    && self.nth(2) == Some(TokenKind::LeftBrace) =>
+            {
+                self.foreign_declaration_block(true);
+            }
             Some(TokenKind::Macro) => self.macro_declaration(),
             _ => self.error_and_recover(
                 "SYNTAX_EXPECTED_DECLARATION",
@@ -284,6 +290,7 @@ impl Parser<'_, '_> {
                     TokenKind::Class,
                     TokenKind::Interface,
                     TokenKind::Enum,
+                    TokenKind::Declare,
                     TokenKind::Extern,
                 ],
             ),
@@ -588,9 +595,15 @@ impl Parser<'_, '_> {
         }
     }
 
-    fn extern_block(&mut self) {
+    fn foreign_declaration_block(&mut self, obsolete: bool) {
         self.start(SyntaxKind::EXTERN_BLOCK);
-        self.expect(TokenKind::Extern);
+        if obsolete {
+            self.obsolete_extern_block_diagnostic();
+            self.expect(TokenKind::Extern);
+        } else {
+            self.expect(TokenKind::Declare);
+            self.expect(TokenKind::Extern);
+        }
         self.expect(TokenKind::StringLiteral);
         self.expect(TokenKind::LeftBrace);
         while self.current().is_some() && !self.at(TokenKind::RightBrace) {
@@ -1514,6 +1527,32 @@ impl Parser<'_, '_> {
         ));
     }
 
+    fn obsolete_extern_block_diagnostic(&mut self) {
+        self.start(SyntaxKind::ERROR);
+        self.finish();
+        if self.diagnostics.len() >= 256 {
+            return;
+        }
+        let range = self.current_range();
+        let span = SourceSpan::new(self.file, range.clone(), self.source);
+        let mut diagnostic = Diagnostic::error(
+            ConditionId::new("SYNTAX_OBSOLETE_EXTERN_BLOCK")
+                .expect("static condition identifier is valid"),
+            "foreign declaration blocks require `declare extern`",
+            Label {
+                span,
+                message: "insert `declare ` before `extern`".into(),
+            },
+            "syntax/obsolete-extern-block",
+        );
+        diagnostic.edits.push(Edit {
+            span: SourceSpan::new(self.file, range.start..range.start, self.source),
+            replacement: "declare ".into(),
+            applicability: Applicability::MachineApplicable,
+        });
+        self.diagnostics.push(diagnostic);
+    }
+
     fn error_and_recover(&mut self, id: &str, message: &str, recovery: &[TokenKind]) {
         self.error_current(id, message, "unexpected syntax begins here");
         self.start(SyntaxKind::ERROR);
@@ -1621,6 +1660,65 @@ function main(): void {
 }
 "#,
         );
+    }
+
+    #[test]
+    fn parses_canonical_foreign_declaration_blocks_and_function_pointer_types() {
+        assert_parses(
+            "declare extern \"C\" {\n  function puts(text: * mut u8): void;\n}\n\
+             type Callback = extern \"C\" function(i32): void;\n",
+        );
+    }
+
+    #[test]
+    fn rejects_obsolete_foreign_declaration_blocks_with_an_insertion_fix() {
+        let source = "extern \"C\" { function puts(text: * mut u8): void; }\n";
+        let parsed = parse("obsolete-extern.tn", source.as_bytes());
+        let diagnostic = parsed
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.condition.as_str() == "SYNTAX_OBSOLETE_EXTERN_BLOCK")
+            .expect("obsolete syntax diagnostic");
+        assert_eq!(
+            diagnostic.message,
+            "foreign declaration blocks require `declare extern`"
+        );
+        assert_eq!(
+            (
+                diagnostic.primary.span.byte_start,
+                diagnostic.primary.span.byte_end
+            ),
+            (0, 6)
+        );
+        assert_eq!(diagnostic.edits.len(), 1);
+        assert_eq!(diagnostic.edits[0].replacement, "declare ");
+        assert_eq!(
+            diagnostic.edits[0].applicability,
+            Applicability::MachineApplicable
+        );
+        assert_eq!(
+            (
+                diagnostic.edits[0].span.byte_start,
+                diagnostic.edits[0].span.byte_end
+            ),
+            (0, 0)
+        );
+        assert_eq!(parsed.syntax().to_string(), source);
+    }
+
+    #[test]
+    fn rejects_malformed_foreign_declaration_members_and_headers() {
+        for source in [
+            "declare function missingExtern(): void;\n",
+            "declare extern { function missingAbi(): void; }\n",
+            "declare extern \"C\" { function hasBody(): void {} }\n",
+            "declare extern \"C\" { async function asynchronous(): void; }\n",
+        ] {
+            let parsed = parse("malformed-foreign.tn", source.as_bytes());
+            assert!(!parsed.is_success(), "source unexpectedly parsed: {source}");
+            assert!(!parsed.diagnostics().is_empty());
+            assert_eq!(parsed.syntax().to_string(), source);
+        }
     }
 
     #[test]

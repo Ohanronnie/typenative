@@ -1,5 +1,5 @@
 import { Drop } from "std/core";
-extern "C" {
+declare extern "C" {
   function calloc(count: usize, size: usize): * mut u8;
   function tn_runtime_alloc(size: usize): * mut u8;
   function tn_runtime_try_alloc(size: usize): * mut u8;

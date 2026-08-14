@@ -222,7 +222,7 @@ fn render_declaration(
         DefinitionData::Extern { functions } => {
             writeln!(
                 output,
-                "### `{display_name}`\n\n```typenative\nextern block {display_name} {{"
+                "### `{display_name}`\n\n```typenative\ndeclare extern \"C\" {{"
             )
             .map_err(write_error)?;
             for function in functions {

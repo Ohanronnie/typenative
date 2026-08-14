@@ -6,7 +6,7 @@ databases, and native libraries without a garbage collector or JavaScript
 runtime.
 
 The hosted runtime and executable startup are ordinary TypeNative. Platform
-services remain explicit `extern "C"` boundaries to external libc, pthread,
+services remain explicit `declare extern "C"` boundaries to external libc, pthread,
 operating-system, LLVM, and Node-API implementations.
 
 The language uses explicit native layouts, affine ownership, checked borrowing,

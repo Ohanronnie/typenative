@@ -666,6 +666,7 @@ fn sandbox_diagnostic(
 ) -> Option<Diagnostic> {
     let forbidden = BTreeSet::from([
         "unsafe",
+        "declare",
         "extern",
         "Intrinsic",
         "Export",
