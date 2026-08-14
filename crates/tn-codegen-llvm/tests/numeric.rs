@@ -10,7 +10,11 @@ fn span() -> SourceSpan {
 }
 
 fn host_triple() -> &'static str {
-    "aarch64-apple-darwin"
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    }
 }
 
 fn numeric_body(declaration: u64, primitive: PrimitiveType, operator: BinaryOperator) -> Body {

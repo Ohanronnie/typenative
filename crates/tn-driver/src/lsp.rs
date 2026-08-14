@@ -162,7 +162,7 @@ fn semantic_diagnostics(source: &str) -> Vec<LspDiagnostic> {
         config: crate::ProjectConfig {
             entry: PathBuf::from("main.tn"),
             out_dir: PathBuf::from("build"),
-            target: crate::Target::Aarch64AppleDarwin,
+            target: crate::Target::host().unwrap_or(crate::Target::Aarch64AppleDarwin),
             profile: crate::Profile::Debug,
             emit: crate::Emit::Executable,
             link: crate::LinkConfig::default(),

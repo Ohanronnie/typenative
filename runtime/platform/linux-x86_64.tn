@@ -1,0 +1,142 @@
+import { runtimeAbort, runtimeAlloc, runtimeFree } from "../runtime";
+declare extern "C" {
+  function clock_gettime(clockId: i32, value: * mut u8): i32;
+  function stat(path: * const u8, output: * mut u8): i32;
+  function __errno_location(): * mut i32;
+}
+@Intrinsic("is_null")
+export function platformIsNull<T>(pointer: * const T): bool {
+  return false;
+}
+@Intrinsic("size_of")
+export function platformSizeOf<T>(): usize {
+  return 0usize;
+}
+@Intrinsic("store_raw")
+export function platformStoreRaw<T>(pointer: * mut T, value: T): bool {
+  return false;
+}
+// Linux AMD64: the glibc/kernel stat ABI uses 64-bit device, inode, link
+// count, offsets, block sizes, and block counts. st_size is at byte offset
+// 48; each timespec stores signed int64 seconds and nanoseconds at offsets
+// 72/80, 88/96, and 104/112.
+@Layout("C")
+struct LinuxSignedTimespec {
+  public seconds: i64;
+  public nanoseconds: i64;
+}
+@Layout("C")
+struct LinuxMonotonicTimespec {
+  public seconds: u64;
+  public nanoseconds: u64;
+}
+@Layout("C")
+struct LinuxStatLayout {
+  public device: u64;
+  public inode: u64;
+  public linkCount: u64;
+  public mode: u32;
+  public user: u32;
+  public group: u32;
+  public padding: u32;
+  public deviceType: u64;
+  public size: usize;
+  public blockSize: i64;
+  public blocks: i64;
+  public accessSeconds: i64;
+  public accessNanoseconds: i64;
+  public modifySeconds: i64;
+  public modifyNanoseconds: i64;
+  public changeSeconds: i64;
+  public changeNanoseconds: i64;
+  public unused0: i64;
+  public unused1: i64;
+  public unused2: i64;
+}
+function clockFailure(): i64 {
+  runtimeAbort(1u32);
+  return 0i64;
+}
+function clockWallNanosecondsValue(): i64 {
+  unsafe {
+    let value: LinuxSignedTimespec = {
+      seconds: 0i64, nanoseconds: 0i64
+    };
+    if (clock_gettime(0i32,( & mut value)as * mut u8) !== 0i32) {
+      return clockFailure();
+    }
+    const seconds = value.seconds;
+    const nanoseconds = value.nanoseconds;
+    if (nanoseconds<0i64 || nanoseconds >= 1000000000i64) {
+      return clockFailure();
+    }
+    const wholeSeconds = seconds * 1000000000i64;
+    return wholeSeconds + nanoseconds;
+  }
+}
+function clockMonotonicNanosecondsValue(): u64 {
+  unsafe {
+    let value: LinuxMonotonicTimespec = {
+      seconds: 0u64, nanoseconds: 0u64
+    };
+    if (clock_gettime(1i32,( & mut value)as * mut u8) !== 0i32) {
+      runtimeAbort(1u32);
+      return 0u64;
+    }
+    if (value.nanoseconds >= 1000000000u64) {
+      runtimeAbort(1u32);
+      return 0u64;
+    }
+    const wholeSeconds = value.seconds * 1000000000u64;
+    return wholeSeconds + value.nanoseconds;
+  }
+}
+@Export("tn_clock_monotonic_ns")
+export function clockMonotonicNanoseconds(): u64 {
+  return clockMonotonicNanosecondsValue();
+}
+@Export("tn_clock_wall_ns")
+export function clockWallNanoseconds(): i64 {
+  return clockWallNanosecondsValue();
+}
+function statError(): i32 {
+  unsafe {
+    const pointer = __errno_location();
+    if (platformIsNull<i32>(pointer as * const i32)) {
+      return 5i32;
+    }
+    const code = *(pointer as * const i32);
+    return code > 0i32?code: 5i32;
+  }
+}
+function modifiedNanoseconds(value: & LinuxStatLayout): i64 {
+  const seconds = value.modifySeconds;
+  const nanoseconds = value.modifyNanoseconds;
+  return seconds * 1000000000i64 + nanoseconds;
+}
+@Export("tn_file_stat")
+export function fileStat(path: * const u8, size: * mut usize, modified: * mut i64, mode: * mut u32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(path)) {
+      return - 22i32;
+    }
+    const output = runtimeAlloc(platformSizeOf<LinuxStatLayout>());
+    if (stat(path, output) !== 0i32) {
+      const error = statError();
+      runtimeFree(output);
+      return - error;
+    }
+    const value = *(output as * const LinuxStatLayout);
+    if (!platformIsNull<usize>(size as * const usize)) {
+      platformStoreRaw<usize>(size, value.size);
+    }
+    if (!platformIsNull<i64>(modified as * const i64)) {
+      platformStoreRaw<i64>(modified, modifiedNanoseconds( & value));
+    }
+    if (!platformIsNull<u32>(mode as * const u32)) {
+      platformStoreRaw<u32>(mode, value.mode);
+    }
+    runtimeFree(output);
+    return 0i32;
+  }
+}

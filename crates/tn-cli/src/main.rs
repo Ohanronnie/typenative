@@ -83,7 +83,7 @@ struct TestArgs {
 
 #[derive(clap::Args)]
 struct FmtArgs {
-    path: Option<PathBuf>,
+    path: Vec<PathBuf>,
     #[arg(long)]
     check: bool,
 }
@@ -105,6 +105,8 @@ enum Profile {
 enum Target {
     #[value(name = "aarch64-apple-darwin")]
     Aarch64AppleDarwin,
+    #[value(name = "x86_64-unknown-linux-gnu")]
+    X86_64UnknownLinuxGnu,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -225,6 +227,7 @@ fn apply_target_profile(
     if let Some(target) = target {
         project.config.target = match target {
             Target::Aarch64AppleDarwin => tn_driver::Target::Aarch64AppleDarwin,
+            Target::X86_64UnknownLinuxGnu => tn_driver::Target::X86_64UnknownLinuxGnu,
         };
     }
     if let Some(profile) = profile {
@@ -248,14 +251,23 @@ const fn driver_emit(emit: Emit) -> tn_driver::Emit {
 }
 
 fn fmt(args: &FmtArgs) -> std::process::ExitCode {
-    let path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
-    let files = match source_files(&path) {
-        Ok(files) => files,
-        Err(error) => {
-            eprintln!("{}: {error}", path.display());
-            return std::process::ExitCode::from(2);
-        }
+    let paths = if args.path.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.path.clone()
     };
+    let mut files = Vec::new();
+    for path in paths {
+        match source_files(&path) {
+            Ok(mut discovered) => files.append(&mut discovered),
+            Err(error) => {
+                eprintln!("{}: {error}", path.display());
+                return std::process::ExitCode::from(2);
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
     let mut changed = false;
     let mut failed = false;
     for file in files {

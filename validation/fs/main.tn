@@ -1,0 +1,72 @@
+import { FileKind, metadata, FileError } from "std/fs";
+function isRegular(kind: FileKind): bool {
+  return switch(kind) {
+    case FileKind.Regular: true, case FileKind.Directory: false, case FileKind.Other: false,
+  };
+}
+function isDirectory(kind: FileKind): bool {
+  return switch(kind) {
+    case FileKind.Regular: false, case FileKind.Directory: true, case FileKind.Other: false,
+  };
+}
+function check(path: & static str, expectedSize: usize): i32 throws FileError {
+  const first = try metadata(path);
+  if (first.size !== expectedSize || !isRegular(first.kind) || first.modifiedNanoseconds === 0i64) {
+    return 1i32;
+  }
+  const second = try metadata(path);
+  if (second.size !== first.size || !isRegular(second.kind) || second.modifiedNanoseconds !== first.modifiedNanoseconds) {
+    return 2i32;
+  }
+  return 0i32;
+}
+function missingPathCheck(): i32 {
+  let missing = false;
+  try {
+    const ignored = try metadata("/tmp/typenative-fs-does-not-exist");
+  } catch (error: FileError) {
+    missing = error.code !== 0i32;
+  }
+  if (!missing) {
+    return 3i32;
+  }
+  return 0i32;
+}
+function directoryCheck(path: & static str): i32 throws FileError {
+  const first = try metadata(path);
+  if (!isDirectory(first.kind) || first.modifiedNanoseconds === 0i64) {
+    return 1i32;
+  }
+  const second = try metadata(path);
+  if (!isDirectory(second.kind) || second.modifiedNanoseconds !== first.modifiedNanoseconds) {
+    return 2i32;
+  }
+  return 0i32;
+}
+function main(): i32 throws FileError {
+  const empty = try check("/tmp/typenative-fs-empty", 0usize);
+  if (empty !== 0i32) {
+    return 10i32 + empty;
+  }
+  const oneByte = try check("/tmp/typenative-fs-one-byte", 1usize);
+  if (oneByte !== 0i32) {
+    return 20i32 + oneByte;
+  }
+  const multiMegabyte = try check("/tmp/typenative-fs-multi-megabyte", 8388608usize);
+  if (multiMegabyte !== 0i32) {
+    return 30i32 + multiMegabyte;
+  }
+  const sparse = try check("/tmp/typenative-fs-sparse", 67108864usize);
+  if (sparse !== 0i32) {
+    return 40i32 + sparse;
+  }
+  const directory = try directoryCheck("/tmp/typenative-fs-directory");
+  if (directory !== 0i32) {
+    return 50i32 + directory;
+  }
+  const unicode = try check("/tmp/typenative-fs-雪", 7usize);
+  if (unicode !== 0i32) {
+    return 60i32 + unicode;
+  }
+  return missingPathCheck();
+}

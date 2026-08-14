@@ -42,11 +42,9 @@ declare extern "C" {
   function access(path: * const u8, mode: i32): i32;
   function unlink(path: * const u8): i32;
   function getcwd(buffer: * mut u8, capacity: usize): * mut u8;
-  function stat(path: * const u8, output: * mut u8): i32;
   function opendir(path: * const u8): * mut u8;
   function readdir(directory: * mut u8): * mut u8;
   function closedir(directory: * mut u8): i32;
-  function clock_gettime(clockId: i32, value: * mut u8): i32;
   function getenv(name: * const u8): * const u8;
   function dlopen(path: * const u8, flags: i32): * mut u8;
   function dlsym(handle: * mut u8, name: * const u8): * mut u8;
@@ -123,6 +121,9 @@ struct RefHeader {
   public weak: usize;
   public size: usize;
 }
+// On both supported 64-bit targets, C timespec is an int64 time_t followed by
+// an int64 long tv_nsec. This declaration is used by nanosleep in the common
+// runtime; clock_gettime uses the target-selected declarations in runtime/platform.
 @Layout("C")
 struct Timespec {
   public seconds: i64;
@@ -141,25 +142,6 @@ struct SockAddrIn {
   public port: u16;
   public address: u32;
   public padding0: u64;
-}
-@Layout("C")
-struct StatLayout {
-  public device: u64;
-  public inode: u64;
-  public mode: u32;
-  public linkCount: u32;
-  public user: u32;
-  public group: u32;
-  public deviceType: u64;
-  public size: i64;
-  public blockSize: i64;
-  public blocks: i64;
-  public accessSeconds: i64;
-  public accessNanoseconds: i64;
-  public modifySeconds: i64;
-  public modifyNanoseconds: i64;
-  public changeSeconds: i64;
-  public changeNanoseconds: i64;
 }
 function byteAt(pointer: * const u8, index: usize): u8 {
   unsafe {
@@ -2152,28 +2134,6 @@ export function fileRemove(path: * const u8): i32 {
     return unlink(path);
   }
 }
-@Export("tn_file_stat")
-export function fileStat(path: * const u8, size: * mut u64, modified: * mut u64, mode: * mut u32): i32 {
-  unsafe {
-    const output = runtimeTryAlloc(sizeOfIntrinsic<StatLayout>());
-    if (isNullIntrinsic<u8>(output as * const u8) || stat(path, output) !== 0i32) {
-      runtimeFree(output);
-      return - 2i32;
-    }
-    const value = *(output as * const StatLayout);
-    if (!isNullIntrinsic<u64>(size as * const u64)) {
-      storeRawIntrinsic<u64>(size, value.size as u64);
-    }
-    if (!isNullIntrinsic<u64>(modified as * const u64)) {
-      storeRawIntrinsic<u64>(modified, value.modifySeconds as u64 * 1000000000u64 + value.modifyNanoseconds as u64);
-    }
-    if (!isNullIntrinsic<u32>(mode as * const u32)) {
-      storeRawIntrinsic<u32>(mode, value.mode);
-    }
-    runtimeFree(output);
-    return 0i32;
-  }
-}
 @Export("tn_dir_open")
 export function directoryOpen(path: * const u8): * mut u8 {
   unsafe {
@@ -2263,29 +2223,6 @@ export function pathBasename(path: * const u8, output: * mut u8, capacity: usize
     setByte(output, count, 0u8);
     return 0i32;
   }
-}
-function clockNanoseconds(clockId: i32): u64 {
-  unsafe {
-    let value: Timespec = {
-      seconds: 0i64, nanoseconds: 0i64
-    };
-    if (clock_gettime(clockId,( & mut value)as * mut u8) !== 0i32) {
-      return 0u64;
-    }
-    return value.seconds as u64 * 1000000000u64 + value.nanoseconds as u64;
-  }
-}
-@Export("tn_clock_monotonic_ns")
-export function clockMonotonicNanoseconds(): u64 {
-  const first = clockNanoseconds(1i32);
-  if (first !== 0u64) {
-    return first;
-  }
-  return clockNanoseconds(6i32);
-}
-@Export("tn_clock_wall_ns")
-export function clockWallNanoseconds(): u64 {
-  return clockNanoseconds(0i32);
 }
 @Export("tn_process_getenv")
 export function processGetenv(name: * const u8): * const u8 {

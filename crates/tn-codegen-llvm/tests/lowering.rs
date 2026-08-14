@@ -20,7 +20,11 @@ fn local(name: &str, ty: Type, argument: bool) -> Local {
 }
 
 fn host_triple() -> &'static str {
-    "aarch64-apple-darwin"
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    }
 }
 
 #[test]

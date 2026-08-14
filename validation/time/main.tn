@@ -1,0 +1,110 @@
+import { sleep } from "std/thread";
+import { Duration, Instant, Date } from "std/time";
+
+declare extern "C" {
+  function tn_io_write_all(fd: i32, bytes: * const u8, length: usize): i32;
+  function strlen(bytes: * const u8): usize;
+}
+function writeReport(): i32 {
+  const epochDate = Date.fromEpochMilliseconds(0i64);
+  const epoch = epochDate.toISOString();
+  const currentDate = new Date();
+  const current = currentDate.toISOString();
+  unsafe {
+    const epochPointer = epoch as * const u8;
+    const currentPointer = current as * const u8;
+    let status = tn_io_write_all(1i32, epochPointer, strlen(epochPointer));
+    if (status !== 0i32) {
+      return status;
+    }
+    status = tn_io_write_all(1i32, "\n" as * const u8, 1usize);
+    if (status !== 0i32) {
+      return status;
+    }
+    status = tn_io_write_all(1i32, currentPointer, strlen(currentPointer));
+    if (status !== 0i32) {
+      return status;
+    }
+    return tn_io_write_all(1i32, "\n" as * const u8, 1usize);
+  }
+}
+function dateChecks(): i32 {
+  const epoch = Date.fromEpochMilliseconds(0i64);
+  if (epoch.getTime() !== 0i64 || epoch.toISOString() !== "1970-01-01T00:00:00.000Z") {
+    return 1i32;
+  }
+  if (epoch.getUTCFullYear() !== 1970i64 || epoch.getUTCMonth() !== 0i64 || epoch.getUTCDate() !== 1i64) {
+    return 2i32;
+  }
+  if (epoch.getUTCHours() !== 0i64 || epoch.getUTCMinutes() !== 0i64 || epoch.getUTCSeconds() !== 0i64 || epoch.getUTCMilliseconds() !== 0i64) {
+    return 3i32;
+  }
+  const beforeEpoch = Date.fromEpochMilliseconds( - 1i64);
+  if (beforeEpoch.toISOString() !== "1969-12-31T23:59:59.999Z") {
+    return 4i32;
+  }
+  const leapDay = Date.fromEpochMilliseconds(951827696789i64);
+  if (leapDay.toISOString() !== "2000-02-29T12:34:56.789Z" || leapDay.getUTCMonth() !== 1i64 || leapDay.getUTCDate() !== 29i64) {
+    return 5i32;
+  }
+  const monthBoundary = Date.fromEpochMilliseconds(951868800000i64);
+  if (monthBoundary.toISOString() !== "2000-03-01T00:00:00.000Z") {
+    return 6i32;
+  }
+  const dayBoundary = Date.fromEpochMilliseconds(951868799999i64);
+  if (dayBoundary.toISOString() !== "2000-02-29T23:59:59.999Z") {
+    return 7i32;
+  }
+  const now = Date.now();
+  const constructed = new Date();
+  const difference = now - constructed.getTime();
+  if (difference > 1000i64 || difference< - 1000i64) {
+    return 8i32;
+  }
+  return 0i32;
+}
+function durationChecks(): i32 {
+  if (Duration.fromNanoseconds(17u64).nanoseconds() !== 17u64) {
+    return 10i32;
+  }
+  if (Duration.fromMicroseconds(3u64).nanoseconds() !== 3000u64 || Duration.fromMilliseconds(4u64).microseconds() !== 4000u64 || Duration.fromSeconds(2u64).milliseconds() !== 2000u64) {
+    return 11i32;
+  }
+  const maximumDuration = Duration.fromSeconds(18446744073709551615u64);
+  const oneNanosecond = Duration.fromNanoseconds(1u64);
+  const saturated = maximumDuration.saturatingAdd(oneNanosecond);
+  if (saturated.nanoseconds() !== 18446744073709551615u64) {
+    return 12i32;
+  }
+  const shortDuration = Duration.fromNanoseconds(1u64);
+  const longerDuration = Duration.fromNanoseconds(2u64);
+  if (shortDuration.saturatingSub(longerDuration).nanoseconds() !== 0u64) {
+    return 13i32;
+  }
+  const start = Instant.now();
+  const before = Instant.now();
+  if (start.timestampNanoseconds === 0u64 || before.timestampNanoseconds<start.timestampNanoseconds) {
+    return 14i32;
+  }
+  sleep(Duration.fromMilliseconds(10u64));
+  const elapsed = start.elapsed();
+  if (elapsed.nanoseconds() < 5000000u64) {
+    return 15i32;
+  }
+  const after = Instant.now();
+  if (after.timestampNanoseconds<before.timestampNanoseconds) {
+    return 16i32;
+  }
+  return 0i32;
+}
+function main(): i32 {
+  const dates = dateChecks();
+  if (dates !== 0i32) {
+    return dates;
+  }
+  const durations = durationChecks();
+  if (durations !== 0i32) {
+    return durations;
+  }
+  return writeReport();
+}

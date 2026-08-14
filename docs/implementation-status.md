@@ -15,15 +15,15 @@ The TypeNative runtime, ABI, lifecycle, sanitizer, Redis, and source-scan checks
 are wired into `scripts/verify-all.sh`. The protected self-hosting paths remain
 outside this record.
 
-Support-target decision recorded on 2026-08-11:
+Support-target decision recorded on 2026-08-14:
 
-- macOS ARM64 is the only active TypeNative target.
-- Linux and its sanitizer/toolchain matrix are not required support targets.
-- Linux results below are retained as historical evidence only and cannot close
-  or block a current gate.
+- macOS ARM64 (`aarch64-apple-darwin`) and Linux AMD64
+  (`x86_64-unknown-linux-gnu`) are the supported hosted targets.
+- Target-dependent runtime modules provide the matching clock and filesystem
+  ABI declarations; unsupported hosts fail target discovery.
 
 The driver, CLI target enum, toolchain manifest, host checks, and code-generation test target
-selection now enforce that decision: `aarch64-apple-darwin` is the only accepted target spelling.
+selection enforce those two target spellings.
 After this target-surface cleanup, `cargo fmt --all -- --check`, `cargo test --workspace
 --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `RUSTDOCFLAGS=-Dwarnings
 cargo doc --workspace --no-deps`, and `sh -n scripts/*.sh` pass on macOS ARM64.

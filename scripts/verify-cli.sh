@@ -17,6 +17,7 @@ trap 'rm -rf "$work"' EXIT
 
 case "$(uname -s):$(uname -m)" in
   Darwin:arm64) target=aarch64-apple-darwin ;;
+  Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
   *) echo "unsupported host for CLI validation" >&2; exit 2 ;;
 esac
 

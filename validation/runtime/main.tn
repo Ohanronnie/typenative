@@ -3,7 +3,7 @@ import { run } from "std/async";
 import { Map } from "std/collections";
 import { currentDirectory, lookup } from "std/env";
 import { Mutex } from "std/sync";
-import { elapsed, monotonicNow } from "std/time";
+import { Instant } from "std/time";
 
 declare extern "C" {
   function tn_file_open(path: * const u8, flags: i32, mode: i32): i32;
@@ -68,9 +68,9 @@ function main(): i32 {
   if (isNull(lookup("PATH"))) {
     return 10i32;
   }
-  const start = monotonicNow();
-  const finish = monotonicNow();
-  if (elapsed(start, finish).nanoseconds<0u64) {
+  const start = Instant.now();
+  const finish = Instant.now();
+  if (finish.durationSince( & start).nanoseconds() < 0u64) {
     return 11i32;
   }
   return 0i32;

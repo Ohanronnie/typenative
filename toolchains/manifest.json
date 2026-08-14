@@ -19,6 +19,14 @@
           "/usr/local/opt/llvm/bin/llvm-config",
           "llvm-config"
         ]
+      },
+      "x86_64-unknown-linux-gnu": {
+        "recipe": "apt-get install llvm-22",
+        "llvmConfigCandidates": [
+          "/usr/lib/llvm-22/bin/llvm-config",
+          "llvm-config-22",
+          "llvm-config"
+        ]
       }
     }
   }

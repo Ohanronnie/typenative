@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 pub enum Target {
     #[serde(rename = "aarch64-apple-darwin")]
     Aarch64AppleDarwin,
+    #[serde(rename = "x86_64-unknown-linux-gnu")]
+    X86_64UnknownLinuxGnu,
 }
 
 impl Target {
@@ -13,19 +15,37 @@ impl Target {
     ///
     /// # Errors
     ///
-    /// Returns [`UnsupportedHost`] outside macOS ARM64.
+    /// Returns [`UnsupportedHost`] outside the supported Darwin ARM64 and Linux AMD64 hosts.
     pub const fn host() -> Result<Self, UnsupportedHost> {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            Ok(Self::Aarch64AppleDarwin)
-        } else {
-            Err(UnsupportedHost)
+            return Ok(Self::Aarch64AppleDarwin);
         }
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            return Ok(Self::X86_64UnknownLinuxGnu);
+        }
+        Err(UnsupportedHost)
     }
 
     pub const fn triple(self) -> &'static str {
         match self {
             Self::Aarch64AppleDarwin => "aarch64-apple-darwin",
+            Self::X86_64UnknownLinuxGnu => "x86_64-unknown-linux-gnu",
         }
+    }
+
+    pub const fn runtime_module(self) -> &'static str {
+        match self {
+            Self::Aarch64AppleDarwin => "darwin-arm64.tn",
+            Self::X86_64UnknownLinuxGnu => "linux-x86_64.tn",
+        }
+    }
+
+    pub const fn is_macos(self) -> bool {
+        matches!(self, Self::Aarch64AppleDarwin)
+    }
+
+    pub const fn is_linux(self) -> bool {
+        matches!(self, Self::X86_64UnknownLinuxGnu)
     }
 }
 
@@ -235,15 +255,28 @@ mod tests {
     #[test]
     fn target_triples_are_exact() {
         assert_eq!(Target::Aarch64AppleDarwin.triple(), "aarch64-apple-darwin");
+        assert_eq!(
+            Target::X86_64UnknownLinuxGnu.triple(),
+            "x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            Target::Aarch64AppleDarwin.runtime_module(),
+            "darwin-arm64.tn"
+        );
+        assert_eq!(
+            Target::X86_64UnknownLinuxGnu.runtime_module(),
+            "linux-x86_64.tn"
+        );
     }
 
     #[test]
-    fn obsolete_linux_target_is_rejected_by_strict_configuration() {
-        assert!(
-            serde_json::from_str::<ProjectConfig>(
-                r#"{"entry":"src/main.tn","target":"x86_64-unknown-linux-gnu"}"#
-            )
-            .is_err()
+    fn linux_target_is_accepted_by_strict_configuration() {
+        let config = serde_json::from_str::<ProjectConfig>(
+            r#"{"entry":"src/main.tn","target":"x86_64-unknown-linux-gnu"}"#,
+        );
+        assert_eq!(
+            config.expect("Linux target").target,
+            Target::X86_64UnknownLinuxGnu
         );
     }
 }

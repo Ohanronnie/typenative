@@ -11,7 +11,8 @@ An eventual independent run must start from a clean checkout with:
 
 - the exact committed TypeNative source, standard library, runtime ABI
   declarations, fixtures, and documentation;
-- the supported macOS ARM64 target and the pinned LLVM toolchain;
+- one of the supported hosted targets (`aarch64-apple-darwin` or
+  `x86_64-unknown-linux-gnu`) and the pinned LLVM toolchain;
 - no generated source, cached compiler, temporary probe, absolute workspace
   path, timestamp, network response, or host-randomized value included as an
   undeclared input;

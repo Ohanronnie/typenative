@@ -72,14 +72,23 @@ run_server() {
     echo "port $port is already in use" >&2
     return 1
   fi
-  "$1" >"$work/server.out" 2>"$work/server.err" &
-  redis_pid=$!
-  for _ in $(seq 1 100); do
-    listener_pid=$(lsof -t -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
-    if [ "$listener_pid" = "$redis_pid" ] && redis-cli -h 127.0.0.1 -p "$port" ping >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.05
+  for _ in 1 2 3 4 5; do
+    "$1" >"$work/server.out" 2>"$work/server.err" &
+    redis_pid=$!
+    for _ in $(seq 1 100); do
+      listener_pid=$(lsof -t -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+      if [ "$listener_pid" = "$redis_pid" ] && redis-cli -h 127.0.0.1 -p "$port" ping >/dev/null 2>&1; then
+        return 0
+      fi
+      if ! kill -0 "$redis_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.05
+    done
+    kill "$redis_pid" 2>/dev/null || true
+    wait "$redis_pid" 2>/dev/null || true
+    redis_pid=0
+    sleep 1
   done
   echo "canonical Redis server did not start" >&2
   return 1

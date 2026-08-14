@@ -1,49 +1,292 @@
+import { BytesMut } from "std/bytes";
 declare extern "C" {
   function tn_clock_monotonic_ns(): u64;
-  function tn_clock_wall_ns(): u64;
+  function tn_clock_wall_ns(): i64;
+  function tn_string_from_bytes(bytes: * const u8, length: usize): string;
 }
+// Duration stores elapsed nanoseconds and all scaled constructors saturate at
+// the largest representable value. Arithmetic never wraps into a short delay.
 export struct Duration {
-  public nanoseconds: u64;
-}
-export function monotonicNow(): Instant {
-  unsafe {
+  public totalNanoseconds: u64;
+  public static fromNanoseconds(value: u64): Duration {
     return {
-      nanoseconds: tn_clock_monotonic_ns()
+      totalNanoseconds: value,
+    };
+  }
+  public static fromMicroseconds(value: u64): Duration {
+    return fromScaled(value, 1000u64);
+  }
+  public static fromMilliseconds(value: u64): Duration {
+    return fromScaled(value, 1000000u64);
+  }
+  public static fromSeconds(value: u64): Duration {
+    return fromScaled(value, 1000000000u64);
+  }
+  public nanoseconds(): u64 {
+    return this.totalNanoseconds;
+  }
+  public microseconds(): u64 {
+    return this.totalNanoseconds / 1000u64;
+  }
+  public milliseconds(): u64 {
+    return this.totalNanoseconds / 1000000u64;
+  }
+  public seconds(): u64 {
+    return this.totalNanoseconds / 1000000000u64;
+  }
+  public saturatingAdd(other: Duration): Duration {
+    if (other.totalNanoseconds > 18446744073709551615u64 - this.totalNanoseconds) {
+      return {
+        totalNanoseconds: 18446744073709551615u64,
+      };
+    }
+    return {
+      totalNanoseconds: this.totalNanoseconds + other.totalNanoseconds,
+    };
+  }
+  public saturatingSub(other: Duration): Duration {
+    if (other.totalNanoseconds > this.totalNanoseconds) {
+      return {
+        totalNanoseconds: 0u64,
+      };
+    }
+    return {
+      totalNanoseconds: this.totalNanoseconds - other.totalNanoseconds,
     };
   }
 }
-export function wallNow(): Instant {
-  unsafe {
+function fromScaled(value: u64, scale: u64): Duration {
+  if (value > 18446744073709551615u64 / scale) {
     return {
-      nanoseconds: tn_clock_wall_ns()
-    };
-  }
-}
-export function durationFromNanoseconds(value: u64): Duration {
-  return {
-    nanoseconds: value
-  };
-}
-export function seconds(value: u64): Duration {
-  return {
-    nanoseconds: value * 1000000000u64
-  };
-}
-export function milliseconds(value: u64): Duration {
-  return {
-    nanoseconds: value * 1000000u64
-  };
-}
-export function elapsed(start: Instant, end: Instant): Duration {
-  if (end.nanoseconds<start.nanoseconds) {
-    return {
-      nanoseconds: 0u64
+      totalNanoseconds: 18446744073709551615u64,
     };
   }
   return {
-    nanoseconds: end.nanoseconds - start.nanoseconds
+    totalNanoseconds: value * scale,
   };
 }
 export struct Instant {
-  public nanoseconds: u64;
+  public timestampNanoseconds: u64;
+  public static now(): Instant {
+    unsafe {
+      return {
+        timestampNanoseconds: tn_clock_monotonic_ns(),
+      };
+    }
+  }
+  public durationSince(start: & Instant): Duration {
+    if (this.timestampNanoseconds<start.timestampNanoseconds) {
+      return Duration.fromNanoseconds(0u64);
+    }
+    return Duration.fromNanoseconds(this.timestampNanoseconds - start.timestampNanoseconds);
+  }
+  public elapsed(): Duration {
+    const finish = Instant.now();
+    if (finish.timestampNanoseconds<this.timestampNanoseconds) {
+      return Duration.fromNanoseconds(0u64);
+    }
+    return Duration.fromNanoseconds(finish.timestampNanoseconds - this.timestampNanoseconds);
+  }
+}
+struct DateParts {
+  public year: i64;
+  public month: i64;
+  public day: i64;
+  public hour: i64;
+  public minute: i64;
+  public second: i64;
+  public millisecond: i64;
+}
+export class Date {
+  public epochMilliseconds: i64;
+  public constructor() {
+    this.epochMilliseconds = Date.now();
+  }
+  public static now(): i64 {
+    unsafe {
+      return floorDivide(tn_clock_wall_ns(), 1000000i64);
+    }
+  }
+  public static fromEpochMilliseconds(value: i64): Date {
+    return dateWithEpochMilliseconds(value);
+  }
+  public getTime(): i64 {
+    return this.epochMilliseconds;
+  }
+  public getUTCFullYear(): i64 {
+    return partsFor(this.epochMilliseconds).year;
+  }
+  public getUTCMonth(): i64 {
+    return partsFor(this.epochMilliseconds).month - 1i64;
+  }
+  public getUTCDate(): i64 {
+    return partsFor(this.epochMilliseconds).day;
+  }
+  public getUTCHours(): i64 {
+    return partsFor(this.epochMilliseconds).hour;
+  }
+  public getUTCMinutes(): i64 {
+    return partsFor(this.epochMilliseconds).minute;
+  }
+  public getUTCSeconds(): i64 {
+    return partsFor(this.epochMilliseconds).second;
+  }
+  public getUTCMilliseconds(): i64 {
+    return partsFor(this.epochMilliseconds).millisecond;
+  }
+  public toISOString(): string {
+    const parts = partsFor(this.epochMilliseconds);
+    let buffer = new BytesMut({
+      capacity: 32usize,
+    });
+    appendYear( & mut buffer, parts.year);
+    buffer.appendAscii("-");
+    appendUnsignedNumber( & mut buffer, parts.month, 2usize);
+    buffer.appendAscii("-");
+    appendUnsignedNumber( & mut buffer, parts.day, 2usize);
+    buffer.appendAscii("T");
+    appendUnsignedNumber( & mut buffer, parts.hour, 2usize);
+    buffer.appendAscii(":");
+    appendUnsignedNumber( & mut buffer, parts.minute, 2usize);
+    buffer.appendAscii(":");
+    appendUnsignedNumber( & mut buffer, parts.second, 2usize);
+    buffer.appendAscii(".");
+    appendUnsignedNumber( & mut buffer, parts.millisecond, 3usize);
+    buffer.appendAscii("Z");
+    unsafe {
+      return tn_string_from_bytes(buffer.pointer as * const u8, buffer.length);
+    }
+  }
+}
+function dateWithEpochMilliseconds(value: i64): Date {
+  let result = new Date();
+  result.epochMilliseconds = value;
+  return result;
+}
+function floorDivide(value: i64, divisor: i64): i64 {
+  const quotient = value / divisor;
+  const remainder = value % divisor;
+  if (remainder<0i64) {
+    return quotient - 1i64;
+  }
+  return quotient;
+}
+function partsFor(epochMilliseconds: i64): DateParts {
+  const millisecondsPerDay = 86400000i64;
+  const days = floorDivide(epochMilliseconds, millisecondsPerDay);
+  const dayMilliseconds = epochMilliseconds - days * millisecondsPerDay;
+  const civil = civilFromDays(days);
+  const hour = dayMilliseconds / 3600000i64;
+  const afterHour = dayMilliseconds % 3600000i64;
+  const minute = afterHour / 60000i64;
+  const afterMinute = afterHour % 60000i64;
+  const second = afterMinute / 1000i64;
+  return {
+    year: civil.year, month: civil.month, day: civil.day, hour: hour, minute: minute, second: second, millisecond: afterMinute % 1000i64,
+  };
+}
+struct CivilDate {
+  public year: i64;
+  public month: i64;
+  public day: i64;
+}
+function civilFromDays(days: i64): CivilDate {
+  let shifted = days + 719468i64;
+  let era: i64 = 0i64;
+  if (shifted >= 0i64) {
+    era = shifted / 146097i64;
+  } else {
+    era =(shifted - 146096i64) / 146097i64;
+  }
+  const dayOfEra = shifted - era * 146097i64;
+  const yearOfEra =(dayOfEra - dayOfEra / 1460i64 + dayOfEra / 36524i64 - dayOfEra / 146096i64) / 365i64;
+  let year = yearOfEra + era * 400i64;
+  const dayOfYear = dayOfEra -(365i64 * yearOfEra + yearOfEra / 4i64 - yearOfEra / 100i64);
+  const monthPart =(5i64 * dayOfYear + 2i64) / 153i64;
+  const day = dayOfYear -(153i64 * monthPart + 2i64) / 5i64 + 1i64;
+  let month: i64 = 0i64;
+  if (monthPart<10i64) {
+    month = monthPart + 3i64;
+  } else {
+    month = monthPart - 9i64;
+  }
+  if (month <= 2i64) {
+    year += 1i64;
+  }
+  return {
+    year: year, month: month, day: day,
+  };
+}
+function appendYear(buffer: & mut BytesMut, year: i64): void {
+  if (year >= 0i64 && year <= 9999i64) {
+    appendUnsignedNumber(buffer, year, 4usize);
+    return;
+  }
+  if (year > 9999i64) {
+    buffer.push(43u8);
+    appendUnsignedNumber(buffer, year, 6usize);
+    return;
+  }
+  appendSignedNumber(buffer, year, 6usize);
+}
+function appendUnsignedNumber(buffer: & mut BytesMut, value: i64, minimumDigits: usize): void {
+  let divisor = 1i64;
+  let digits = 1usize;
+  while (value / divisor >= 10i64 && divisor <= 1000000000000000000i64) {
+    divisor *= 10i64;
+    digits += 1usize;
+  }
+  while (digits<minimumDigits) {
+    buffer.push(48u8);
+    digits += 1usize;
+  }
+  let remaining = value;
+  while (divisor > 0i64) {
+    let digit = remaining / divisor;
+    if (digit<0i64) {
+      digit = - digit;
+    }
+    buffer.push(asciiDigit(digit));
+    remaining = remaining % divisor;
+    divisor /= 10i64;
+  }
+}
+function appendSignedNumber(buffer: & mut BytesMut, value: i64, minimumDigits: usize): void {
+  if (value >= 0i64) {
+    appendUnsignedNumber(buffer, value, minimumDigits);
+    return;
+  }
+  buffer.push(45u8);
+  let divisor = 1i64;
+  let digits = 1usize;
+  while (value / divisor <= - 10i64 && divisor <= 1000000000000000000i64) {
+    divisor *= 10i64;
+    digits += 1usize;
+  }
+  while (digits<minimumDigits) {
+    buffer.push(48u8);
+    digits += 1usize;
+  }
+  let remaining = value;
+  while (divisor > 0i64) {
+    let digit = remaining / divisor;
+    if (digit<0i64) {
+      digit = - digit;
+    }
+    buffer.push(asciiDigit(digit));
+    remaining = remaining % divisor;
+    divisor /= 10i64;
+  }
+}
+function asciiDigit(value: i64): u8 {
+  if (value === 0i64)return 48u8;
+  if (value === 1i64)return 49u8;
+  if (value === 2i64)return 50u8;
+  if (value === 3i64)return 51u8;
+  if (value === 4i64)return 52u8;
+  if (value === 5i64)return 53u8;
+  if (value === 6i64)return 54u8;
+  if (value === 7i64)return 55u8;
+  if (value === 8i64)return 56u8;
+  return 57u8;
 }

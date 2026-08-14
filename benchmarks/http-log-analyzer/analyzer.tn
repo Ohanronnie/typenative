@@ -1,0 +1,351 @@
+import { rawAlloc, rawFree } from "std/alloc";
+import { Bytes, BytesMut } from "std/bytes";
+import { Map } from "std/collections";
+import { FileError, metadata } from "std/fs";
+import { IOError, stdout, writeAll } from "std/io";
+import { argument, argumentCount } from "std/process";
+import { Utf8Error } from "std/string";
+import { Instant } from "std/time";
+
+declare extern "C" {
+  function atoi(text: * const u8): i32;
+  function tn_file_open(path: * const u8, flags: i32, mode: i32): i32;
+  function tn_file_read_exact(handle: i32, bytes: * mut u8, length: usize): isize;
+  function tn_file_close(handle: i32): i32;
+  function strlen(bytes: * const u8): usize;
+}
+class LogAnalyzer {
+  private input: Bytes;
+  private offset: usize;
+  public constructor(input: Bytes) {
+    this.input = input;
+    this.offset = 0usize;
+  }
+  private current(): u8 {
+    return this.input.get(this.offset)!;
+  }
+  private isDigit(value: u8): bool {
+    return value >= 48u8 && value <= 57u8;
+  }
+  private digitValue(value: u8): usize {
+    if (value === 48u8)return 0usize;
+    if (value === 49u8)return 1usize;
+    if (value === 50u8)return 2usize;
+    if (value === 51u8)return 3usize;
+    if (value === 52u8)return 4usize;
+    if (value === 53u8)return 5usize;
+    if (value === 54u8)return 6usize;
+    if (value === 55u8)return 7usize;
+    if (value === 56u8)return 8usize;
+    return 9usize;
+  }
+  private routeByteValue(value: u8): usize {
+    if (value === 46u8)return 46usize;
+    if (value === 47u8)return 47usize;
+    if (value === 63u8)return 63usize;
+    if (value === 61u8)return 61usize;
+    if (value === 48u8)return 48usize;
+    if (value === 49u8)return 49usize;
+    if (value === 50u8)return 50usize;
+    if (value === 51u8)return 51usize;
+    if (value === 52u8)return 52usize;
+    if (value === 53u8)return 53usize;
+    if (value === 54u8)return 54usize;
+    if (value === 55u8)return 55usize;
+    if (value === 56u8)return 56usize;
+    if (value === 57u8)return 57usize;
+    if (value === 97u8)return 97usize;
+    if (value === 98u8)return 98usize;
+    if (value === 99u8)return 99usize;
+    if (value === 100u8)return 100usize;
+    if (value === 101u8)return 101usize;
+    if (value === 102u8)return 102usize;
+    if (value === 103u8)return 103usize;
+    if (value === 104u8)return 104usize;
+    if (value === 105u8)return 105usize;
+    if (value === 106u8)return 106usize;
+    if (value === 107u8)return 107usize;
+    if (value === 108u8)return 108usize;
+    if (value === 109u8)return 109usize;
+    if (value === 110u8)return 110usize;
+    if (value === 111u8)return 111usize;
+    if (value === 112u8)return 112usize;
+    if (value === 113u8)return 113usize;
+    if (value === 114u8)return 114usize;
+    if (value === 115u8)return 115usize;
+    if (value === 116u8)return 116usize;
+    if (value === 117u8)return 117usize;
+    if (value === 118u8)return 118usize;
+    if (value === 119u8)return 119usize;
+    if (value === 120u8)return 120usize;
+    if (value === 121u8)return 121usize;
+    if (value === 122u8)return 122usize;
+    return 0usize;
+  }
+  private mut parseNumber(): usize | undefined {
+    const start = this.offset;
+    let value: usize = 0usize;
+    while (this.offset<this.input.length && this.isDigit(this.current())) {
+      value = value * 10usize + this.digitValue(this.current());
+      this.offset += 1usize;
+    }
+    if (this.offset === start) {
+      return undefined;
+    }
+    return value;
+  }
+  private mut analyzeOnce(): usize {
+    this.offset = 0usize;
+    let records: usize = 0usize;
+    let informational: usize = 0usize;
+    let successful: usize = 0usize;
+    let redirects: usize = 0usize;
+    let clientErrors: usize = 0usize;
+    let serverErrors: usize = 0usize;
+    let totalBytes: usize = 0usize;
+    let totalDuration: usize = 0usize;
+    let methodChecksum: usize = 0usize;
+    let prefixChecksum: usize = 0usize;
+    let routeAggregate: usize = 0usize;
+    let busiestRoute: usize = 0usize;
+    let busiestCount: usize = 0usize;
+    let routes = new Map<usize, usize>({
+      capacity: 32usize
+    });
+    while (this.offset<this.input.length) {
+      let prefixLength: usize = 0usize;
+      while (this.offset<this.input.length && this.current() !== 34u8) {
+        const byte = this.current();
+        if (byte === 10u8) {
+          return 0usize;
+        }
+        prefixLength += 1usize;
+        this.offset += 1usize;
+      }
+      if (this.offset >= this.input.length || prefixLength<20usize) {
+        return 0usize;
+      }
+      prefixChecksum =(prefixChecksum + prefixLength) % 2147483629usize;
+      this.offset += 1usize;
+      const methodStart = this.offset;
+      while (this.offset<this.input.length && this.current() !== 32u8) {
+        this.offset += 1usize;
+      }
+      if (this.offset >= this.input.length || this.offset === methodStart) {
+        return 0usize;
+      }
+      const methodLength = this.offset - methodStart;
+      const methodFirst = this.input.get(methodStart)!;
+      if (!((methodFirst === 71u8 && methodLength === 3usize) ||(methodFirst === 80u8 && methodLength === 3usize) ||(methodFirst === 80u8 && methodLength === 4usize) ||(methodFirst === 80u8 && methodLength === 5usize) ||(methodFirst === 68u8 && methodLength === 6usize))) {
+        return 0usize;
+      }
+      if (methodFirst === 71u8) {
+        methodChecksum += 3usize;
+      } else if (methodLength === 3usize) {
+        methodChecksum += 13usize;
+      } else if (methodLength === 4usize) {
+        methodChecksum += 5usize;
+      } else if (methodLength === 5usize) {
+        methodChecksum += 7usize;
+      } else {
+        methodChecksum += 11usize;
+      }
+      this.offset += 1usize;
+      const routeStart = this.offset;
+      let routeHash: usize = 0usize;
+      while (this.offset<this.input.length && this.current() !== 32u8) {
+        routeHash =(routeHash * 131usize + this.routeByteValue(this.current())) % 2147483629usize;
+        this.offset += 1usize;
+      }
+      if (this.offset >= this.input.length || this.offset === routeStart) {
+        return 0usize;
+      }
+      this.offset += 1usize;
+      const protocolStart = this.offset;
+      while (this.offset<this.input.length && this.current() !== 34u8) {
+        this.offset += 1usize;
+      }
+      if (this.offset >= this.input.length || this.offset - protocolStart<8usize) {
+        return 0usize;
+      }
+      this.offset += 1usize;
+      if (this.offset >= this.input.length || this.current() !== 32u8) {
+        return 0usize;
+      }
+      this.offset += 1usize;
+      let status: usize = 0usize;
+      let statusDigits: usize = 0usize;
+      while (statusDigits<3usize) {
+        if (this.offset >= this.input.length || !this.isDigit(this.current())) {
+          return 0usize;
+        }
+        status = status * 10usize + this.digitValue(this.current());
+        this.offset += 1usize;
+        statusDigits += 1usize;
+      }
+      if (this.offset >= this.input.length || this.current() !== 32u8) {
+        return 0usize;
+      }
+      this.offset += 1usize;
+      const byteCount = this.parseNumber();
+      if (byteCount === undefined || this.offset >= this.input.length || this.current() !== 32u8) {
+        return 0usize;
+      }
+      this.offset += 1usize;
+      const duration = this.parseNumber();
+      if (duration === undefined) {
+        return 0usize;
+      }
+      if (this.offset<this.input.length && this.current() === 10u8) {
+        this.offset += 1usize;
+      } else if (this.offset !== this.input.length) {
+        return 0usize;
+      }
+      if (status >= 100usize && status<200usize) {
+        informational += 1usize;
+      } else if (status<300usize) {
+        successful += 1usize;
+      } else if (status<400usize) {
+        redirects += 1usize;
+      } else if (status<500usize) {
+        clientErrors += 1usize;
+      } else if (status<600usize) {
+        serverErrors += 1usize;
+      } else {
+        return 0usize;
+      }
+      const previous = routes.get( & routeHash);
+      let routeCount: usize = 1usize;
+      if (previous !== undefined) {
+        routeCount = previous! + 1usize;
+      }
+      routes.set(routeHash, routeCount);
+      routeAggregate =(routeAggregate + routeHash) % 9007199254740881usize;
+      if (routeCount > busiestCount ||(routeCount === busiestCount && routeHash<busiestRoute)) {
+        busiestCount = routeCount;
+        busiestRoute = routeHash;
+      }
+      records += 1usize;
+      totalBytes += byteCount!;
+      totalDuration += duration!;
+    }
+    if (records === 0usize || routes.length === 0usize) {
+      return 0usize;
+    }
+    return records * 3usize + informational * 5usize + successful * 7usize + redirects * 11usize + clientErrors * 13usize + serverErrors * 17usize + totalBytes * 19usize + totalDuration * 23usize + methodChecksum * 29usize + prefixChecksum * 31usize + routeAggregate + busiestRoute * 37usize + busiestCount * 41usize + routes.length * 43usize;
+  }
+  public mut analyzeMany(iterations: i32): usize {
+    let iteration: i32 = 0i32;
+    let total: usize = 0usize;
+    while (iteration<iterations) {
+      const checksum = this.analyzeOnce();
+      if (checksum === 0usize) {
+        return 0usize;
+      }
+      total += checksum;
+      iteration += 1i32;
+    }
+    return total;
+  }
+}
+@Export("analyzeMany")
+function analyzeMany(input: Bytes, iterations: i32): usize {
+  let analyzer = new LogAnalyzer(input);
+  return analyzer.analyzeMany(iterations);
+}
+function appendU64(buffer: & mut BytesMut, value: u64): void {
+  let divisor = 1u64;
+  while (value / divisor >= 10u64 && divisor <= 1000000000000000000u64) {
+    divisor *= 10u64;
+  }
+  let remaining = value;
+  while (divisor > 0u64) {
+    const digit = remaining / divisor;
+    if (digit === 0u64) {
+      buffer.push(48u8);
+    } else if (digit === 1u64) {
+      buffer.push(49u8);
+    } else if (digit === 2u64) {
+      buffer.push(50u8);
+    } else if (digit === 3u64) {
+      buffer.push(51u8);
+    } else if (digit === 4u64) {
+      buffer.push(52u8);
+    } else if (digit === 5u64) {
+      buffer.push(53u8);
+    } else if (digit === 6u64) {
+      buffer.push(54u8);
+    } else if (digit === 7u64) {
+      buffer.push(55u8);
+    } else if (digit === 8u64) {
+      buffer.push(56u8);
+    } else {
+      buffer.push(57u8);
+    }
+    remaining = remaining % divisor;
+    divisor /= 10u64;
+  }
+}
+function main(): i32 throws FileError | Utf8Error {
+  if (argumentCount() < 3i32) {
+    return 2i32;
+  }
+  unsafe {
+    const path = argument(1i32);
+    const iterations = atoi(argument(2i32));
+    if (iterations<0i32) {
+      return 3i32;
+    }
+    const pathBytes: Bytes = {
+      pointer: path, length: strlen(path)
+    };
+    const pathText = try string.fromUtf8(pathBytes);
+    const fileMetadata = try metadata(pathText.asStr());
+    const size = fileMetadata.size;
+    if (size === 0usize) {
+      return 4i32;
+    }
+    const pointer = rawAlloc(size);
+    const handle = tn_file_open(path, 0i32, 0i32);
+    if (handle<0i32) {
+      rawFree(pointer);
+      return 5i32;
+    }
+    const readStatus = tn_file_read_exact(handle, pointer, size);
+    tn_file_close(handle);
+    if (readStatus !== 0isize) {
+      rawFree(pointer);
+      return 6i32;
+    }
+    if (iterations === 0i32) {
+      rawFree(pointer);
+      return 0i32;
+    }
+    const input: Bytes = {
+      pointer: pointer as * const u8, length: size
+    };
+    const started = Instant.now();
+    const checksum = analyzeMany(input, iterations);
+    const finished = Instant.now();
+    const elapsed = finished.durationSince( & started).nanoseconds();
+    rawFree(pointer);
+    if (checksum === 0usize) {
+      return 7i32;
+    }
+    let output = new BytesMut({
+      capacity: 64usize
+    });
+    output.appendUnsignedDecimal(checksum);
+    output.appendAscii(",");
+    appendU64( & mut output, elapsed);
+    output.appendAscii("\n");
+    const bytes = output.slice(0usize, output.length);
+    let out = stdout();
+    try {
+      try writeAll( & mut out, & bytes);
+    } catch (error: IOError) {
+      return 8i32;
+    }
+  }
+  return 0i32;
+}

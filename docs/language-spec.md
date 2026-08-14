@@ -533,10 +533,12 @@ synchronous best-effort library calls with no error effect; reliable output
 uses fallible `std/io` writers.
 
 Default layouts are compiler-private. `@Layout("C")` fixes target C field order
-and alignment; packed fields require explicit unaligned operations. The only
-supported target is `aarch64-apple-darwin`. The public command is `tn` with
-`build`, `run`, `check`, `lint`, `test`, `fmt`, `doc`, and `lsp` subcommands. Projects
-use `typenative.json` and have no package-registry or dependency fields.
+and alignment; packed fields require explicit unaligned operations. The
+supported hosted targets are `aarch64-apple-darwin` and
+`x86_64-unknown-linux-gnu`; target-dependent runtime services select the
+matching platform module. The public command is `tn` with `build`, `run`,
+`check`, `lint`, `test`, `fmt`, `doc`, and `lsp` subcommands. Projects use
+`typenative.json` and have no package-registry or dependency fields.
 
 An executable has exactly one safe synchronous `main(): void` or `main(): i32`,
 optionally with a closed `throws` set. An uncaught typed error is formatted and

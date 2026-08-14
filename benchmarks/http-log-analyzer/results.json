@@ -1,0 +1,124 @@
+{
+  "generatedAt": "2026-08-14T08:17:43.543Z",
+  "environment": {
+    "platform": "darwin",
+    "release": "27.0.0",
+    "architecture": "arm64",
+    "cpu": "Apple M1 Pro",
+    "logicalCpus": 10,
+    "node": "v24.14.0",
+    "typenative": "tn 0.1.0",
+    "llvm": "22.1.8",
+    "fixturePath": "/tmp/typenative-http-log-100MiB.log",
+    "fixtureBytes": 104857590,
+    "iterations": 1,
+    "samples": 5
+  },
+  "compilerTimings": {
+    "check": {
+      "realSeconds": 0.18,
+      "userSeconds": 0.17,
+      "sysSeconds": 0
+    },
+    "debugExecutable": {
+      "realSeconds": 1.47,
+      "userSeconds": 1.38,
+      "sysSeconds": 0.07
+    },
+    "optimizedExecutable": {
+      "realSeconds": 1.59,
+      "userSeconds": 1.51,
+      "sysSeconds": 0.07
+    },
+    "optimizedNodeAddon": {
+      "realSeconds": 1.39,
+      "userSeconds": 1.35,
+      "sysSeconds": 0.06
+    }
+  },
+  "methodology": {
+    "fixtureGenerationExcluded": true,
+    "fixtureLoadingExcludedFromCoreTiming": true,
+    "executionOrder": [
+      "native",
+      "addon",
+      "javascript"
+    ],
+    "warmup": "one unmeasured parse per isolated implementation process",
+    "caveat": "Results describe this deterministic byte-scanning and aggregation workload only."
+  },
+  "commands": {
+    "orchestration": "TN_BIN=/Users/ronnie/.cargo.target/release/tn BENCH_FIXTURE_MIB=100 BENCH_ITERATIONS=1 BENCH_SAMPLES=5 benchmarks/http-log-analyzer/run.sh",
+    "fixtureGeneration": "node /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/generate-fixture.mjs /tmp/typenative-http-log-100MiB.log 100",
+    "workerTemplate": "/opt/homebrew/Cellar/node@24/24.14.0_1/bin/node /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/benchmark-worker.mjs MODE FIXTURE ITERATIONS SAMPLES PRODUCT",
+    "workerRuns": {
+      "native": "/opt/homebrew/Cellar/node@24/24.14.0_1/bin/node /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/benchmark-worker.mjs native /tmp/typenative-http-log-100MiB.log 1 5 /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/build/http-log-analyzer",
+      "addon": "/opt/homebrew/Cellar/node@24/24.14.0_1/bin/node /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/benchmark-worker.mjs addon /tmp/typenative-http-log-100MiB.log 1 5 /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/build/http-log-analyzer.node",
+      "javascript": "/opt/homebrew/Cellar/node@24/24.14.0_1/bin/node /Users/ronnie/Projects/typenative/benchmarks/http-log-analyzer/benchmark-worker.mjs javascript /tmp/typenative-http-log-100MiB.log 1 5 -"
+    }
+  },
+  "checksum": "1015466368115939",
+  "results": [
+    {
+      "name": "TypeNative optimized executable",
+      "checksum": "1015466368115939",
+      "samples": 5,
+      "iterations": 1,
+      "elapsedMilliseconds": {
+        "median": 497.13,
+        "min": 493.805,
+        "max": 513.252
+      },
+      "throughputMiBPerSecond": {
+        "median": 201.15460837860687,
+        "min": 194.8360463539486,
+        "max": 202.5090682825343
+      },
+      "peakRssBytes": 106627072,
+      "peakRssMethod": "maximum resident set size from macOS /usr/bin/time -l, including loaded fixture",
+      "processWallMilliseconds": {
+        "median": 518.070125,
+        "min": 513.953209,
+        "max": 534.252208
+      },
+      "processWallIncludes": "startup, fixture load, core parse, and shutdown",
+      "coreTimingMethod": "Instant.now() elapsed duration emitted by the TypeNative analyzer after fixture loading"
+    },
+    {
+      "name": "TypeNative .node addon",
+      "checksum": "1015466368115939",
+      "samples": 5,
+      "iterations": 1,
+      "elapsedMilliseconds": {
+        "median": 491.348625,
+        "min": 489.973709,
+        "max": 495.887083
+      },
+      "throughputMiBPerSecond": {
+        "median": 203.5214619014286,
+        "min": 201.65879267973762,
+        "max": 204.09256379765642
+      },
+      "peakRssBytes": 153321472,
+      "peakRssMethod": "isolated Node process.resourceUsage().maxRSS after fixture load and measured samples"
+    },
+    {
+      "name": "Node.js handwritten Buffer parser",
+      "checksum": "1015466368115939",
+      "samples": 5,
+      "iterations": 1,
+      "elapsedMilliseconds": {
+        "median": 502.409584,
+        "min": 501.3215,
+        "max": 507.567625
+      },
+      "throughputMiBPerSecond": {
+        "median": 199.0407700169526,
+        "min": 197.0180632841916,
+        "max": 199.47277438381724
+      },
+      "peakRssBytes": 162217984,
+      "peakRssMethod": "isolated Node process.resourceUsage().maxRSS after fixture load and measured samples"
+    }
+  ]
+}

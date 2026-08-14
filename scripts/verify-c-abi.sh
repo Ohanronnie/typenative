@@ -27,14 +27,39 @@ fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/typenative-c-abi.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64)
+    library_suffix=.dylib
+    nm_mode=darwin
+    ;;
+  Linux:x86_64)
+    library_suffix=.so
+    nm_mode=linux
+    ;;
+  *)
+    echo "unsupported host for C ABI verification: $(uname -s) $(uname -m)" >&2
+    exit 2
+    ;;
+esac
+
+check_symbol() {
+  symbol=$1
+  library=$2
+  if [ "$nm_mode" = darwin ]; then
+    nm -gU "$library"
+  else
+    nm -g "$library"
+  fi | grep -q "$symbol"
+}
+
 for profile in debug optimized; do
-  profile_library="$work/libtn_c_exports-$profile.dylib"
+  profile_library="$work/libtn_c_exports-$profile$library_suffix"
   "$tn_bin" build "$root/validation/c/exports.tn" --profile "$profile" --emit shared-library --out "$profile_library"
-  nm -gU "$profile_library" | grep -q 'tn_add'
-  nm -gU "$profile_library" | grep -q 'tn_pair_value'
-  nm -gU "$profile_library" | grep -q 'tn_kind_value'
+  check_symbol tn_add "$profile_library"
+  check_symbol tn_pair_value "$profile_library"
+  check_symbol tn_kind_value "$profile_library"
 done
-library="$work/libtn_c_exports-debug.dylib"
+library="$work/libtn_c_exports-debug$library_suffix"
 "$tn_bin" build "$root/validation/c/extern.tn" --profile optimized --link-argument "$library" --out "$work/extern"
 if "$work/extern"; then
   extern_status=0

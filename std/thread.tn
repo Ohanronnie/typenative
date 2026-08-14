@@ -33,7 +33,7 @@ declare extern "C" {
 }
 export function sleep(duration: Duration): void {
   unsafe {
-    tn_thread_sleep_ns(duration.nanoseconds);
+    tn_thread_sleep_ns(duration.nanoseconds());
   }
 }
 export function yieldNow(): void {

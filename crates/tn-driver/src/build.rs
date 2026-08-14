@@ -1,4 +1,4 @@
-use crate::{Emit, LinkConfig, Profile, Project, ProjectConfig};
+use crate::{Emit, LinkConfig, Profile, Project, ProjectConfig, Target};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -1796,7 +1796,11 @@ fn emit_executable(
     )
     .map_err(|error| BuildError::Message(error.to_string()))?;
     let runtime_support = temporary.path().join("runtime.o");
-    compile_support_object(project, runtime_source(), &runtime_support)?;
+    compile_support_object(
+        project,
+        runtime_source(project.config.target),
+        &runtime_support,
+    )?;
     let startup_source = temporary.path().join("startup.tn");
     std::fs::write(
         &startup_source,
@@ -1816,7 +1820,7 @@ fn emit_executable(
             "-DTN_ENTRY={}",
             tn_codegen_llvm::symbol_for_instance(entry)
         ));
-    if !cfg!(target_os = "macos") {
+    if !project.config.target.is_macos() {
         linker.arg("-ldl");
     }
     linker.arg(match mode {
@@ -1839,7 +1843,7 @@ fn emit_executable(
             String::from_utf8_lossy(&result.stderr)
         )));
     }
-    if profile == tn_codegen_llvm::CodegenProfile::Optimized && cfg!(target_os = "macos") {
+    if profile == tn_codegen_llvm::CodegenProfile::Optimized && project.config.target.is_macos() {
         let result = Command::new("strip").arg("-x").arg(output).output()?;
         if !result.status.success() {
             return Err(BuildError::Message(format!(
@@ -1848,7 +1852,7 @@ fn emit_executable(
             )));
         }
     }
-    if profile == tn_codegen_llvm::CodegenProfile::Debug && cfg!(target_os = "macos") {
+    if profile == tn_codegen_llvm::CodegenProfile::Debug && project.config.target.is_macos() {
         let debug_bundle = output.with_extension("dSYM");
         let result = Command::new("dsymutil")
             .arg(output)
@@ -1890,7 +1894,7 @@ fn emit_shared_library(
     .map_err(|error| BuildError::Message(error.to_string()))?;
 
     let runtime = temporary.path().join("runtime.o");
-    compile_support_object(project, runtime_source(), &runtime)?;
+    compile_support_object(project, runtime_source(project.config.target), &runtime)?;
     let mut linker = Command::new("clang");
     linker.arg(&object).arg("-pthread");
     let wrapper_object = if emit == Emit::NodeAddon {
@@ -1925,19 +1929,19 @@ fn emit_shared_library(
         linker.arg(wrapper_object);
     }
     linker.arg(runtime);
-    if !cfg!(target_os = "macos") {
+    if !project.config.target.is_macos() {
         linker.arg("-ldl");
     }
     match emit {
         Emit::SharedLibrary => {
-            if cfg!(target_os = "macos") {
+            if project.config.target.is_macos() {
                 linker.arg("-dynamiclib");
             } else {
                 linker.arg("-shared");
             }
         }
         Emit::NodeAddon => {
-            if cfg!(target_os = "macos") {
+            if project.config.target.is_macos() {
                 linker
                     .arg("-bundle")
                     .arg("-undefined")
@@ -1966,8 +1970,10 @@ fn emit_shared_library(
     Ok(())
 }
 
-fn runtime_source() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.tn")
+fn runtime_source(target: Target) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/platform")
+        .join(target.runtime_module())
 }
 
 fn compile_support_object(
@@ -3339,7 +3345,7 @@ fn default_output(project: &Project) -> PathBuf {
         Emit::Bitcode => ".bc",
         Emit::Assembly => ".s",
         Emit::SharedLibrary => {
-            if cfg!(target_os = "macos") {
+            if project.config.target.is_macos() {
                 ".dylib"
             } else {
                 ".so"

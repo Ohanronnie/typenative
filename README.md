@@ -28,16 +28,16 @@ Familiar syntax is a usability goal; TypeScript source compatibility is not.
 
 ## Scope
 
-TypeNative currently supports macOS on ARM64 only. The project includes the
-compiler, standard library, formatter, test runner, documentation generator,
-language server, C interoperability, and generated Node-API addons.
+TypeNative currently supports hosted macOS ARM64 and Linux AMD64 targets. The
+project includes the compiler, standard library, formatter, test runner,
+documentation generator, language server, C interoperability, and generated
+Node-API addons.
 
 The following are outside the project:
 
 - JavaScript, browser, or Node.js runtime compatibility
 - garbage collection and implicit shared ownership
 - bare-metal and kernel targets
-- Linux and other non-macOS targets
 - Windows targets
 - dependency resolution, publishing, and a hosted package registry
 - JSX, prototype mutation, dynamic properties, `eval`, and runtime code generation
@@ -81,6 +81,7 @@ standard-stream writers in `std/io`.
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | [Language specification](docs/language-spec.md)        | Grammar, types, ownership, execution semantics, modules, standard library surface, and CLI contract  |
 | [Compiler architecture](docs/compiler-architecture.md) | Syntax infrastructure, HIR/MIR, safety analysis, LLVM lowering, runtime boundaries, and self-hosting |
+| [Time and filesystem contract](docs/time-and-filesystem.md) | Calendar time, monotonic time, durations, metadata, and target-specific runtime boundaries |
 | [Implementation plan](docs/implementation-plan.md)     | Ordered engineering gates, test matrices, and acceptance criteria                                    |
 | [Redis acceptance](docs/redis-acceptance.md)           | Canonical end-to-end syntax, ownership, async, protocol, and native systems acceptance program       |
 | [Design audit](docs/design-audit.md)                   | Problems found in the source plans and the canonical resolution for each                             |

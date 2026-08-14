@@ -42,8 +42,7 @@ time_stage compiler scripts/verify-design.sh
 time_stage compiler scripts/check-toolchain.sh
 time_stage compiler scripts/check-native-sources.sh
 time_stage compiler cargo fmt --all -- --check
-time_stage compiler "$tn" fmt --check std
-time_stage compiler "$tn" fmt --check validation
+time_stage compiler "$tn" fmt --check runtime std validation benchmarks/http-log-analyzer
 time_stage compiler scripts/check-foreign-syntax.sh
 for source in "$root"/std/*.tn; do
   [ -f "$source" ] || continue
@@ -76,26 +75,33 @@ time_log() {
   return $?
 }
 
-printf '%s\n' 'verify-parallel: cli stdlib runtime debug-info c-abi node benchmarks sanitizers'
+printf '%s\n' 'verify-parallel: cli stdlib runtime time fs debug-info c-abi node redis-and-sanitizers'
 (time_log tests-cli env TN_BIN="$tn" scripts/verify-cli.sh) & cli_pid=$!
 (time_log tests-stdlib env TN_BIN="$tn" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) & stdlib_pid=$!
 (time_log tests-runtime env TN_BIN="$tn" scripts/verify-runtime.sh) & runtime_pid=$!
+(time_log tests-time env TN_BIN="$tn" scripts/verify-time.sh) & time_pid=$!
+(time_log tests-fs env TN_BIN="$tn" scripts/verify-fs.sh) & fs_pid=$!
 (time_log tests-debug-info env TN_BIN="$tn" scripts/verify-debug-info.sh) & debug_info_pid=$!
 (time_log tests-abi env TN_BIN="$tn" scripts/verify-c-abi.sh) & c_abi_pid=$!
 (time_log tests-node env TN_BIN="$tn" scripts/verify-node.sh) & node_pid=$!
-(time_log benchmarks env TN_BIN="$tn" scripts/verify-redis.sh) & benchmarks_pid=$!
-(time_log sanitizers env TN_BIN="$tn" scripts/run-sanitizers.sh) & sanitizers_pid=$!
+run_redis_checks() {
+  (time_log benchmarks env TN_BIN="$tn" scripts/verify-redis.sh)
+  (time_log sanitizers env TN_BIN="$tn" scripts/run-sanitizers.sh)
+}
+
+(run_redis_checks) & redis_pid=$!
 
 parallel_failed=0
 for job in \
   "$cli_pid:tests-cli" \
   "$stdlib_pid:tests-stdlib" \
   "$runtime_pid:tests-runtime" \
+  "$time_pid:tests-time" \
+  "$fs_pid:tests-fs" \
   "$debug_info_pid:tests-debug-info" \
   "$c_abi_pid:tests-abi" \
   "$node_pid:tests-node" \
-  "$benchmarks_pid:benchmarks" \
-  "$sanitizers_pid:sanitizers"; do
+  "$redis_pid:redis"; do
   pid=${job%%:*}
   name=${job#*:}
   if wait "$pid"; then
@@ -103,7 +109,11 @@ for job in \
   else
     parallel_failed=1
   fi
-  cat "$parallel_dir/$name.log"
+  if [ "$name" = redis ]; then
+    cat "$parallel_dir/benchmarks.log" "$parallel_dir/sanitizers.log"
+  else
+    cat "$parallel_dir/$name.log"
+  fi
 done
 rm -r -- "$parallel_dir"
 trap - EXIT
