@@ -1,7 +1,7 @@
 import { Source, isInvalid, isTemplateInvalid, next } from "./lexer";
 import { isEnd } from "./parser";
 
-@derive(Copy)export struct FormatResult {
+@Copy export struct FormatResult {
   public source: Source;
   public errors: usize;
 }

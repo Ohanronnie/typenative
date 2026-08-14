@@ -1,60 +1,172 @@
-extern "C" {
-  function tn_selfhost_llvm_major(): i32;
-  function tn_selfhost_llvm_c_api_smoke(): i32;
-  function tn_selfhost_llvm_context_create(): * mut u8;
-  function tn_selfhost_llvm_module_create(name: * const u8, context: * mut u8): * mut u8;
-  function tn_selfhost_llvm_module_dispose(module: * mut u8): void;
-  function tn_selfhost_llvm_context_dispose(context: * mut u8): void;
-  function tn_selfhost_llvm_module_roundtrip(name: * const u8): i32;
-  function tn_selfhost_llvm_emit_i32_return(output: * const u8, module: * const u8, functionName: * const u8, value: i32): i32;
+import { isNull, nullPointer } from "std/alloc";
+declare extern "C" {
+  function LLVMGetVersion(major: * mut u32, minor: * mut u32, patch: * mut u32): void;
+  function LLVMContextCreate(): * mut u8;
+  function LLVMContextDispose(context: * mut u8): void;
+  function LLVMModuleCreateWithNameInContext(name: * const u8, context: * mut u8): * mut u8;
+  function LLVMDisposeModule(module: * mut u8): void;
+  function LLVMVerifyModule(module: * mut u8, action: i32, message: * mut * mut u8): i32;
+  function LLVMDisposeMessage(message: * mut u8): void;
+  function LLVMPrintModuleToFile(module: * mut u8, output: * const u8, message: * mut * mut u8): i32;
+  function LLVMInt32TypeInContext(context: * mut u8): * mut u8;
+  function LLVMFunctionType(result: * mut u8, parameters: * const * mut u8, parameterCount: u32, variadic: i32): * mut u8;
+  function LLVMAddFunction(module: * mut u8, name: * const u8, functionType: * mut u8): * mut u8;
+  function LLVMAppendBasicBlockInContext(context: * mut u8, functionValue: * mut u8, name: * const u8): * mut u8;
+  function LLVMCreateBuilderInContext(context: * mut u8): * mut u8;
+  function LLVMDisposeBuilder(builder: * mut u8): void;
+  function LLVMPositionBuilderAtEnd(builder: * mut u8, block: * mut u8): void;
+  function LLVMConstInt(integerType: * mut u8, value: i64, signExtend: i32): * mut u8;
+  function LLVMBuildRet(builder: * mut u8, value: * mut u8): * mut u8;
 }
-@derive(Copy)export struct LlvmContext {
+@Copy export struct LlvmContext {
   public handle: * mut u8;
 }
-@derive(Copy)export struct LlvmModule {
+@Copy export struct LlvmModule {
   public handle: * mut u8;
+}
+function contextPointer(context: & LlvmContext): * mut u8 {
+  return context.handle;
+}
+function modulePointer(module: & LlvmModule): * mut u8 {
+  return module.handle;
+}
+function pointerIsNull(pointer: * mut u8): bool {
+  unsafe {
+    return isNull(pointer as * const u8);
+  }
+}
+function staticPointer(value: & static str): * const u8 {
+  unsafe {
+    return value as * const u8;
+  }
+}
+function disposeMessage(message: * mut u8): void {
+  if (!pointerIsNull(message)) {
+    unsafe {
+      LLVMDisposeMessage(message);
+    }
+  }
 }
 export function createContext(): LlvmContext {
+  let handle: * mut u8 = nullPointer<u8>();
   unsafe {
-    return {
-      handle: tn_selfhost_llvm_context_create()
-    };
+    handle = LLVMContextCreate();
   }
+  return {
+    handle: handle,
+  };
 }
-export function createModule(context: & LlvmContext, name: & static str): LlvmModule {
+export function createModule(context: & LlvmContext, name: & str): LlvmModule {
+  let handle: * mut u8 = nullPointer<u8>();
   unsafe {
-    return {
-      handle: tn_selfhost_llvm_module_create(name as * const u8, context.handle)
-    };
+    handle = LLVMModuleCreateWithNameInContext(name as * const u8, contextPointer(context));
   }
+  return {
+    handle: handle,
+  };
 }
 export function disposeModule(module: & mut LlvmModule): void {
-  unsafe {
-    tn_selfhost_llvm_module_dispose(module.handle);
+  if (!pointerIsNull(modulePointer(module))) {
+    unsafe {
+      LLVMDisposeModule(modulePointer(module));
+    }
   }
+  module.handle = nullPointer<u8>();
 }
 export function disposeContext(context: & mut LlvmContext): void {
-  unsafe {
-    tn_selfhost_llvm_context_dispose(context.handle);
+  if (!pointerIsNull(contextPointer(context))) {
+    unsafe {
+      LLVMContextDispose(contextPointer(context));
+    }
   }
+  context.handle = nullPointer<u8>();
+}
+export function verifyModule(module: & LlvmModule): bool {
+  if (pointerIsNull(modulePointer(module))) {
+    return false;
+  }
+  let message: * mut u8 = nullPointer<u8>();
+  let result: i32 = 1i32;
+  unsafe {
+    result = LLVMVerifyModule(modulePointer(module), 2i32,( & mut message)as * mut * mut u8);
+  }
+  disposeMessage(message);
+  return result === 0i32;
 }
 export function llvmModuleRoundtrip(): bool {
-  unsafe {
-    return tn_selfhost_llvm_module_roundtrip("typenative-selfhost" as * const u8) === 0i32;
+  let context = createContext();
+  if (pointerIsNull(context.handle)) {
+    return false;
   }
+  let module = createModule( & context, "typenative-roundtrip");
+  const valid = verifyModule( & module);
+  disposeModule( & mut module);
+  disposeContext( & mut context);
+  return valid;
 }
-export function emitI32Return(output: * const u8, module: & static str, functionName: & static str, value: i32): i32 {
-  unsafe {
-    return tn_selfhost_llvm_emit_i32_return(output, module as * const u8, functionName as * const u8, value);
+export function emitI32Return(output: * const u8, moduleName: & str, functionName: & str, value: i64): i32 {
+  let context = createContext();
+  if (pointerIsNull(context.handle)) {
+    return 1i32;
   }
+  let module = createModule( & context, moduleName);
+  if (pointerIsNull(module.handle)) {
+    disposeContext( & mut context);
+    return 1i32;
+  }
+  let functionType: * mut u8 = nullPointer<u8>();
+  let functionValue: * mut u8 = nullPointer<u8>();
+  let block: * mut u8 = nullPointer<u8>();
+  let builder: * mut u8 = nullPointer<u8>();
+  let constant: * mut u8 = nullPointer<u8>();
+  unsafe {
+    functionType = LLVMFunctionType(LLVMInt32TypeInContext(context.handle), nullPointer< * mut u8>()as * const * mut u8, 0u32, 0i32);
+    functionValue = LLVMAddFunction(module.handle, functionName as * const u8, functionType);
+    block = LLVMAppendBasicBlockInContext(context.handle, functionValue, staticPointer("entry"));
+    builder = LLVMCreateBuilderInContext(context.handle);
+    LLVMPositionBuilderAtEnd(builder, block);
+    constant = LLVMConstInt(LLVMInt32TypeInContext(context.handle), value, 1i32);
+    LLVMBuildRet(builder, constant);
+  }
+  if (pointerIsNull(functionValue) || pointerIsNull(builder)) {
+    if (!pointerIsNull(builder)) {
+      unsafe {
+        LLVMDisposeBuilder(builder);
+      }
+    }
+    disposeModule( & mut module);
+    disposeContext( & mut context);
+    return 1i32;
+  }
+  let verifyMessage: * mut u8 = nullPointer<u8>();
+  let result: i32 = 1i32;
+  unsafe {
+    result = LLVMVerifyModule(module.handle, 2i32,( & mut verifyMessage)as * mut * mut u8);
+  }
+  disposeMessage(verifyMessage);
+  if (result === 0i32) {
+    let printMessage: * mut u8 = nullPointer<u8>();
+    unsafe {
+      result = LLVMPrintModuleToFile(module.handle, output,( & mut printMessage)as * mut * mut u8);
+    }
+    disposeMessage(printMessage);
+  }
+  unsafe {
+    LLVMDisposeBuilder(builder);
+  }
+  disposeModule( & mut module);
+  disposeContext( & mut context);
+  return result === 0i32?0i32: 1i32;
 }
 export function llvmMajorMatches(expected: i32): bool {
+  let major: u32 = 0u32;
+  let minor: u32 = 0u32;
+  let patch: u32 = 0u32;
   unsafe {
-    return tn_selfhost_llvm_major() === expected && tn_selfhost_llvm_module_roundtrip("typenative-selfhost" as * const u8) === 0i32;
+    LLVMGetVersion(( & mut major)as * mut u32,( & mut minor)as * mut u32,( & mut patch)as * mut u32);
   }
+  return expected === 22i32 && major === 22u32;
 }
 export function llvmBindingsAvailable(): bool {
-  unsafe {
-    return tn_selfhost_llvm_c_api_smoke() === 0i32 && tn_selfhost_llvm_module_roundtrip("typenative-selfhost" as * const u8) === 0i32;
-  }
+  return llvmMajorMatches(22i32) && llvmModuleRoundtrip();
 }

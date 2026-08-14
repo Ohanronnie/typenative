@@ -15,7 +15,11 @@ fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/typenative-debug.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
-"$tn" build "$root/validation/native/class-virtual.tn" --profile debug --emit object --out "$work/program.o" >/dev/null
+run_tn() {
+  perl -e 'alarm 175; exec @ARGV' -- "$@"
+}
+
+run_tn "$tn" build "$root/validation/native/class-virtual.tn" --profile debug --emit object --out "$work/program.o" >/dev/null
 
 dump=${DWARF_DUMP:-}
 if [ -z "$dump" ]; then
@@ -36,15 +40,15 @@ if "$dump" --verify "$work/program.o" >/dev/null 2>&1; then
   :
 fi
 
-"$tn" build "$root/validation/native/class-virtual.tn" --profile debug --out "$work/program" >/dev/null
+run_tn "$tn" build "$root/validation/native/class-virtual.tn" --profile debug --out "$work/program" >/dev/null
 if command -v lldb >/dev/null 2>&1; then
-  symbol=$(nm "$work/program" | awk '/tn_[0-9]+_[0-9]+$/ {sub(/^_/, "", $3); print $3; exit}')
+  symbol=$(nm "$work/program.o" | awk '$2 ~ /^[Tt]$/ && $3 ~ /^_tn_[0-9]+/ {sub(/^_/, "", $3); print $3; exit}')
   test -n "$symbol"
   lldb --batch \
     -o "target modules lookup -n $symbol" \
     "$work/program" 2>&1 | grep -q 'class-virtual.tn'
 elif command -v gdb >/dev/null 2>&1; then
-  symbol=$(nm "$work/program" | awk '/tn_[0-9]+_[0-9]+$/ {sub(/^_/, "", $3); print $3; exit}')
+  symbol=$(nm "$work/program.o" | awk '$2 ~ /^[Tt]$/ && $3 ~ /^_tn_[0-9]+/ {sub(/^_/, "", $3); print $3; exit}')
   test -n "$symbol"
   gdb -batch \
     -ex "info line $symbol" \

@@ -1,43 +1,33 @@
 import { isNull, rawAlloc, rawFree } from "std/alloc";
+import { BytesMut, appendRaw } from "std/bytes";
 import { argument, argumentCount } from "std/process";
-import { backendFunction, lower as lowerBackend } from "./backend";
+import { backendFunction, lowerBackend } from "./backend";
+import { emitProgram } from "./codegen";
 import { compile } from "./driver";
-import { lower as lowerHir } from "./hir";
-import { Source } from "./lexer";
-import { llvmMajorMatches } from "./llvm";
-import { emitModuleProduct, emitProduct, emitVoidProduct, evaluateForCli, lowerMain, programCount, programPointer } from "./lowering";
-import { parse } from "./parser";
+import { format } from "./formatter";
+import { lowerHir } from "./hir";
+import { Source, Token, TokenKind, isKeyword, next } from "./lexer";
+import { isEnd, parse } from "./parser";
+import { SourceBuffer, cstringEqual, freeSource, loadSource, sourceByte, supportNullPointer, pathHasTnSuffix, pathIsDirectory, runLanguageServer, validateImports, writeDiagnostic, writeDocumentation, writeFile, writeTiming, writeTimingValue } from "./support";
 
-@derive(Copy)export struct SourceBuffer {
-  public pointer: * mut u8;
-  public length: usize;
-}
-extern "C" {
+declare extern "C" {
   function strlen(bytes: * const u8): usize;
-  function tn_selfhost_load(input: * const u8, output: * mut SourceBuffer): i32;
-  function tn_selfhost_validate_imports(input: * const u8, source: * const u8, length: usize): i32;
-  function tn_selfhost_write_docs(output: * const u8, source: * const u8, length: usize): i32;
-  function tn_selfhost_lsp_run(): i32;
+  function tn_bytes_slice(bytes: * const u8, length: usize, start: usize, end: usize): * const u8;
   function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
-  function tn_selfhost_null_pointer(): * mut u8;
-  function tn_selfhost_free(source: * mut u8): void;
-  function tn_selfhost_write(output: * const u8, source: * const u8, length: usize): i32;
-  function tn_selfhost_cstring_equal(left: * const u8, right: * const u8): i32;
-  function tn_selfhost_path_is_directory(path: * const u8): i32;
-  function tn_selfhost_path_has_tn_suffix(path: * const u8): i32;
-  function tn_selfhost_write_diagnostic(fd: i32, code: i32, start: usize, end: usize, json: i32): i32;
-  function tn_selfhost_write_timing(phase: * const u8, nanoseconds: u64): i32;
-  function tn_selfhost_write_timing_usize(phase: * const u8, value: usize): i32;
   function tn_clock_monotonic_ns(): u64;
   function tn_dir_open(path: * const u8): * mut u8;
   function tn_dir_next(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32;
   function tn_dir_close(handle: * mut u8): i32;
   function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
+  function tn_file_exists(path: * const u8): i32;
+  function tn_file_remove(path: * const u8): i32;
+  function setenv(name: * const u8, value: * const u8, overwrite: i32): i32;
+  function system(command: * const u8): i32;
   function tn_process_exit(code: i32): void;
 }
 function emptyPointer(): * mut u8 {
   unsafe {
-    return tn_selfhost_null_pointer();
+    return supportNullPointer();
   }
 }
 function asConstPointer(pointer: * mut u8): * const u8 {
@@ -45,7 +35,7 @@ function asConstPointer(pointer: * mut u8): * const u8 {
     return pointer as * const u8;
   }
 }
-function staticPointer(text: & static str): * const u8 {
+function staticPointer(text: & str): * const u8 {
   unsafe {
     return text as * const u8;
   }
@@ -60,40 +50,217 @@ function mutableU32Pointer(value: & mut u32): * mut u32 {
     return value as * mut u32;
   }
 }
-function argumentIs(value: * const u8, expected: & static str): bool {
+function argumentIs(value: * const u8, expected: * const u8): bool {
   unsafe {
-    return tn_selfhost_cstring_equal(value, expected as * const u8) !== 0i32;
+    return cstringEqual(value, expected) !== 0i32;
   }
 }
+function argumentStartsWithOption(value: * const u8, name: * const u8): bool {
+  unsafe {
+    const valueLength = strlen(value);
+    const nameLength = strlen(name);
+    if (valueLength <= nameLength || sourceByte(value, valueLength, nameLength) !== 61i32) {
+      return false;
+    }
+    let index: usize = 0usize;
+    while (index<nameLength) {
+      if (sourceByte(value, valueLength, index) !== sourceByte(name, nameLength, index)) {
+        return false;
+      }
+      index = index + 1usize;
+    }
+    return true;
+  }
+}
+function tokenIsByte(source: Source, token: Token, value: i32): bool {
+  return switch(token.kind) {
+    case TokenKind.Punctuation: token.end > token.start && sourceByte(source.pointer, source.length, token.start) === value, default: false,
+  };
+}
+function tokenNamesEqual(source: Source, left: Token, right: Token): bool {
+  if (left.end - left.start !== right.end - right.start) {
+    return false;
+  }
+  let offset: usize = 0usize;
+  while (offset<left.end - left.start) {
+    if (sourceByte(source.pointer, source.length, left.start + offset) !== sourceByte(source.pointer, source.length, right.start + offset)) {
+      return false;
+    }
+    offset = offset + 1usize;
+  }
+  return true;
+}
+function mainMatchingClose(source: Source, opening: Token, openByte: i32, closeByte: i32): Token {
+  let cursor = next(source, opening.end);
+  let depth: usize = 1usize;
+  while (!isEnd(cursor)) {
+    if (tokenIsByte(source, cursor, openByte)) {
+      depth = depth + 1usize;
+    } else if (tokenIsByte(source, cursor, closeByte)) {
+      depth = depth - 1usize;
+      if (depth === 0usize) {
+        return cursor;
+      }
+    }
+    cursor = next(source, cursor.end);
+  }
+  return {
+    kind: TokenKind.End, start: source.length, end: source.length,
+  };
+}
+function mainPreviousToken(source: Source, position: usize): Token {
+  let offset: usize = 0usize;
+  let previous: Token = {
+    kind: TokenKind.End, start: 0usize, end: 0usize,
+  };
+  while (offset<position) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= position) {
+      break;
+    }
+    previous = token;
+    offset = token.end;
+  }
+  return previous;
+}
+function mainHasExportAttribute(source: Source, keyword: Token): bool {
+  let offset: usize = 0usize;
+  while (offset<keyword.start) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= keyword.start) {
+      break;
+    }
+    if (tokenIsByte(source, token, 64i32)) {
+      const attribute = next(source, token.end);
+      if (isKeyword(source, attribute, "Export")) {
+        let following = next(source, attribute.end);
+        if (tokenIsByte(source, following, 40i32)) {
+          following = next(source, mainMatchingClose(source, following, 40i32, 41i32).end);
+        }
+        if (isKeyword(source, following, "async")) {
+          following = next(source, following.end);
+        }
+        if (isKeyword(source, following, "function") && following.start === keyword.start) {
+          return true;
+        }
+      }
+    }
+    offset = token.end;
+  }
+  return false;
+}
+function sharedExportSignatureValid(source: Source, keyword: Token): bool {
+  if (!mainHasExportAttribute(source, keyword)) {
+    return true;
+  }
+  if (isKeyword(source, mainPreviousToken(source, keyword.start), "async")) {
+    return false;
+  }
+  const name = next(source, keyword.end);
+  let cursor = next(source, name.end);
+  if (tokenIsByte(source, cursor, 60i32)) {
+    return false;
+  }
+  while (!isEnd(cursor) && !tokenIsByte(source, cursor, 123i32) && !tokenIsByte(source, cursor, 59i32)) {
+    if (isKeyword(source, cursor, "throws") || tokenIsByte(source, cursor, 124i32)) {
+      return false;
+    }
+    if (isKeyword(source, cursor, "string") || isKeyword(source, cursor, "str")) {
+      return false;
+    }
+    if (tokenIsByte(source, cursor, 40i32)) {
+      const closing = mainMatchingClose(source, cursor, 40i32, 41i32);
+      let parameter = next(source, cursor.end);
+      while (!isEnd(parameter) && parameter.start<closing.start) {
+        if (tokenIsByte(source, parameter, 38i32) || tokenIsByte(source, parameter, 42i32) || tokenIsByte(source, parameter, 91i32) || tokenIsByte(source, parameter, 124i32) || isKeyword(source, parameter, "string") || isKeyword(source, parameter, "str")) {
+          return false;
+        }
+        parameter = next(source, parameter.end);
+      }
+      cursor = next(source, closing.end);
+      continue;
+    }
+    cursor = next(source, cursor.end);
+  }
+  return true;
+}
+function sharedExportsValid(source: Source): bool {
+  let offset: usize = 0usize;
+  while (offset<source.length) {
+    const token = next(source, offset);
+    if (isEnd(token)) {
+      break;
+    }
+    if (isKeyword(source, token, "function") && !sharedExportSignatureValid(source, token)) {
+      return false;
+    }
+    offset = token.end;
+  }
+  return true;
+}
+function hasDuplicateTopLevelFunction(source: Source): bool {
+  let outerOffset: usize = 0usize;
+  let outerDepth: usize = 0usize;
+  while (outerOffset<source.length) {
+    const outer = next(source, outerOffset);
+    if (isEnd(outer)) {
+      break;
+    }
+    if (outerDepth === 0usize && isKeyword(source, outer, "function")) {
+      const outerName = next(source, outer.end);
+      let innerOffset = outerName.end;
+      let innerDepth: usize = 0usize;
+      while (innerOffset<source.length) {
+        const inner = next(source, innerOffset);
+        if (isEnd(inner)) {
+          break;
+        }
+        if (innerDepth === 0usize && isKeyword(source, inner, "function")) {
+          const innerName = next(source, inner.end);
+          if (tokenNamesEqual(source, outerName, innerName)) {
+            return true;
+          }
+        }
+        if (tokenIsByte(source, inner, 123i32)) {
+          innerDepth = innerDepth + 1usize;
+        } else if (tokenIsByte(source, inner, 125i32) && innerDepth > 0usize) {
+          innerDepth = innerDepth - 1usize;
+        }
+        innerOffset = inner.end;
+      }
+    }
+    if (tokenIsByte(source, outer, 123i32) || tokenIsByte(source, outer, 40i32) || tokenIsByte(source, outer, 91i32)) {
+      outerDepth = outerDepth + 1usize;
+    } else if ((tokenIsByte(source, outer, 125i32) || tokenIsByte(source, outer, 41i32) || tokenIsByte(source, outer, 93i32)) && outerDepth > 0usize) {
+      outerDepth = outerDepth - 1usize;
+    }
+    outerOffset = outer.end;
+  }
+  return false;
+}
 function emitKind(value: * const u8): i32 {
-  if (argumentIs(value, "llvm-ir")) {
+  if (argumentIs(value, staticPointer("llvm-ir"))) {
     return 0i32;
   }
-  if (argumentIs(value, "bitcode")) {
+  if (argumentIs(value, staticPointer("bitcode"))) {
     return 1i32;
   }
-  if (argumentIs(value, "assembly")) {
+  if (argumentIs(value, staticPointer("assembly"))) {
     return 2i32;
   }
-  if (argumentIs(value, "object")) {
+  if (argumentIs(value, staticPointer("object"))) {
     return 3i32;
   }
-  if (argumentIs(value, "executable")) {
+  if (argumentIs(value, staticPointer("executable"))) {
     return 4i32;
   }
-  if (argumentIs(value, "shared-library")) {
+  if (argumentIs(value, staticPointer("shared-library"))) {
     return 5i32;
   }
-  if (argumentIs(value, "node-addon")) {
+  if (argumentIs(value, staticPointer("node-addon"))) {
     return 6i32;
   }
   return - 1i32;
-}
-function entryFunctionName(product: i32): * const u8 {
-  if (product === 4i32) {
-    return staticPointer("tn_selfhost_entry");
-  }
-  return staticPointer("main");
 }
 function reportDiagnostic(code: i32, start: usize, end: usize, errors: usize, json: bool): void {
   if (errors === 0usize && code === 0i32) {
@@ -108,7 +275,7 @@ function reportDiagnostic(code: i32, start: usize, end: usize, errors: usize, js
     fd = 1i32;
   }
   unsafe {
-    tn_selfhost_write_diagnostic(fd, code, start, end, mode);
+    writeDiagnostic(fd, code, start, end, mode);
   }
 }
 function failProcess(code: i32): i32 {
@@ -125,7 +292,7 @@ function emitTiming(enabled: bool, phase: & static str, started: u64): void {
   unsafe {
     finished = tn_clock_monotonic_ns();
     if (finished >= started) {
-      tn_selfhost_write_timing(phase as * const u8, finished - started);
+      writeTiming(phase as * const u8, finished - started);
     }
   }
 }
@@ -158,18 +325,18 @@ function checkFile(input: * const u8, json: bool): i32 {
   let status: i32 = 0i32;
   const output = & mut loaded;
   unsafe {
-    status = tn_selfhost_load(input, output as * mut SourceBuffer);
+    status = loadSource(input, output as * mut SourceBuffer);
   }
   if (status !== 0i32) {
     return 4i32;
   }
   let importStatus: i32 = 0i32;
   unsafe {
-    importStatus = tn_selfhost_validate_imports(input, asConstPointer(loaded.pointer), loaded.length);
+    importStatus = validateImports(input, asConstPointer(loaded.pointer), loaded.length);
   }
   if (importStatus !== 0i32) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
     return failProcess(1i32);
@@ -187,12 +354,12 @@ function checkFile(input: * const u8, json: bool): i32 {
   reportDiagnostic(firstCode, firstStart, firstEnd, errors, json);
   if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     return failProcess(1i32);
   }
   unsafe {
-    tn_selfhost_free(loaded.pointer);
+    freeSource(loaded.pointer);
   }
   return 0i32;
 }
@@ -203,7 +370,7 @@ function formatFile(input: * const u8, checkOnly: bool): i32 {
   let status: i32 = 0i32;
   const output = & mut loaded;
   unsafe {
-    status = tn_selfhost_load(input, output as * mut SourceBuffer);
+    status = loadSource(input, output as * mut SourceBuffer);
   }
   if (status !== 0i32) {
     return 4i32;
@@ -221,20 +388,20 @@ function formatFile(input: * const u8, checkOnly: bool): i32 {
   reportDiagnostic(firstCode, firstStart, firstEnd, errors, false);
   if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     return failProcess(1i32);
   }
   if (checkOnly) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     return 0i32;
   }
   let result: i32 = 0i32;
   unsafe {
-    result = tn_selfhost_write(input, source.pointer, source.length);
-    tn_selfhost_free(loaded.pointer);
+    result = writeFile(input, source.pointer, source.length);
+    freeSource(loaded.pointer);
   }
   return result;
 }
@@ -245,43 +412,40 @@ function rewriteFile(input: * const u8, output: * const u8): i32 {
   let status: i32 = 0i32;
   const loadedOutput = & mut loaded;
   unsafe {
-    status = tn_selfhost_load(input, loadedOutput as * mut SourceBuffer);
+    status = loadSource(input, loadedOutput as * mut SourceBuffer);
   }
   if (status !== 0i32) {
     return 4i32;
   }
-  let importStatus: i32 = 0i32;
-  unsafe {
-    importStatus = tn_selfhost_validate_imports(input, asConstPointer(loaded.pointer), loaded.length);
-  }
-  if (importStatus !== 0i32) {
-    unsafe {
-      tn_selfhost_free(loaded.pointer);
-    }
-    reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, false);
-    return failProcess(1i32);
-  }
   const source: Source = {
     pointer: asConstPointer(loaded.pointer), length: loaded.length
   };
-  const checked = compile(source);
-  const firstCode = checked.firstErrorCode;
-  const firstStart = checked.firstErrorStart;
-  const firstEnd = checked.firstErrorEnd;
-  const errors = checked.errorCount;
-  const tokens = checked.tokenCount;
-  const formatted = checked.formatted;
+  const parsed = parse(source);
+  const formatted = format(source);
+  const duplicate = hasDuplicateTopLevelFunction(source);
+  let firstCode = parsed.firstErrorCode;
+  let firstStart = parsed.firstErrorStart;
+  let firstEnd = parsed.firstErrorEnd;
+  let errors = parsed.errorCount + formatted.errors;
+  if (duplicate) {
+    errors = errors + 1usize;
+  }
+  if (firstCode === 0i32 &&(formatted.errors !== 0usize || duplicate)) {
+    firstCode = 2001i32;
+    firstStart = 0usize;
+    firstEnd = loaded.length;
+  }
   reportDiagnostic(firstCode, firstStart, firstEnd, errors, false);
-  if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
+  if (parsed.tokenCount === 0usize || errors !== 0usize || firstCode !== 0i32) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     return failProcess(1i32);
   }
   let result: i32 = 0i32;
   unsafe {
-    result = tn_selfhost_write(output, source.pointer, source.length);
-    tn_selfhost_free(loaded.pointer);
+    result = writeFile(output, source.pointer, source.length);
+    freeSource(loaded.pointer);
   }
   return result;
 }
@@ -292,7 +456,7 @@ function documentFile(input: * const u8, output: * const u8): i32 {
   let status: i32 = 0i32;
   const loadedOutput = & mut loaded;
   unsafe {
-    status = tn_selfhost_load(input, loadedOutput as * mut SourceBuffer);
+    status = loadSource(input, loadedOutput as * mut SourceBuffer);
   }
   if (status !== 0i32) {
     return 4i32;
@@ -304,14 +468,14 @@ function documentFile(input: * const u8, output: * const u8): i32 {
   reportDiagnostic(checked.firstErrorCode, checked.firstErrorStart, checked.firstErrorEnd, checked.errorCount, false);
   if (checked.tokenCount === 0usize || checked.errorCount !== 0usize || checked.firstErrorCode !== 0i32) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     return failProcess(1i32);
   }
   let result: i32 = 0i32;
   unsafe {
-    result = tn_selfhost_write_docs(output, source.pointer, source.length);
-    tn_selfhost_free(loaded.pointer);
+    result = writeDocumentation(output, source.pointer, source.length);
+    freeSource(loaded.pointer);
   }
   return result;
 }
@@ -322,7 +486,7 @@ function checkedSource(input: * const u8, json: bool): SourceBuffer {
   let status: i32 = 0i32;
   const output = & mut loaded;
   unsafe {
-    status = tn_selfhost_load(input, output as * mut SourceBuffer);
+    status = loadSource(input, output as * mut SourceBuffer);
   }
   if (status !== 0i32) {
     return {
@@ -331,11 +495,11 @@ function checkedSource(input: * const u8, json: bool): SourceBuffer {
   }
   let importStatus: i32 = 0i32;
   unsafe {
-    importStatus = tn_selfhost_validate_imports(input, asConstPointer(loaded.pointer), loaded.length);
+    importStatus = validateImports(input, asConstPointer(loaded.pointer), loaded.length);
   }
   if (importStatus !== 0i32) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
     return {
@@ -355,7 +519,7 @@ function checkedSource(input: * const u8, json: bool): SourceBuffer {
   reportDiagnostic(firstCode, firstStart, firstEnd, errors, json);
   if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
     unsafe {
-      tn_selfhost_free(loaded.pointer);
+      freeSource(loaded.pointer);
     }
     return {
       pointer: emptyPointer(), length: 0usize
@@ -382,71 +546,69 @@ function buildSimple(input: * const u8, output: * const u8, emitArgument: * cons
   const parsed = parse(source);
   const hir = lowerHir(source, parsed);
   const backend = lowerBackend(source, & hir);
+  emitTiming(timings, "mir-drop", started);
   if (timings) {
     unsafe {
-      tn_selfhost_write_timing_usize(staticPointer("hir-functions"), hir.functionCount);
-      tn_selfhost_write_timing_usize(staticPointer("hir-declarations"), hir.declarationCount);
-      tn_selfhost_write_timing_usize(staticPointer("hir-words"), hir.declarations.length);
-      tn_selfhost_write_timing_usize(staticPointer("backend-functions"), backend.functionCount);
-      tn_selfhost_write_timing_usize(staticPointer("backend-malformed"), backend.malformedFunctions);
-      tn_selfhost_write_timing_usize(staticPointer("backend-ops"), backend.operationWords);
+      writeTimingValue(staticPointer("hir-functions"), hir.functionCount);
+      writeTimingValue(staticPointer("hir-declarations"), hir.declarationCount);
+      writeTimingValue(staticPointer("hir-words"), hir.declarations.length);
+      writeTimingValue(staticPointer("backend-functions"), backend.functionCount);
+      writeTimingValue(staticPointer("backend-lowerable"), backend.lowerableFunctions);
+      writeTimingValue(staticPointer("backend-entry"), backend.entryIndex);
+      writeTimingValue(staticPointer("backend-malformed"), backend.malformedFunctions);
+      writeTimingValue(staticPointer("backend-instructions"), backend.instructionWords);
+      if (backend.entryIndex !== source.length) {
+        const entryTiming = backendFunction( & backend, backend.entryIndex);
+        writeTimingValue(staticPointer("backend-entry-result"), entryTiming.resultKind);
+      }
     }
   }
-  if (backend.entryIndex !== source.length && backend.functionCount > 0usize && backend.lowerableFunctions === backend.functionCount && backend.operationWords > 0usize) {
+  const product = emitKind(emitArgument);
+  if (product === 5i32 && !sharedExportsValid(source)) {
+    unsafe {
+      freeSource(loaded.pointer);
+    }
+    return 2i32;
+  }
+  if (product >= 0i32 &&(backend.entryIndex !== source.length || product !== 4i32) && backend.functionCount > 0usize && backend.lowerableFunctions > 0usize && backend.instructionWords > 0usize) {
     const entry = backendFunction( & backend, backend.entryIndex);
-    const product = emitKind(emitArgument);
-    if (product >= 0i32 && entry.resultKind > 0usize) {
-      const entryName = entryFunctionName(product);
-      const result = emitModuleProduct(output, staticPointer("typenative-selfhost"), source, backend.functionData, backend.functionCount, backend.operationData, backend.operationWords, entryName, entry.resultKind === 1usize?1i32: 0i32, product);
+    if (timings) {
+      unsafe {
+        writeTimingValue(staticPointer("backend-product-supported"), product >= 0i32?1usize: 0usize);
+      }
+    }
+    if (product >= 0i32) {
+      emitTiming(timings, "monomorphization", started);
+      const linkArgument = optionValue(staticPointer("--link-argument"));
+      if (!argumentIs(linkArgument, staticPointer(""))) {
+        unsafe {
+          setenv(staticPointer("TYPENATIVE_LINK_ARGUMENT"), linkArgument, 1i32);
+        }
+      }
+      const result = emitProgram(output, input, source, product);
       emitTiming(timings, "llvm-link", started);
       unsafe {
-        tn_selfhost_free(loaded.pointer);
+        freeSource(loaded.pointer);
       }
       return result;
     }
   }
-  let program = lowerMain(source);
-  if (timings) {
-    unsafe {
-      started = tn_clock_monotonic_ns();
-    }
-  }
-  const summary = program.summary;
-  const found = summary.found;
-  const errorCode = summary.errorCode;
-  const returnsVoid = summary.returnsVoid;
-  const operations = programPointer( & program);
-  const count = programCount( & program);
-  const product = emitKind(emitArgument);
-  emitTiming(timings, "mir-drop", started);
-  emitTiming(timings, "monomorphization", started);
   unsafe {
-    tn_selfhost_free(loaded.pointer);
+    freeSource(loaded.pointer);
   }
-  if (found === 0i32 || errorCode !== 0i32 || product<0i32) {
-    if (found !== 0i32 && errorCode !== 0i32) {
-      reportDiagnostic(errorCode, summary.errorStart, summary.errorEnd, 1usize, false);
-    }
-    return 2i32;
+  return 2i32;
+}
+function appendShellQuoted(output: & mut BytesMut, value: * const u8): void {
+  output.appendAscii("'");
+  unsafe {
+    appendRaw(output, value, strlen(value));
   }
-  if (returnsVoid !== 0i32) {
-    if (timings) {
-      unsafe {
-        started = tn_clock_monotonic_ns();
-      }
-    }
-    const result = emitVoidProduct(output, staticPointer("typenative-selfhost"), entryFunctionName(product), product);
-    emitTiming(timings, "llvm-link", started);
-    return result;
+  output.appendAscii("'");
+}
+function bytesMutPointer(value: & BytesMut): * const u8 {
+  unsafe {
+    return value.pointer as * const u8;
   }
-  if (timings) {
-    unsafe {
-      started = tn_clock_monotonic_ns();
-    }
-  }
-  const result = emitProduct(output, staticPointer("typenative-selfhost"), entryFunctionName(product), operations, count, product);
-  emitTiming(timings, "llvm-link", started);
-  return result;
 }
 function runSimple(input: * const u8): i32 {
   const loaded = checkedSource(input, false);
@@ -454,53 +616,64 @@ function runSimple(input: * const u8): i32 {
     return 1i32;
   }
   const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
+    pointer: asConstPointer(loaded.pointer), length: loaded.length,
   };
-  let program = lowerMain(source);
-  const summary = program.summary;
-  const found = summary.found;
-  const errorCode = summary.errorCode;
-  const returnsVoid = summary.returnsVoid;
-  const operations = programPointer( & program);
-  const count = programCount( & program);
-  let value: i32 = 0i32;
-  let argumentBase: i32 = 2i32;
-  if (argumentCount() >= 4i32 && argumentIs(argument(3i32), "--")) {
-    argumentBase = 3i32;
-  }
-  if (returnsVoid === 0i32) {
-    if (!evaluateForCli(operations, count, & mut value, argumentBase)) {
-      unsafe {
-        tn_selfhost_free(loaded.pointer);
-      }
-      return 2i32;
-    }
-  }
+  let output = new BytesMut({
+    capacity: 4096usize,
+  });
   unsafe {
-    tn_selfhost_free(loaded.pointer);
+    appendRaw( & mut output, input, strlen(input));
   }
-  if (found === 0i32 || errorCode !== 0i32) {
-    if (found !== 0i32 && errorCode !== 0i32) {
-      reportDiagnostic(errorCode, summary.errorStart, summary.errorEnd, 1usize, false);
-    }
+  output.appendAscii(".typenative-run");
+  const outputPointer = bytesMutPointer( & output);
+  const buildStatus = emitProgram(outputPointer, input, source, 4i32);
+  unsafe {
+    freeSource(loaded.pointer);
+  }
+  if (buildStatus !== 0i32) {
     return 2i32;
   }
-  if (returnsVoid !== 0i32) {
-    return 0i32;
+  let command = new BytesMut({
+    capacity: 8192usize,
+  });
+  appendShellQuoted( & mut command, outputPointer);
+  let argumentStart: i32 = 3i32;
+  if (argumentCount() > 3i32 && argumentIs(argument(3i32), staticPointer("--"))) {
+    argumentStart = 4i32;
   }
-  return value;
+  let index = argumentStart;
+  while (index<argumentCount()) {
+    command.appendAscii(" ");
+    appendShellQuoted( & mut command, argument(index));
+    index = index + 1i32;
+  }
+  let result: i32 = 1i32;
+  unsafe {
+    result = system(command.pointer as * const u8);
+    tn_file_remove(outputPointer);
+  }
+  if (result<0i32) {
+    return 2i32;
+  }
+  return result / 256i32;
 }
-function optionValue(name: & static str): * const u8 {
+function optionValue(name: * const u8): * const u8 {
   let index: i32 = 2i32;
-  while (index + 1i32 < argumentCount()) {
-    if (argumentIs(argument(index), name)) {
+  while (index<argumentCount()) {
+    const candidate = argument(index);
+    if (argumentIs(candidate, name) && index + 1i32 < argumentCount()) {
       return argument(index + 1i32);
+    }
+    if (argumentStartsWithOption(candidate, name)) {
+      unsafe {
+        return tn_bytes_slice(candidate, strlen(candidate), strlen(name) + 1usize, strlen(candidate));
+      }
     }
     index = index + 1i32;
   }
   return staticPointer("");
 }
-function optionPresent(name: & static str): bool {
+function optionPresent(name: * const u8): bool {
   let index: i32 = 2i32;
   while (index<argumentCount()) {
     if (argumentIs(argument(index), name)) {
@@ -516,7 +689,7 @@ function processTree(path: * const u8, operation: i32, depth: usize, json: bool)
   }
   let directoryStatus: i32 = 0i32;
   unsafe {
-    directoryStatus = tn_selfhost_path_is_directory(path);
+    directoryStatus = pathIsDirectory(path);
   }
   if (directoryStatus<0i32) {
     return 5i32;
@@ -524,7 +697,7 @@ function processTree(path: * const u8, operation: i32, depth: usize, json: bool)
   if (directoryStatus === 0i32) {
     let hasSuffix: i32 = 0i32;
     unsafe {
-      hasSuffix = tn_selfhost_path_has_tn_suffix(path);
+      hasSuffix = pathHasTnSuffix(path);
     }
     if (hasSuffix === 0i32) {
       return 0i32;
@@ -576,7 +749,7 @@ function processTree(path: * const u8, operation: i32, depth: usize, json: bool)
       return 5i32;
     }
     unsafe {
-      if (tn_selfhost_cstring_equal(name as * const u8, "." as * const u8) !== 0i32 || tn_selfhost_cstring_equal(name as * const u8, ".." as * const u8) !== 0i32) {
+      if (cstringEqual(name as * const u8, "." as * const u8) !== 0i32 || cstringEqual(name as * const u8, ".." as * const u8) !== 0i32) {
         continue;
       }
       status = tn_path_join(path, name as * const u8, joined, 8192usize);
@@ -606,25 +779,46 @@ function processTree(path: * const u8, operation: i32, depth: usize, json: bool)
   }
   return 0i32;
 }
-function main(): i32 {
-  if (!llvmMajorMatches(22i32)) {
+function buildInput(input: * const u8, output: * const u8, emit: * const u8, timings: bool): i32 {
+  let directoryStatus: i32 = 0i32;
+  unsafe {
+    directoryStatus = pathIsDirectory(input);
+  }
+  if (directoryStatus <= 0i32) {
+    return buildSimple(input, output, emit, timings);
+  }
+  const entry = rawAlloc(8192usize);
+  if (pointerIsNull(entry)) {
     return 2i32;
   }
-  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "build")) {
-    const output = optionValue("--out");
-    let emit = optionValue("--emit");
-    if (argumentIs(emit, "")) {
+  let status: i32 = 0i32;
+  unsafe {
+    status = tn_path_join(input, staticPointer("main.tn"), entry, 8192usize);
+  }
+  if (status !== 0i32) {
+    rawFree(entry);
+    return 2i32;
+  }
+  const result = buildSimple(asConstPointer(entry), output, emit, timings);
+  rawFree(entry);
+  return result;
+}
+function main(): i32 {
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), staticPointer("build"))) {
+    const output = optionValue(staticPointer("--out"));
+    let emit = optionValue(staticPointer("--emit"));
+    if (argumentIs(emit, staticPointer(""))) {
       emit = staticPointer("executable");
     }
-    if (argumentIs(output, "")) {
+    if (argumentIs(output, staticPointer(""))) {
       return 2i32;
     }
-    return buildSimple(argument(2i32), output, emit, optionPresent("--timings"));
+    return buildInput(argument(2i32), output, emit, optionPresent(staticPointer("--timings")));
   }
-  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "run")) {
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), staticPointer("run"))) {
     return runSimple(argument(2i32));
   }
-  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "test")) {
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), staticPointer("test"))) {
     const result = checkFile(argument(2i32), false);
     if (result === 0i32) {
       const message = "1 passed; 1 total\n";
@@ -634,22 +828,29 @@ function main(): i32 {
     }
     return result;
   }
-  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), "doc")) {
-    const output = optionValue("--out");
-    if (argumentIs(output, "")) {
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), staticPointer("doc"))) {
+    const output = optionValue(staticPointer("--out"));
+    if (argumentIs(output, staticPointer(""))) {
       return 2i32;
     }
     return documentFile(argument(2i32), output);
   }
-  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), "lsp")) {
+  if (argumentCount() >= 3i32 && argumentIs(argument(1i32), staticPointer("lint"))) {
+    let json = false;
+    if (argumentCount() >= 4i32 && argumentIs(argument(3i32), staticPointer("--json"))) {
+      json = true;
+    }
+    return processTree(argument(2i32), 0i32, 0usize, json);
+  }
+  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), staticPointer("lsp"))) {
     unsafe {
-      return tn_selfhost_lsp_run();
+      return runLanguageServer();
     }
   }
-  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), "check")) {
+  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), staticPointer("check"))) {
     let pathIndex: i32 = 2i32;
     let json = false;
-    if (argumentCount() >= 3i32 && argumentIs(argument(2i32), "--json")) {
+    if (argumentCount() >= 3i32 && argumentIs(argument(2i32), staticPointer("--json"))) {
       pathIndex = 3i32;
       json = true;
     }
@@ -658,10 +859,10 @@ function main(): i32 {
     }
     return processTree(argument(pathIndex), 0i32, 0usize, json);
   }
-  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), "fmt")) {
+  if (argumentCount() >= 2i32 && argumentIs(argument(1i32), staticPointer("fmt"))) {
     let pathIndex: i32 = 2i32;
     let checkOnly = false;
-    if (argumentCount() >= 3i32 && argumentIs(argument(2i32), "--check")) {
+    if (argumentCount() >= 3i32 && argumentIs(argument(2i32), staticPointer("--check"))) {
       pathIndex = 3i32;
       checkOnly = true;
     }

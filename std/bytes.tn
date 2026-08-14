@@ -95,7 +95,7 @@ export struct BytesMutOptions {
     appendSafeString( & mut this, text);
   }
   public mut append(bytes: Bytes): void {
-    appendBytes( & mut this, & bytes);
+    appendBytes( & mut this, bytes);
   }
   public mut appendAscii(text: & str): void {
     appendAscii( & mut this, text);
@@ -207,11 +207,21 @@ export function appendSafeAscii(bytes: & mut BytesMut, text: & str): void {
     }
   }
 }
-export function appendBytes(bytes: & mut BytesMut, source: & Bytes): void {
+export function appendBytes(bytes: & mut BytesMut, source: Bytes): void {
   const required = bytes.length + source.length;
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_bytes(bytes.pointer, bytes.capacity, bytes.length, source.pointer, source.length);
+    if (next !== 18446744073709551615usize) {
+      bytes.length = next;
+    }
+  }
+}
+export function appendRaw(bytes: & mut BytesMut, pointer: * const u8, length: usize): void {
+  const required = bytes.length + length;
+  reserve(bytes, required);
+  unsafe {
+    const next = tn_bytes_append_bytes(bytes.pointer, bytes.capacity, bytes.length, pointer, length);
     if (next !== 18446744073709551615usize) {
       bytes.length = next;
     }
@@ -227,7 +237,7 @@ export function appendDecimal(bytes: & mut BytesMut, value: number): void {
     }
   }
 }
-function appendUnsignedDecimal(bytes: & mut BytesMut, value: usize): void {
+export function appendUnsignedDecimal(bytes: & mut BytesMut, value: usize): void {
   const required = bytes.length + 32usize;
   reserve(bytes, required);
   unsafe {

@@ -1,5 +1,5 @@
 import { Source, byteAt } from "./lexer";
-@derive(Copy)export struct ToolingResult {
+@Copy export struct ToolingResult {
   public diagnostics: usize;
   public documentVersion: usize;
   public lineCount: usize;

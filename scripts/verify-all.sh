@@ -9,6 +9,8 @@ case "$target_dir" in
 esac
 if [ -n "${TN_BIN:-}" ]; then
   tn=$TN_BIN
+elif [ -x "$target_dir/release/tn" ]; then
+  tn=$target_dir/release/tn
 elif [ -x "$target_dir/debug/tn" ]; then
   tn=$target_dir/debug/tn
 else

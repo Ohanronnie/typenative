@@ -1,26 +1,21 @@
-extern "C" {
-  function tn_selfhost_byte_n(source: * const u8, length: usize, offset: usize): i32;
-  function tn_selfhost_token_is(source: * const u8, start: usize, end: usize, word: * const u8): i32;
-  function tn_selfhost_hash_source(source: * const u8, length: usize): u64;
-  function tn_selfhost_validate_numeric_literal(source: * const u8, start: usize, end: usize): i32;
-}
-@derive(Copy)export struct Source {
+import { hashSource, sourceByte, tokenMatches, validateNumericLiteral } from "./support";
+@Copy export struct Source {
   public pointer: * const u8;
   public length: usize;
 }
-@derive(Copy, Equal)export enum TokenKind {
+@Copy export enum TokenKind {
   Identifier, Number, String, Punctuation, Invalid, End,
 }
-@derive(Copy)export struct Token {
+@Copy export struct Token {
   public kind: TokenKind;
   public start: usize;
   public end: usize;
 }
-@derive(Copy)export struct Lexer {
+@Copy export struct Lexer {
   public source: Source;
   public offset: usize;
 }
-@derive(Copy)struct TemplateScan {
+@Copy struct TemplateScan {
   public end: usize;
   public invalid: bool;
 }
@@ -31,12 +26,12 @@ export function lexer(source: Source): Lexer {
 }
 export function byteAt(source: Source, offset: usize): i32 {
   unsafe {
-    return tn_selfhost_byte_n(source.pointer, source.length, offset);
+    return sourceByte(source.pointer, source.length, offset);
   }
 }
 export function sourceIdentity(source: Source): u64 {
   unsafe {
-    return tn_selfhost_hash_source(source.pointer, source.length);
+    return hashSource(source.pointer, source.length);
   }
 }
 function hasTwo(source: Source, offset: usize): bool {
@@ -158,27 +153,9 @@ export function next(source: Source, offset: usize): Token {
   };
 }
 export function isInvalid(token: Token): bool {
-  match (token.kind) {
-    case TokenKind.Invalid: {
-      return true;
-    }
-    case TokenKind.Identifier: {
-      return false;
-    }
-    case TokenKind.Number: {
-      return false;
-    }
-    case TokenKind.String: {
-      return false;
-    }
-    case TokenKind.Punctuation: {
-      return false;
-    }
-    case TokenKind.End: {
-      return false;
-    }
+  return switch(token.kind) {
+    case TokenKind.Invalid: true, default: false,
   };
-  return false;
 }
 function skipQuoted(source: Source, offset: usize, end: usize, quote: i32): usize {
   let cursor = offset + 1usize;
@@ -380,7 +357,7 @@ export function isNumberValid(source: Source, token: Token): i32 {
     return 0i32;
   }
   unsafe {
-    return tn_selfhost_validate_numeric_literal(source.pointer, token.start, token.end) === 0i32?1i32: 0i32;
+    return validateNumericLiteral(source.pointer, token.start, token.end) === 0i32?1i32: 0i32;
   }
 }
 export function numericErrorStart(source: Source, token: Token): usize {
@@ -427,6 +404,6 @@ export function tokenEqual(source: Source, left: Token, right: Token): bool {
 }
 export function isKeyword(source: Source, token: Token, word: & static str): bool {
   unsafe {
-    return tn_selfhost_token_is(source.pointer, token.start, token.end, word as * const u8) !== 0i32;
+    return tokenMatches(source.pointer, token.start, token.end, word as * const u8) !== 0i32;
   }
 }

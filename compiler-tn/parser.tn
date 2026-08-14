@@ -16,7 +16,7 @@ export function parseOne(input: & mut Parser): Token {
 export function isEnd(token: Token): bool {
   return token.start === token.end;
 }
-@derive(Copy)export struct ParseSummary {
+@Copy export struct ParseSummary {
   public tokenCount: usize;
   public errorCount: usize;
   public declarationCount: usize;
@@ -25,7 +25,7 @@ export function isEnd(token: Token): bool {
   public firstErrorStart: usize;
   public firstErrorEnd: usize;
 }
-@derive(Copy)struct ErrorState {
+@Copy struct ErrorState {
   public count: usize;
   public firstCode: i32;
   public firstStart: usize;
@@ -48,28 +48,42 @@ function isClose(byte: i32): bool {
 function isDeclaration(source: Source, token: Token): bool {
   return isKeyword(source, token, "function") || isKeyword(source, token, "struct") || isKeyword(source, token, "enum") || isKeyword(source, token, "class") || isKeyword(source, token, "interface") || isKeyword(source, token, "impl") || isKeyword(source, token, "type") || isKeyword(source, token, "const") || isKeyword(source, token, "static") || isKeyword(source, token, "extern");
 }
+function isInsideStructBody(source: Source, limit: usize): bool {
+  let offset: usize = 0usize;
+  let depth: usize = 0usize;
+  let structDepth: usize = 0usize;
+  let pendingStruct = false;
+  while (offset<limit) {
+    const token = next(source, offset);
+    if (isEnd(token) || token.start >= limit) {
+      break;
+    }
+    if (depth === 0usize && isKeyword(source, token, "struct")) {
+      pendingStruct = true;
+    }
+    const byte = firstByte(source, token);
+    if (byte === 123i32) {
+      depth = depth + 1usize;
+      if (pendingStruct) {
+        structDepth = depth;
+        pendingStruct = false;
+      }
+    } else if (byte === 125i32) {
+      if (depth === structDepth) {
+        structDepth = 0usize;
+      }
+      if (depth > 0usize) {
+        depth = depth - 1usize;
+      }
+    }
+    offset = token.end;
+  }
+  return structDepth > 0usize;
+}
 function isIdentifierToken(token: Token): bool {
-  match (token.kind) {
-    case TokenKind.Identifier: {
-      return true;
-    }
-    case TokenKind.Number: {
-      return false;
-    }
-    case TokenKind.String: {
-      return false;
-    }
-    case TokenKind.Punctuation: {
-      return false;
-    }
-    case TokenKind.Invalid: {
-      return false;
-    }
-    case TokenKind.End: {
-      return false;
-    }
+  return switch(token.kind) {
+    case TokenKind.Identifier: true, default: false,
   };
-  return false;
 }
 function isWordByte(value: i32): bool {
   return(value >= 65i32 && value <= 90i32) ||(value >= 97i32 && value <= 122i32) ||(value >= 48i32 && value <= 57i32) || value === 95i32 || value >= 128i32;
@@ -140,6 +154,23 @@ export function parse(source: Source): ParseSummary {
     if (isKeyword(source, token, "null")) {
       recordError( & mut errors, 1002i32, token.start, token.end);
     }
+    if (isKeyword(source, token, "dyn") || isKeyword(source, token, "match") || isKeyword(source, token, "self") || isKeyword(source, token, "where") || isKeyword(source, token, "impl") ||(isKeyword(source, token, "constructor") && isInsideStructBody(source, token.start))) {
+      recordError( & mut errors, 1016i32, token.start, token.end);
+    }
+    if (isKeyword(source, token, "import")) {
+      const imported = next(source, token.end);
+      const alias = next(source, imported.end);
+      if (firstByte(source, imported) === 42i32 && isKeyword(source, alias, "as")) {
+        recordError( & mut errors, 1016i32, imported.start, alias.end);
+      }
+    }
+    if (isKeyword(source, token, "extern") &&(!hasPrevious || !isKeyword(source, previous, "declare"))) {
+      const qualifier = next(source, token.end);
+      const block = next(source, qualifier.end);
+      if (firstByte(source, qualifier) === 34i32 && firstByte(source, block) === 123i32) {
+        recordError( & mut errors, 1016i32, token.start, block.end);
+      }
+    }
     if (optionalBarPending) {
       if (!isKeyword(source, token, "undefined")) {
         recordError( & mut errors, 1003i32, token.start, token.end);
@@ -148,9 +179,6 @@ export function parse(source: Source): ParseSummary {
     }
     if (isLooseEquality(source, token)) {
       recordError( & mut errors, 1004i32, token.start, token.end);
-    }
-    if (firstByte(source, token) === 33i32 && !isLooseEquality(source, token) && token.end <= source.length &&(token.end >= source.length || byteAt(source, token.end) !== 61i32) && hasPrevious && !isKeyword(source, previous, "return") && !isKeyword(source, previous, "throw") && !isKeyword(source, previous, "try") &&(isIdentifierToken(previous) || tokenEndsWithWord(source, previous) || firstByte(source, previous) === 41i32 || firstByte(source, previous) === 93i32 || firstByte(source, previous) === 125i32)) {
-      recordError( & mut errors, 1005i32, token.start, token.end);
     }
     if (firstByte(source, token) === 46i32 && token.start + 2usize < source.length && byteAt(source, token.start + 1usize) === 46i32 && byteAt(source, token.start + 2usize) === 46i32 && depth > 0usize && expected % 4u64 === 3u64) {
       recordError( & mut errors, 1006i32, token.start, token.end);
@@ -191,7 +219,7 @@ export function parse(source: Source): ParseSummary {
     } else if (tokenEndsWithWord(source, token)) {
       if (angleDepth > 0usize) {
         const lifetimeParameter = hasPrevious &&(isKeyword(source, previous, "lifetime") || isKeyword(source, previous, "throws"));
-        if (angleLastIdentifier && !lifetimeParameter) {
+        if (angleLastIdentifier && !lifetimeParameter && !isKeyword(source, token, "extends") && !isKeyword(source, previous, "extends")) {
           recordError( & mut errors, 1009i32, previous.start, token.end);
         }
         angleLastIdentifier = true;

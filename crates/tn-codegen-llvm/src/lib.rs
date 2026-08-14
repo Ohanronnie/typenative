@@ -3199,6 +3199,38 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ..
+            } if matches!(operation.as_str(), "byte_address" | "byte_address_i32") => {
+                let pointer = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!("{operation} operation lacks a pointer"))
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let offset = operands
+                    .get(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!("{operation} operation lacks an offset"))
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                // These helpers intentionally address raw byte storage even when the source
+                // pointer's pointee is a wider erased slot type.
+                Ok(unsafe {
+                    self.builder
+                        .build_gep(
+                            self.generator.context.i8_type(),
+                            pointer,
+                            &[offset],
+                            "byte.address",
+                        )?
+                        .into()
+                })
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
             } if operation == "borrow_element" => {
                 let pointer_operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("borrow_element operation lacks a pointer".into())

@@ -1,0 +1,9 @@
+import { emitProjectProgram } from "./generic_codegen";
+import { Source } from "./lexer";
+
+// The code-generation boundary accepts the complete source graph and delegates
+// product selection to the typed project renderer. Keeping this façade small
+// gives the driver one stable entry point for every native product.
+export function emitProgram(output: * const u8, input: * const u8, source: Source, product: i32): i32 {
+  return emitProjectProgram(output, input, source, product);
+}

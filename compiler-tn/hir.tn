@@ -1,14 +1,12 @@
-import { Vec, vecGet, vecPush, vecWithCapacity } from "std/collections";
+import { CompilerBuffer, bufferGet, bufferPush, bufferWithCapacity } from "./collections";
 import { Source, Token, TokenKind, firstByte, isKeyword, next, sourceIdentity } from "./lexer";
 import { ParseSummary, isEnd } from "./parser";
+import { hashDeclaration } from "./support";
 
-extern "C" {
-  function tn_selfhost_hash_declaration_with_source_identity(source: * const u8, length: usize, start: usize, end: usize, sourceIdentity: u64): usize;
-}
-@derive(Copy)export enum HirDeclarationKind {
+@Copy export enum HirDeclarationKind {
   Function, Struct, Enum, Class, Interface, Type, Implementation, Value, Extern,
 }
-@derive(Copy)export struct HirDeclaration {
+@Copy export struct HirDeclaration {
   public kind: HirDeclarationKind;
   public start: usize;
   public end: usize;
@@ -37,7 +35,7 @@ export struct HirProgram {
   public firstDeclarationStart: usize;
   public firstDeclarationEnd: usize;
   public functionBodyCount: usize;
-  public declarations: Vec<usize>;
+  public declarations: CompilerBuffer<usize>;
 }
 function declarationKind(source: Source, token: Token): HirDeclarationKind {
   if (isKeyword(source, token, "function")) {
@@ -68,10 +66,23 @@ function declarationKind(source: Source, token: Token): HirDeclarationKind {
 }
 function declarationBody(source: Source, name: Token): Token {
   let cursor = name.end;
+  let depth: usize = 0usize;
   while (cursor<source.length) {
     const token = next(source, cursor);
-    if (isEnd(token) || firstByte(source, token) === 123i32 || firstByte(source, token) === 59i32) {
+    if (isEnd(token)) {
       return token;
+    }
+    const byte = firstByte(source, token);
+    if (byte === 123i32 && depth === 0usize) {
+      return token;
+    }
+    if (byte === 59i32 && depth === 0usize) {
+      return token;
+    }
+    if (byte === 40i32 || byte === 91i32) {
+      depth = depth + 1usize;
+    } else if ((byte === 41i32 || byte === 93i32) && depth > 0usize) {
+      depth = depth - 1usize;
     }
     cursor = token.end;
   }
@@ -103,44 +114,17 @@ function mutableUsizePointer(value: & mut usize): * mut u8 {
     return value as * mut usize as * mut u8;
   }
 }
-function pushWord(words: & mut Vec<usize>, value: usize): void {
+function pushWord(words: & mut CompilerBuffer<usize>, value: usize): void {
   let writable: usize = value;
   unsafe {
     const pointer = mutableUsizePointer( & mut writable);
-    vecPush(words, pointer as * const u8);
+    bufferPush(words, pointer as * const u8);
   }
 }
 function kindValue(kind: HirDeclarationKind): usize {
-  match (kind) {
-    case HirDeclarationKind.Function: {
-      return 1usize;
-    }
-    case HirDeclarationKind.Struct: {
-      return 2usize;
-    }
-    case HirDeclarationKind.Enum: {
-      return 3usize;
-    }
-    case HirDeclarationKind.Class: {
-      return 4usize;
-    }
-    case HirDeclarationKind.Interface: {
-      return 5usize;
-    }
-    case HirDeclarationKind.Type: {
-      return 6usize;
-    }
-    case HirDeclarationKind.Implementation: {
-      return 7usize;
-    }
-    case HirDeclarationKind.Value: {
-      return 8usize;
-    }
-    case HirDeclarationKind.Extern: {
-      return 9usize;
-    }
+  return switch(kind) {
+    case HirDeclarationKind.Function: 1usize, case HirDeclarationKind.Struct: 2usize, case HirDeclarationKind.Enum: 3usize, case HirDeclarationKind.Class: 4usize, case HirDeclarationKind.Interface: 5usize, case HirDeclarationKind.Type: 6usize, case HirDeclarationKind.Implementation: 7usize, case HirDeclarationKind.Value: 8usize, case HirDeclarationKind.Extern: 9usize,
   };
-  return 0usize;
 }
 function isValueDeclaration(source: Source, token: Token, previous: Token, hasPrevious: bool): bool {
   if (!isKeyword(source, token, "const") && !isKeyword(source, token, "static")) {
@@ -152,8 +136,8 @@ function isValueDeclaration(source: Source, token: Token, previous: Token, hasPr
   const byte = firstByte(source, previous);
   return byte !== 38i32 && byte !== 42i32;
 }
-function collectDeclarations(source: Source, summary: ParseSummary): Vec<usize> {
-  let declarations = vecWithCapacity<usize>(8usize, summary.declarationCount * 8usize + 8usize);
+function collectDeclarations(source: Source, summary: ParseSummary): CompilerBuffer<usize> {
+  let declarations = bufferWithCapacity<usize>(8usize, summary.declarationCount * 8usize + 8usize);
   const sourceHash = sourceIdentity(source);
   let offset: usize = 0usize;
   let depth: usize = 0usize;
@@ -167,7 +151,8 @@ function collectDeclarations(source: Source, summary: ParseSummary): Vec<usize> 
       break;
     }
     if (depth === 0usize &&(isKeyword(source, token, "function") || isKeyword(source, token, "struct") || isKeyword(source, token, "enum") || isKeyword(source, token, "class") || isKeyword(source, token, "interface") || isKeyword(source, token, "type") || isKeyword(source, token, "impl") || isValueDeclaration(source, token, previous, hasPrevious) || isKeyword(source, token, "extern"))) {
-      const name = next(source, token.end);
+      const firstName = next(source, token.end);
+      const name = isKeyword(source, token, "static") && isKeyword(source, firstName, "mut")?next(source, firstName.end): firstName;
       const body = declarationBody(source, name);
       const end = declarationEnd(source, body);
       const bodyStart = firstByte(source, body) === 123i32?body.start: 0usize;
@@ -196,7 +181,7 @@ function collectDeclarations(source: Source, summary: ParseSummary): Vec<usize> 
       {
         let identity: usize = 0usize;
         unsafe {
-          identity = tn_selfhost_hash_declaration_with_source_identity(source.pointer, source.length, token.start, end, sourceHash);
+          identity = hashDeclaration(source.pointer, source.length, token.start, end, sourceHash);
         }
         pushWord( & mut declarations, identity);
       }
@@ -213,7 +198,7 @@ function collectDeclarations(source: Source, summary: ParseSummary): Vec<usize> 
   }
   return declarations;
 }
-export function lower(source: Source, summary: ParseSummary): HirProgram {
+export function lowerHir(source: Source, summary: ParseSummary): HirProgram {
   let offset: usize = 0usize;
   let functionCount: usize = 0usize;
   let typeCount: usize = 0usize;

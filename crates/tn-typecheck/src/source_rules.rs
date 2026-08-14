@@ -341,11 +341,16 @@ fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
                 || path.ends_with("runtime/platform/darwin-arm64.tn")
                 || path.ends_with("runtime/platform/linux-x86_64.tn")
         }
-        "call_raw" | "call_raw_void" | "call_raw_pointer" => path.ends_with("runtime/runtime.tn"),
+        "call_raw" | "call_raw_void" | "call_raw_pointer" | "byte_address" | "byte_address_i32" => {
+            path.ends_with("runtime/runtime.tn")
+        }
         "borrow_shared" => path.ends_with("std/alloc.tn") || path.ends_with("std/string.tn"),
         "borrow_mut" => path.ends_with("std/alloc.tn") || path.ends_with("std/sync.tn"),
         "borrow_element" => {
-            path.ends_with("std/collections.tn") || path.ends_with("runtime/runtime.tn")
+            path.ends_with("std/collections.tn")
+                || path.ends_with("runtime/runtime.tn")
+                || path.ends_with("runtime/platform/darwin-arm64.tn")
+                || path.ends_with("runtime/platform/linux-x86_64.tn")
         }
         "arc_clone" => path.ends_with("std/alloc.tn"),
         "is_string"

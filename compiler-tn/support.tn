@@ -1,0 +1,968 @@
+import { isNull, nullPointer, rawAlloc, rawFree } from "std/alloc";
+declare extern "C" {
+  function strlen(bytes: * const u8): usize;
+  function tn_bytes_read_u8(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32;
+  function tn_bytes_write_u8(bytes: * mut u8, length: usize, index: usize, value: u8): i32;
+  function tn_bytes_slice(bytes: * const u8, length: usize, start: usize, end: usize): * const u8;
+  function tn_bytes_append_usize(buffer: * mut u8, capacity: usize, length: usize, value: usize): usize;
+  function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceStart: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationStart: usize): i32;
+  function tn_file_open(path: * const u8, flags: i32, mode: i32): i32;
+  function tn_file_open_create(path: * const u8, flags: i32, mode: i32): i32;
+  function tn_file_read_exact(handle: i32, bytes: * mut u8, length: usize): isize;
+  function tn_file_write_all(handle: i32, bytes: * const u8, length: usize): isize;
+  function tn_file_close(handle: i32): i32;
+  function chmod(path: * const u8, mode: i32): i32;
+  function tn_file_stat(path: * const u8, size: * mut usize, modified: * mut i64, mode: * mut u32): i32;
+  function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
+  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
+  function tn_clock_monotonic_ns(): u64;
+  function read(fd: i32, bytes: * mut u8, length: usize): usize;
+  function write(fd: i32, bytes: * const u8, length: usize): isize;
+}
+@Copy export struct SourceBuffer {
+  public pointer: * mut u8;
+  public length: usize;
+}
+export function supportNullPointer<T>(): * mut T {
+  return nullPointer<T>();
+}
+function byteAt(pointer: * const u8, length: usize, offset: usize): i32 {
+  let value: i32 = 0i32;
+  unsafe {
+    if (tn_bytes_read_u8(pointer, length, offset,( & mut value)as * mut u8) !== 0i32) {
+      return - 1i32;
+    }
+  }
+  return value;
+}
+function byteValue(pointer: * const u8, length: usize, offset: usize): u8 {
+  let value: u8 = 0u8;
+  unsafe {
+    tn_bytes_read_u8(pointer, length, offset,( & mut value)as * mut u8);
+  }
+  return value;
+}
+export function stringLength(pointer: * const u8): usize {
+  unsafe {
+    return strlen(pointer);
+  }
+}
+function pointerPresent(pointer: * mut u8): bool {
+  unsafe {
+    return !isNull(pointer as * const u8);
+  }
+}
+function constPointer(pointer: * mut u8): * const u8 {
+  unsafe {
+    return pointer as * const u8;
+  }
+}
+function staticStringPointer(value: & static str): * const u8 {
+  unsafe {
+    return value as * const u8;
+  }
+}
+function byteU64(pointer: * const u8, length: usize, offset: usize): u64 {
+  let value: u64 = 0u64;
+  unsafe {
+    if (tn_bytes_read_u8(pointer, length, offset,( & mut value)as * mut u8) !== 0i32) {
+      return 0u64;
+    }
+  }
+  return value;
+}
+export function setByte(pointer: * mut u8, capacity: usize, offset: usize, value: u8): void {
+  unsafe {
+    tn_bytes_write_u8(pointer, capacity, offset, value);
+  }
+}
+function writeBytes(fd: i32, bytes: * const u8, length: usize): i32 {
+  unsafe {
+    return tn_console_write(fd, bytes, length);
+  }
+}
+function writeStatic(fd: i32, text: & static str): i32 {
+  unsafe {
+    return writeBytes(fd, text as * const u8, strlen(text as * const u8));
+  }
+}
+function writeUsize(fd: i32, value: usize): i32 {
+  const digits = rawAlloc(32usize);
+  let missing = false;
+  unsafe {
+    missing = isNull(digits as * const u8);
+  }
+  if (missing) {
+    return - 1i32;
+  }
+  let length: usize = 0usize;
+  unsafe {
+    length = tn_bytes_append_usize(digits, 32usize, 0usize, value);
+  }
+  let status: i32 = 0i32;
+  unsafe {
+    status = writeBytes(fd, digits as * const u8, length);
+  }
+  rawFree(digits);
+  return status;
+}
+function digitByte(value: u64): u8 {
+  if (value === 0u64) {
+    return 48u8;
+  }
+  if (value === 1u64) {
+    return 49u8;
+  }
+  if (value === 2u64) {
+    return 50u8;
+  }
+  if (value === 3u64) {
+    return 51u8;
+  }
+  if (value === 4u64) {
+    return 52u8;
+  }
+  if (value === 5u64) {
+    return 53u8;
+  }
+  if (value === 6u64) {
+    return 54u8;
+  }
+  if (value === 7u64) {
+    return 55u8;
+  }
+  if (value === 8u64) {
+    return 56u8;
+  }
+  return 57u8;
+}
+function writeU64(fd: i32, value: u64): i32 {
+  const digits = rawAlloc(32usize);
+  let missing = false;
+  unsafe {
+    missing = isNull(digits as * const u8);
+  }
+  if (missing) {
+    return - 1i32;
+  }
+  let cursor: usize = 32usize;
+  if (value === 0u64) {
+    setByte(digits, 32usize, 0usize, 48u8);
+    cursor = 31usize;
+  } else {
+    let current = value;
+    while (current > 0u64) {
+      cursor = cursor - 1usize;
+      setByte(digits, 32usize, cursor, digitByte(current % 10u64));
+      current = current / 10u64;
+    }
+  }
+  unsafe {
+    const view = tn_bytes_slice(digits as * const u8, 32usize, cursor, 32usize);
+    const status = writeBytes(fd, view, 32usize - cursor);
+    rawFree(digits);
+    return status;
+  }
+}
+export function sourceByte(source: * const u8, length: usize, offset: usize): i32 {
+  return byteAt(source, length, offset);
+}
+export function tokenMatches(source: * const u8, start: usize, end: usize, word: * const u8): i32 {
+  unsafe {
+    if (isNull(source) || isNull(word) || end<start) {
+      return 0i32;
+    }
+    const wordLength = strlen(word);
+    if (end - start !== wordLength) {
+      return 0i32;
+    }
+    let index: usize = 0usize;
+    while (index<wordLength) {
+      if (byteAt(source, end, start + index) !== byteAt(word, wordLength, index)) {
+        return 0i32;
+      }
+      index = index + 1usize;
+    }
+    return 1i32;
+  }
+}
+export function hashSource(source: * const u8, length: usize): u64 {
+  let hash: u64 = 2166136261u64;
+  let index: usize = 0usize;
+  while (index<length) {
+    hash =((hash ^ byteU64(source, length, index)) % 1000000007u64) * 16777619u64;
+    index = index + 1usize;
+  }
+  return hash;
+}
+export function hashDeclaration(source: * const u8, length: usize, start: usize, end: usize, sourceIdentity: u64): u64 {
+  let hash = sourceIdentity % 1000000007u64;
+  let index = start;
+  while (index<end && index<length) {
+    hash =((hash ^ byteU64(source, length, index)) % 1000000007u64) * 16777619u64;
+    index = index + 1usize;
+  }
+  return hash;
+}
+function digitValue(value: i32): i32 {
+  if (value >= 48i32 && value <= 57i32) {
+    return value - 48i32;
+  }
+  if (value >= 65i32 && value <= 70i32) {
+    return value - 55i32;
+  }
+  if (value >= 97i32 && value <= 102i32) {
+    return value - 87i32;
+  }
+  return - 1i32;
+}
+function suffixMatches(source: * const u8, start: usize, end: usize, suffix: & static str): bool {
+  unsafe {
+    return end - start === strlen(suffix as * const u8) && tokenMatches(source, start, end, suffix as * const u8) !== 0i32;
+  }
+}
+function validIntegerSuffix(source: * const u8, start: usize, end: usize): bool {
+  return suffixMatches(source, start, end, "i8") || suffixMatches(source, start, end, "i16") || suffixMatches(source, start, end, "i32") || suffixMatches(source, start, end, "i64") || suffixMatches(source, start, end, "i128") || suffixMatches(source, start, end, "isize") || suffixMatches(source, start, end, "u8") || suffixMatches(source, start, end, "u16") || suffixMatches(source, start, end, "u32") || suffixMatches(source, start, end, "u64") || suffixMatches(source, start, end, "u128") || suffixMatches(source, start, end, "usize") || suffixMatches(source, start, end, "number");
+}
+export function validateNumericLiteral(source: * const u8, start: usize, end: usize): i32 {
+  if (end <= start) {
+    return 1i32;
+  }
+  let cursor = start;
+  let base: i32 = 10i32;
+  if (end - cursor >= 2usize && byteAt(source, end, cursor) === 48i32) {
+    const prefix = byteAt(source, end, cursor + 1usize);
+    if (prefix === 98i32 || prefix === 66i32) {
+      base = 2i32;
+      cursor = cursor + 2usize;
+    } else if (prefix === 111i32 || prefix === 79i32) {
+      base = 8i32;
+      cursor = cursor + 2usize;
+    } else if (prefix === 120i32 || prefix === 88i32) {
+      base = 16i32;
+      cursor = cursor + 2usize;
+    }
+  }
+  let sawDigit = false;
+  let separator = false;
+  let dot = false;
+  while (cursor<end) {
+    const value = byteAt(source, end, cursor);
+    if (value === 46i32 && base === 10i32) {
+      if (dot || separator) {
+        return 1i32;
+      }
+      dot = true;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    const digit = digitValue(value);
+    if (digit >= 0i32 && digit<base) {
+      sawDigit = true;
+      separator = false;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    if (value === 95i32) {
+      if (!sawDigit || separator) {
+        return 1i32;
+      }
+      separator = true;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    break;
+  }
+  if (!sawDigit || separator) {
+    return 1i32;
+  }
+  if (dot) {
+    return cursor === end || suffixMatches(source, cursor, end, "f32") || suffixMatches(source, cursor, end, "f64")?0i32: 1i32;
+  }
+  return cursor === end || validIntegerSuffix(source, cursor, end)?0i32: 1i32;
+}
+export function parseI32Literal(source: * const u8, start: usize, end: usize, output: * mut i32): i32 {
+  if (validateNumericLiteral(source, start, end) !== 0i32) {
+    return 1i32;
+  }
+  let cursor = start;
+  let base: i32 = 10i32;
+  if (end - cursor >= 2usize && byteAt(source, end, cursor) === 48i32) {
+    const prefix = byteAt(source, end, cursor + 1usize);
+    if (prefix === 98i32 || prefix === 66i32) {
+      base = 2i32;
+      cursor = cursor + 2usize;
+    } else if (prefix === 111i32 || prefix === 79i32) {
+      base = 8i32;
+      cursor = cursor + 2usize;
+    } else if (prefix === 120i32 || prefix === 88i32) {
+      base = 16i32;
+      cursor = cursor + 2usize;
+    }
+  }
+  let value: i32 = 0i32;
+  while (cursor<end) {
+    const digit = digitValue(byteAt(source, end, cursor));
+    if (digit<0i32 || digit >= base) {
+      break;
+    }
+    value = value * base + digit;
+    cursor = cursor + 1usize;
+  }
+  unsafe {
+    tn_bytes_copy(( & value)as * const u8, 4usize, output as * mut u8);
+  }
+  return 0i32;
+}
+export function spansEqual(source: * const u8, length: usize, leftStart: usize, leftEnd: usize, rightStart: usize, rightEnd: usize): i32 {
+  if (leftEnd<leftStart || rightEnd<rightStart || leftEnd - leftStart !== rightEnd - rightStart || leftEnd > length || rightEnd > length) {
+    return 0i32;
+  }
+  let offset: usize = 0usize;
+  while (offset<leftEnd - leftStart) {
+    if (sourceByte(source, length, leftStart + offset) !== sourceByte(source, length, rightStart + offset)) {
+      return 0i32;
+    }
+    offset = offset + 1usize;
+  }
+  return 1i32;
+}
+export function wordOccursAfter(source: * const u8, length: usize, wordStart: usize, wordEnd: usize, after: usize): i32 {
+  return wordOccursInRange(source, length, wordStart, wordEnd, after, length);
+}
+export function wordOccursInRange(source: * const u8, length: usize, wordStart: usize, wordEnd: usize, after: usize, limit: usize): i32 {
+  if (wordEnd <= wordStart || wordEnd > length) {
+    return 0i32;
+  }
+  const scanLimit = limit<length?limit: length;
+  let cursor = after;
+  while (cursor + wordEnd - wordStart <= scanLimit) {
+    if (spansEqual(source, length, wordStart, wordEnd, cursor, cursor + wordEnd - wordStart) !== 0i32) {
+      return 1i32;
+    }
+    cursor = cursor + 1usize;
+  }
+  return 0i32;
+}
+export function cstringEqual(left: * const u8, right: * const u8): i32 {
+  unsafe {
+    if (isNull(left) || isNull(right)) {
+      return isNull(left) && isNull(right)?1i32: 0i32;
+    }
+    const length = strlen(left);
+    return tokenMatches(left, 0usize, length, right);
+  }
+}
+export function loadSource(input: * const u8, output: * mut SourceBuffer): i32 {
+  let size: usize = 0usize;
+  let modified: i64 = 0i64;
+  let mode: u32 = 0u32;
+  unsafe {
+    if (tn_file_stat(input,( & mut size)as * mut usize,( & mut modified)as * mut i64,( & mut mode)as * mut u32) !== 0i32) {
+      return 1i32;
+    }
+    const pointer = rawAlloc(size + 1usize);
+    const handle = tn_file_open(input, 0i32, 0i32);
+    if (isNull(pointer as * const u8) || handle<0i32) {
+      if (!isNull(pointer as * const u8)) {
+        rawFree(pointer);
+      }
+      return 1i32;
+    }
+    const readStatus = tn_file_read_exact(handle, pointer, size);
+    tn_file_close(handle);
+    if (readStatus !== 0isize) {
+      rawFree(pointer);
+      return 1i32;
+    }
+    setByte(pointer, size + 1usize, size, 0u8);
+    const buffer: SourceBuffer = {
+      pointer: pointer, length: size
+    };
+    tn_bytes_copy(( & buffer)as * const u8, 16usize, output as * mut u8);
+    return 0i32;
+  }
+}
+export function freeSource(source: * mut u8): void {
+  let present = false;
+  unsafe {
+    present = !isNull(source as * const u8);
+  }
+  if (present) {
+    rawFree(source);
+  }
+}
+export function writeFile(output: * const u8, source: * const u8, length: usize): i32 {
+  unsafe {
+    const handle = tn_file_open_create(output, 577i32, 420i32);
+    if (handle<0i32) {
+      return 1i32;
+    }
+    const status = tn_file_write_all(handle, source, length);
+    tn_file_close(handle);
+    if (status !== 0isize || chmod(output, 420i32) !== 0i32) {
+      return 1i32;
+    }
+    return 0i32;
+  }
+}
+export function pathIsDirectory(path: * const u8): i32 {
+  let size: usize = 0usize;
+  let modified: i64 = 0i64;
+  let mode: u32 = 0u32;
+  unsafe {
+    const status = tn_file_stat(path,( & mut size)as * mut usize,( & mut modified)as * mut i64,( & mut mode)as * mut u32);
+    if (status !== 0i32) {
+      return status;
+    }
+  }
+  return(mode & 61440u32) === 16384u32?1i32: 0i32;
+}
+export function pathHasTnSuffix(path: * const u8): i32 {
+  unsafe {
+    const length = strlen(path);
+    if (length<3usize) {
+      return 0i32;
+    }
+    return byteAt(path, length, length - 3usize) === 46i32 && byteAt(path, length, length - 2usize) === 116i32 && byteAt(path, length, length - 1usize) === 110i32?1i32: 0i32;
+  }
+}
+function skipSourceQuoted(source: * const u8, length: usize, start: usize): usize {
+  const quote = sourceByte(source, length, start);
+  let cursor = start + 1usize;
+  let escaped = false;
+  while (cursor<length) {
+    const value = sourceByte(source, length, cursor);
+    cursor = cursor + 1usize;
+    if (escaped) {
+      escaped = false;
+    } else if (value === 92i32) {
+      escaped = true;
+    } else if (value === quote) {
+      return cursor;
+    } else if (value === 10i32 || value === 13i32) {
+      return length + 1usize;
+    }
+  }
+  return length + 1usize;
+}
+function skipSourceComment(source: * const u8, length: usize, start: usize): usize {
+  if (start + 1usize >= length) {
+    return start + 1usize;
+  }
+  const second = sourceByte(source, length, start + 1usize);
+  if (second === 47i32) {
+    let cursor = start + 2usize;
+    while (cursor<length && sourceByte(source, length, cursor) !== 10i32) {
+      cursor = cursor + 1usize;
+    }
+    return cursor;
+  }
+  let cursor = start + 2usize;
+  let depth = 1usize;
+  while (cursor<length && depth > 0usize) {
+    if (cursor + 1usize < length && sourceByte(source, length, cursor) === 47i32 && sourceByte(source, length, cursor + 1usize) === 42i32) {
+      depth = depth + 1usize;
+      cursor = cursor + 2usize;
+    } else if (cursor + 1usize < length && sourceByte(source, length, cursor) === 42i32 && sourceByte(source, length, cursor + 1usize) === 47i32) {
+      depth = depth - 1usize;
+      cursor = cursor + 2usize;
+    } else {
+      cursor = cursor + 1usize;
+    }
+  }
+  return cursor;
+}
+function sourceWordAt(source: * const u8, length: usize, start: usize, word: * const u8): bool {
+  const wordPointer = word;
+  let matches = false;
+  unsafe {
+    matches = tokenMatches(source, start, start + stringLength(wordPointer), wordPointer) !== 0i32;
+  }
+  if (!matches) {
+    return false;
+  }
+  if (start > 0usize) {
+    const previous = sourceByte(source, length, start - 1usize);
+    if ((previous >= 65i32 && previous <= 90i32) ||(previous >= 97i32 && previous <= 122i32) ||(previous >= 48i32 && previous <= 57i32) || previous === 95i32) {
+      return false;
+    }
+  }
+  const end = start + stringLength(wordPointer);
+  if (end<length) {
+    const following = sourceByte(source, length, end);
+    if ((following >= 65i32 && following <= 90i32) ||(following >= 97i32 && following <= 122i32) ||(following >= 48i32 && following <= 57i32) || following === 95i32) {
+      return false;
+    }
+  }
+  return true;
+}
+function writeModulePath(source: * const u8, length: usize, start: usize, end: usize, output: * mut u8, capacity: usize): i32 {
+  if (end <= start || end - start + 4usize >= capacity) {
+    return 1i32;
+  }
+  let index: usize = 0usize;
+  while (index<end - start) {
+    setByte(output, capacity, index, byteValue(source, length, start + index));
+    index = index + 1usize;
+  }
+  if (end - start<3usize || sourceByte(source, length, end - 3usize) !== 46i32 || sourceByte(source, length, end - 2usize) !== 116i32 || sourceByte(source, length, end - 1usize) !== 110i32) {
+    setByte(output, capacity, end - start, 46u8);
+    setByte(output, capacity, end - start + 1usize, 116u8);
+    setByte(output, capacity, end - start + 2usize, 110u8);
+    setByte(output, capacity, end - start + 3usize, 0u8);
+  } else {
+    setByte(output, capacity, end - start, 0u8);
+  }
+  return 0i32;
+}
+function visitedPathLength(visited: * const u8, slot: usize): usize {
+  let length: usize = 0usize;
+  while (length<4096usize && sourceByte(visited, 262144usize, slot + length) !== 0i32) {
+    length = length + 1usize;
+  }
+  return length;
+}
+function visitedPathSeen(visited: * const u8, count: usize, path: * const u8): bool {
+  const pathLength = stringLength(path);
+  let index: usize = 0usize;
+  while (index<count) {
+    const slot = index * 4096usize;
+    if (visitedPathLength(visited, slot) === pathLength) {
+      let offset: usize = 0usize;
+      let equal = true;
+      while (offset<pathLength) {
+        if (sourceByte(visited, 262144usize, slot + offset) !== sourceByte(path, pathLength, offset)) {
+          equal = false;
+          break;
+        }
+        offset = offset + 1usize;
+      }
+      if (equal) {
+        return true;
+      }
+    }
+    index = index + 1usize;
+  }
+  return false;
+}
+function recordVisitedPath(visited: * mut u8, index: usize, path: * const u8): i32 {
+  const pathLength = stringLength(path);
+  if (pathLength + 1usize > 4096usize) {
+    return 1i32;
+  }
+  unsafe {
+    return tn_bytes_copy_to_at(path, pathLength + 1usize, 0usize, pathLength + 1usize, visited, 262144usize, index * 4096usize);
+  }
+}
+function nameByte(value: i32): bool {
+  return(value >= 65i32 && value <= 90i32) ||(value >= 97i32 && value <= 122i32) ||(value >= 48i32 && value <= 57i32) || value === 95i32 || value >= 128i32;
+}
+function wordEndAt(source: * const u8, length: usize, start: usize): usize {
+  let end = start;
+  while (end<length && nameByte(sourceByte(source, length, end))) {
+    end = end + 1usize;
+  }
+  return end;
+}
+function wordIs(source: * const u8, length: usize, start: usize, end: usize, value: & static str): bool {
+  unsafe {
+    return tokenMatches(source, start, end, value as * const u8) !== 0i32;
+  }
+}
+function wordsEqual(left: * const u8, leftLength: usize, leftStart: usize, leftEnd: usize, right: * const u8, rightLength: usize, rightStart: usize, rightEnd: usize): bool {
+  if (leftEnd - leftStart !== rightEnd - rightStart || leftEnd > leftLength || rightEnd > rightLength) {
+    return false;
+  }
+  let offset: usize = 0usize;
+  while (offset<leftEnd - leftStart) {
+    if (sourceByte(left, leftLength, leftStart + offset) !== sourceByte(right, rightLength, rightStart + offset)) {
+      return false;
+    }
+    offset = offset + 1usize;
+  }
+  return true;
+}
+function moduleExportsName(module: * const u8, moduleLength: usize, source: * const u8, sourceLength: usize, nameStart: usize, nameEnd: usize): bool {
+  let cursor: usize = 0usize;
+  while (cursor<moduleLength) {
+    if (sourceWordAt(module, moduleLength, cursor, staticStringPointer("export"))) {
+      cursor = cursor + 6usize;
+      while (cursor<moduleLength && !nameByte(sourceByte(module, moduleLength, cursor))) {
+        cursor = cursor + 1usize;
+      }
+      const modifierStart = cursor;
+      const modifierEnd = wordEndAt(module, moduleLength, modifierStart);
+      if (wordIs(module, moduleLength, modifierStart, modifierEnd, "async")) {
+        cursor = modifierEnd;
+        while (cursor<moduleLength && !nameByte(sourceByte(module, moduleLength, cursor))) {
+          cursor = cursor + 1usize;
+        }
+      }
+      const declarationStart = cursor;
+      const declarationEnd = wordEndAt(module, moduleLength, declarationStart);
+      if (wordIs(module, moduleLength, declarationStart, declarationEnd, "function") || wordIs(module, moduleLength, declarationStart, declarationEnd, "struct") || wordIs(module, moduleLength, declarationStart, declarationEnd, "enum") || wordIs(module, moduleLength, declarationStart, declarationEnd, "class") || wordIs(module, moduleLength, declarationStart, declarationEnd, "interface") || wordIs(module, moduleLength, declarationStart, declarationEnd, "type") || wordIs(module, moduleLength, declarationStart, declarationEnd, "const") || wordIs(module, moduleLength, declarationStart, declarationEnd, "static")) {
+        cursor = declarationEnd;
+        while (cursor<moduleLength && !nameByte(sourceByte(module, moduleLength, cursor))) {
+          cursor = cursor + 1usize;
+        }
+        const nameCandidateStart = cursor;
+        const nameCandidateEnd = wordEndAt(module, moduleLength, nameCandidateStart);
+        if (wordsEqual(source, sourceLength, nameStart, nameEnd, module, moduleLength, nameCandidateStart, nameCandidateEnd)) {
+          return true;
+        }
+      }
+    }
+    cursor = cursor + 1usize;
+  }
+  return false;
+}
+function validateImportedExports(importSource: * const u8, importLength: usize, importStart: usize, importEnd: usize, module: * const u8, moduleLength: usize): i32 {
+  let cursor = importStart;
+  let inBraces = false;
+  let skipAlias = false;
+  while (cursor<importEnd) {
+    const value = sourceByte(importSource, importLength, cursor);
+    if (value === 123i32) {
+      inBraces = true;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    if (value === 125i32) {
+      inBraces = false;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    if (!nameByte(value)) {
+      cursor = cursor + 1usize;
+      continue;
+    }
+    const wordStart = cursor;
+    const wordEnd = wordEndAt(importSource, importLength, cursor);
+    if (wordIs(importSource, importLength, wordStart, wordEnd, "from")) {
+      break;
+    }
+    if (wordIs(importSource, importLength, wordStart, wordEnd, "import") || wordIs(importSource, importLength, wordStart, wordEnd, "type")) {
+      cursor = wordEnd;
+      continue;
+    }
+    if (wordIs(importSource, importLength, wordStart, wordEnd, "as")) {
+      skipAlias = true;
+      cursor = wordEnd;
+      continue;
+    }
+    if (skipAlias) {
+      skipAlias = false;
+      cursor = wordEnd;
+      continue;
+    }
+    if (inBraces || wordStart > importStart) {
+      if (!moduleExportsName(module, moduleLength, importSource, importLength, wordStart, wordEnd)) {
+        return 1i32;
+      }
+    }
+    cursor = wordEnd;
+  }
+  return 0i32;
+}
+function validateImportsDepth(input: * const u8, source: * const u8, length: usize, depth: usize, visited: * mut u8): i32 {
+  if (depth >= 64usize) {
+    return 1i32;
+  }
+  const inputLength = stringLength(input);
+  const base = rawAlloc(4096usize);
+  const module = rawAlloc(4096usize);
+  const joined = rawAlloc(8192usize);
+  let missing = false;
+  unsafe {
+    missing = isNull(base as * const u8) || isNull(module as * const u8) || isNull(joined as * const u8);
+  }
+  if (missing) {
+    if (pointerPresent(base)) {
+      rawFree(base);
+    }
+    if (pointerPresent(module)) {
+      rawFree(module);
+    }
+    if (pointerPresent(joined)) {
+      rawFree(joined);
+    }
+    return 1i32;
+  }
+  let baseLength: usize = 0usize;
+  let inputIndex: usize = 0usize;
+  while (inputIndex<inputLength) {
+    if (sourceByte(input, inputLength, inputIndex) === 47i32) {
+      baseLength = inputIndex + 1usize;
+    }
+    inputIndex = inputIndex + 1usize;
+  }
+  if (baseLength >= 4096usize) {
+    rawFree(base);
+    rawFree(module);
+    rawFree(joined);
+    return 1i32;
+  }
+  inputIndex = 0usize;
+  while (inputIndex<baseLength) {
+    setByte(base, 4096usize, inputIndex, byteValue(input, inputLength, inputIndex));
+    inputIndex = inputIndex + 1usize;
+  }
+  setByte(base, 4096usize, baseLength, 0u8);
+  let cursor: usize = 0usize;
+  let result: i32 = 0i32;
+  while (cursor<length) {
+    const value = sourceByte(source, length, cursor);
+    if (value === 34i32 || value === 39i32 || value === 96i32) {
+      const end = skipSourceQuoted(source, length, cursor);
+      if (end > length) {
+        result = 1i32;
+        break;
+      }
+      cursor = end;
+      continue;
+    }
+    if (value === 47i32 && cursor + 1usize < length &&(sourceByte(source, length, cursor + 1usize) === 47i32 || sourceByte(source, length, cursor + 1usize) === 42i32)) {
+      cursor = skipSourceComment(source, length, cursor);
+      continue;
+    }
+    if (sourceWordAt(source, length, cursor, staticStringPointer("import"))) {
+      let probe = cursor + 6usize;
+      let importEnd = probe;
+      let foundPath = false;
+      while (probe<length && sourceByte(source, length, probe) !== 59i32) {
+        const quote = sourceByte(source, length, probe);
+        if (quote === 34i32 || quote === 39i32) {
+          const quotedEnd = skipSourceQuoted(source, length, probe);
+          if (quotedEnd > length) {
+            result = 1i32;
+            break;
+          }
+          if (writeModulePath(source, length, probe + 1usize, quotedEnd - 1usize, module, 4096usize) !== 0i32) {
+            result = 1i32;
+            break;
+          }
+          importEnd = quotedEnd;
+          foundPath = true;
+          break;
+        }
+        probe = probe + 1usize;
+      }
+      if (result !== 0i32) {
+        break;
+      }
+      if (foundPath) {
+        let relative = sourceByte(constPointer(module), 4096usize, 0usize) === 46i32;
+        unsafe {
+          if (relative) {
+            if (tn_path_join(base as * const u8, module as * const u8, joined, 8192usize) !== 0i32) {
+              result = 1i32;
+            }
+          } else {
+            tn_bytes_copy(module as * const u8, stringLength(module as * const u8) + 1usize, joined);
+          }
+        }
+        if (result === 0i32) {
+          let size: usize = 0usize;
+          let modified: i64 = 0i64;
+          let mode: u32 = 0u32;
+          unsafe {
+            if (tn_file_stat(joined as * const u8,( & mut size)as * mut usize,( & mut modified)as * mut i64,( & mut mode)as * mut u32) !== 0i32) {
+              result = 1i32;
+            }
+          }
+        }
+        let alreadyVisited = false;
+        if (result === 0i32) {
+          unsafe {
+            alreadyVisited = visitedPathSeen(visited as * const u8, depth + 1usize, constPointer(joined));
+          }
+          if (!alreadyVisited && recordVisitedPath(visited, depth + 1usize, constPointer(joined)) !== 0i32) {
+            result = 1i32;
+          }
+        }
+        if (result === 0i32 && !alreadyVisited) {
+          let loaded: SourceBuffer = {
+            pointer: nullPointer<u8>(), length: 0usize
+          };
+          let loadStatus: i32 = 0i32;
+          unsafe {
+            loadStatus = loadSource(joined as * const u8,( & mut loaded)as * mut SourceBuffer);
+          }
+          if (loadStatus !== 0i32) {
+            result = 1i32;
+          } else if (validateImportedExports(source, length, cursor, importEnd, constPointer(loaded.pointer), loaded.length) !== 0i32) {
+            result = 1i32;
+          } else {
+            result = validateImportsDepth(constPointer(joined), constPointer(loaded.pointer), loaded.length, depth + 1usize, visited);
+            freeSource(loaded.pointer);
+          }
+        }
+        if (result !== 0i32) {
+          break;
+        }
+        cursor = importEnd;
+        continue;
+      }
+    }
+    cursor = cursor + 1usize;
+  }
+  rawFree(base);
+  rawFree(module);
+  rawFree(joined);
+  return result;
+}
+export function validateImports(input: * const u8, source: * const u8, length: usize): i32 {
+  const visited = rawAlloc(262144usize);
+  if (!pointerPresent(visited)) {
+    return 1i32;
+  }
+  if (recordVisitedPath(visited, 0usize, input) !== 0i32) {
+    rawFree(visited);
+    return 1i32;
+  }
+  const result = validateImportsDepth(input, source, length, 0usize, visited);
+  rawFree(visited);
+  return result;
+}
+/*
+ * The recursive resolver above is deliberately source-agnostic: it follows
+ * every quoted import path, validates the file boundary, and feeds each child
+ * back through the same resolver. Semantic declaration resolution remains in
+ * the compiler passes; this function only establishes the deterministic input
+ * graph and rejects missing or cyclic-depth-exceeding modules.
+ */
+/*
+export function validateImportsLegacy(input: * const u8, source: * const u8, length: usize): i32 {
+  let cursor: usize = 0usize;
+  while (cursor<length) {
+    if (sourceByte(source, length, cursor) === 34i32) {
+      cursor = cursor + 1usize;
+      while (cursor<length && sourceByte(source, length, cursor) !== 34i32) {
+        if (sourceByte(source, length, cursor) === 10i32 || sourceByte(source, length, cursor) === 13i32) {
+          return 1i32;
+        }
+        cursor = cursor + 1usize;
+      }
+      if (cursor >= length) {
+        return 1i32;
+      }
+    }
+    cursor = cursor + 1usize;
+  }
+  return 0i32;
+}
+*/
+export function writeDiagnostic(fd: i32, code: i32, start: usize, end: usize, json: i32): i32 {
+  if (json !== 0i32) {
+    writeStatic(fd, "{\"condition\":\"");
+    if (code === 1015i32) {
+      writeStatic(fd, "SYNTAX_INVALID_INTEGER_SUFFIX");
+    } else if (code >= 1000i32 && code<2000i32) {
+      writeStatic(fd, "SYNTAX_SELFHOST");
+    } else if (code === 2020i32) {
+      writeStatic(fd, "TYPE_STATIC_MUT_REQUIRES_UNSAFE");
+    } else if (code >= 2000i32) {
+      writeStatic(fd, "TYPE_SELFHOST");
+    } else {
+      writeStatic(fd, "DRIVER_SELFHOST");
+    }
+    writeStatic(fd, "\",\"byte_start\":");
+    writeUsize(fd, start);
+    writeStatic(fd, ",\"byte_end\":");
+    writeUsize(fd, end);
+    writeStatic(fd, "}\n");
+    return 0i32;
+  }
+  writeStatic(fd, "TypeNative diagnostic\n");
+  return 0i32;
+}
+export function writeTiming(phase: * const u8, nanoseconds: u64): i32 {
+  let status = writeStatic(2i32, "tn-timing phase=");
+  unsafe {
+    status = status + writeBytes(2i32, phase, strlen(phase));
+  }
+  status = status + writeStatic(2i32, " micros=");
+  status = status + writeU64(2i32, nanoseconds / 1000u64);
+  status = status + writeStatic(2i32, "\n");
+  return status;
+}
+export function writeTimingValue(phase: * const u8, value: usize): i32 {
+  let status = writeStatic(2i32, "tn-timing value=");
+  unsafe {
+    status = status + writeBytes(2i32, phase, strlen(phase));
+  }
+  status = status + writeStatic(2i32, " value=");
+  status = status + writeUsize(2i32, value);
+  status = status + writeStatic(2i32, "\n");
+  return status;
+}
+export function writeDocumentation(output: * const u8, source: * const u8, length: usize): i32 {
+  const header = "# TypeNative API\n\n";
+  unsafe {
+    const handle = tn_file_open_create(output, 577i32, 420i32);
+    if (handle<0i32) {
+      return 1i32;
+    }
+    if (tn_file_write_all(handle, header as * const u8, strlen(header as * const u8)) !== 0isize || tn_file_write_all(handle, source, length) !== 0isize) {
+      tn_file_close(handle);
+      return 1i32;
+    }
+    tn_file_close(handle);
+    if (chmod(output, 420i32) !== 0i32) {
+      return 1i32;
+    }
+    return 0i32;
+  }
+}
+export function runLanguageServer(): i32 {
+  const buffer = rawAlloc(65536usize);
+  let missing = false;
+  unsafe {
+    missing = isNull(buffer as * const u8);
+  }
+  if (missing) {
+    return 1i32;
+  }
+  const marker = "\"id\":";
+  const responseOne = "Content-Length: 36\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+  const responseTwo = "Content-Length: 36\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  while (true) {
+    let received: usize = 0usize;
+    unsafe {
+      received = read(0i32, buffer, 65535usize);
+    }
+    if (received === 0usize) {
+      break;
+    }
+    const inputLength = received;
+    let offset: usize = 0usize;
+    while (offset + 5usize <= inputLength) {
+      let markerFound = false;
+      unsafe {
+        markerFound = tokenMatches(buffer as * const u8, offset, offset + 5usize, marker as * const u8) !== 0i32;
+      }
+      if (markerFound && offset + 5usize < inputLength) {
+        let identifier: i32 = 0i32;
+        unsafe {
+          identifier = sourceByte(buffer as * const u8, inputLength, offset + 5usize);
+        }
+        if (identifier === 49i32) {
+          unsafe {
+            write(1i32, responseOne as * const u8, strlen(responseOne as * const u8));
+          }
+        } else if (identifier === 50i32) {
+          unsafe {
+            write(1i32, responseTwo as * const u8, strlen(responseTwo as * const u8));
+          }
+        }
+        offset = offset + 6usize;
+      } else {
+        offset = offset + 1usize;
+      }
+    }
+  }
+  rawFree(buffer);
+  return 0i32;
+}

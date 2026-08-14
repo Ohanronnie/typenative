@@ -3,6 +3,10 @@ declare extern "C" {
   function clock_gettime(clockId: i32, value: * mut u8): i32;
   function stat(path: * const u8, output: * mut u8): i32;
   function __error(): * mut i32;
+  function opendir(path: * const u8): * mut u8;
+  function readdir(directory: * mut u8): * mut u8;
+  function closedir(directory: * mut u8): i32;
+  function memcpy(destination: * mut u8, source: * const u8, length: usize): * mut u8;
 }
 @Intrinsic("is_null")
 export function platformIsNull<T>(pointer: * const T): bool {
@@ -15,6 +19,27 @@ export function platformSizeOf<T>(): usize {
 @Intrinsic("store_raw")
 export function platformStoreRaw<T>(pointer: * mut T, value: T): bool {
   return false;
+}
+@Intrinsic("borrow_element")
+function platformDirentByte(pointer: * const u8, index: usize): & u8 {
+  unsafe {
+    return & * pointer;
+  }
+}
+function direntByte(pointer: * const u8, index: usize): u8 {
+  unsafe {
+    return * platformDirentByte(pointer, index);
+  }
+}
+function direntAddress(pointer: * const u8, index: usize): * mut u8 {
+  unsafe {
+    return platformDirentByte(pointer, index)as * mut u8;
+  }
+}
+function direntU16(pointer: * const u8, index: usize): usize {
+  unsafe {
+    return *(direntAddress(pointer, index)as * const usize) & 65535usize;
+  }
 }
 // Darwin ARM64: dev_t is 32-bit, mode_t/nlink_t are 16-bit, and st_size is
 // the 64-bit field at byte offset 96. The four timespec values each occupy
@@ -140,5 +165,43 @@ export function fileStat(path: * const u8, size: * mut usize, modified: * mut i6
     }
     runtimeFree(output);
     return 0i32;
+  }
+}
+@Export("tn_dir_open")
+export function directoryOpen(path: * const u8): * mut u8 {
+  unsafe {
+    return opendir(path);
+  }
+}
+@Export("tn_dir_next")
+export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8) || platformIsNull<u8>(name as * const u8) || capacity === 0usize) {
+      return - 22i32;
+    }
+    const entry = readdir(handle);
+    if (platformIsNull<u8>(entry as * const u8)) {
+      return 0i32;
+    }
+    const nameLength = direntU16(entry as * const u8, 18usize);
+    if (nameLength + 1usize > capacity) {
+      return - 36i32;
+    }
+    const namePointer = direntAddress(entry as * const u8, 21usize)as * const u8;
+    memcpy(name, namePointer, nameLength);
+    const terminator: u8 = 0u8;
+    memcpy(direntAddress(name as * const u8, nameLength),( & terminator)as * const u8, 1usize);
+    if (!platformIsNull<u32>(kind as * const u32)) {
+      platformStoreRaw<u32>(kind, 0u32);
+      const kindByte = direntByte(entry as * const u8, 20usize);
+      memcpy(kind as * mut u8,( & kindByte)as * const u8, 1usize);
+    }
+    return 1i32;
+  }
+}
+@Export("tn_dir_close")
+export function directoryClose(handle: * mut u8): i32 {
+  unsafe {
+    return platformIsNull<u8>(handle as * const u8)?0i32: closedir(handle);
   }
 }

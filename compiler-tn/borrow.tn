@@ -1,5 +1,5 @@
 import { isNull } from "std/alloc";
-@derive(Copy)export struct BorrowResult {
+@Copy export struct BorrowResult {
   public errors: usize;
   public checkedBlocks: usize;
   public checkedLoans: usize;
@@ -51,6 +51,6 @@ export function checkBorrow(blocks: usize, errorsFromMir: usize, functions: usiz
     errors: errors, checkedBlocks: index, checkedLoans: checkedLoans, checkedMoves: checkedMoves, checkedAwaits: checkedAwaits, firstConflictBlock: firstConflictBlock
   };
 }
-extern "C" {
+declare extern "C" {
   function tn_bytes_copy_at(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32;
 }

@@ -145,25 +145,25 @@ struct SockAddrIn {
 }
 function byteAt(pointer: * const u8, index: usize): u8 {
   unsafe {
-    const address = borrowElement<u8>(pointer, index);
+    const address = byteAddress(pointer, index);
     return *(address as * const u8);
   }
 }
 function setByte(pointer: * mut u8, index: usize, value: u8): void {
   unsafe {
-    const address = borrowElement<u8>(pointer as * const u8, index);
+    const address = byteAddress(pointer as * const u8, index);
     storeRawIntrinsic<u8>(address as * mut u8, value);
   }
 }
 function refHeader(pointer: * const u8): * mut RefHeader {
   unsafe {
-    const address = borrowElementI32<u8>(pointer, - 24i32);
+    const address = byteAddressI32(pointer, - 24i32);
     return address as * mut RefHeader;
   }
 }
 function refData(pointer: * mut u8): * mut u8 {
   unsafe {
-    const address = borrowElement<u8>(pointer as * const u8, sizeOfIntrinsic<RefHeader>());
+    const address = byteAddress(pointer as * const u8, sizeOfIntrinsic<RefHeader>());
     return address as * mut u8;
   }
 }
@@ -395,7 +395,7 @@ export function ioWriteAll(fd: i32, bytes: * const u8, length: usize): i32 {
   let written: usize = 0usize;
   while (written !== length) {
     unsafe {
-      const pointer = borrowElement<u8>(bytes, written);
+      const pointer = byteAddress(bytes, written);
       const result = write(fd, pointer as * const u8, length - written);
       if (result <= 0isize ||(result as usize) > length - written) {
         return - 1i32;
@@ -598,7 +598,7 @@ export function utf8SliceCopy(bytes: * const u8, length: usize, start: usize, en
     }
     const count = end - start;
     if (count > 0usize) {
-      const source = borrowElement<u8>(bytes, start);
+      const source = byteAddress(bytes, start);
       memcpy(destination, source as * const u8, count);
     }
     setByte(destination, count, 0u8);
@@ -634,7 +634,7 @@ export function bytesCopyAt(source: * const u8, length: usize, offset: usize, co
     if (offset > length || count > length - offset ||(count > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8)))) {
       return - 22i32;
     }
-    const start = borrowElement<u8>(source, offset);
+    const start = byteAddress(source, offset);
     memcpy(destination, start as * const u8, count);
     return 0i32;
   }
@@ -645,8 +645,8 @@ export function bytesCopyToAt(source: * const u8, sourceLength: usize, sourceOff
     if (sourceOffset > sourceLength || count > sourceLength - sourceOffset || destinationOffset > destinationLength || count > destinationLength - destinationOffset) {
       return - 22i32;
     }
-    const sourceStart = borrowElement<u8>(source, sourceOffset);
-    const destinationStart = borrowElement<u8>(destination as * const u8, destinationOffset);
+    const sourceStart = byteAddress(source, sourceOffset);
+    const destinationStart = byteAddress(destination as * const u8, destinationOffset);
     memcpy(destinationStart as * mut u8, sourceStart as * const u8, count);
     return 0i32;
   }
@@ -657,8 +657,8 @@ export function bytesMoveAt(bytes: * mut u8, length: usize, sourceOffset: usize,
     if (sourceOffset > length || destinationOffset > length || count > length - sourceOffset || count > length - destinationOffset) {
       return - 22i32;
     }
-    const sourceStart = borrowElement<u8>(bytes as * const u8, sourceOffset);
-    const destinationStart = borrowElement<u8>(bytes as * const u8, destinationOffset);
+    const sourceStart = byteAddress(bytes as * const u8, sourceOffset);
+    const destinationStart = byteAddress(bytes as * const u8, destinationOffset);
     memmove(destinationStart as * mut u8, sourceStart as * const u8, count);
     return 0i32;
   }
@@ -691,7 +691,7 @@ export function bytesSlice(bytes: * const u8, length: usize, start: usize, end: 
     if (start > end || end > length) {
       return nullPointerIntrinsic<u8>()as * const u8;
     }
-    const address = borrowElement<u8>(bytes, start);
+    const address = byteAddress(bytes, start);
     return address as * const u8;
   }
 }
@@ -707,7 +707,7 @@ export function bytesAppendAscii(buffer: * mut u8, capacity: usize, length: usiz
     if (length > capacity || textLength > capacity - length ||(textLength > 0usize && isNullIntrinsic<u8>(text))) {
       return 18446744073709551615usize;
     }
-    const destination = borrowElement<u8>(buffer as * const u8, length);
+    const destination = byteAddress(buffer as * const u8, length);
     memcpy(destination as * mut u8, text, textLength);
     return length + textLength;
   }
@@ -1043,6 +1043,18 @@ export function mapCreateEx(keySize: usize, valueSize: usize, ordered: i32, stri
 export function mapCreate(keySize: usize, valueSize: usize, ordered: i32): * mut u8 {
   return mapCreateEx(keySize, valueSize, ordered, 0i32, 0i32, 16usize);
 }
+@Export("tn_map_set_flags")
+export function mapSetFlags(handle: * mut u8, stringKeys: i32, stringValues: i32): void {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as * const u8)) {
+      return;
+    }
+    let map = mapRead(handle);
+    map.stringKeys = stringKeys;
+    map.stringValues = stringValues;
+    mapWrite(handle, map);
+  }
+}
 @Export("tn_map_insert")
 export function mapInsert(handle: * mut u8, key: * const u8, value: * const u8): i32 {
   unsafe {
@@ -1104,6 +1116,17 @@ export function mapInsert(handle: * mut u8, key: * const u8, value: * const u8):
     map.length = map.length + 1usize;
     mapWrite(handle, map);
     return 0i32;
+  }
+}
+@Export("tn_string_compare_slots")
+export function stringCompareSlots(left: * const u8, right: * const u8): i32 {
+  unsafe {
+    const leftText = *(left as * const * const u8);
+    const rightText = *(right as * const * const u8);
+    if (isNullIntrinsic<u8>(leftText) || isNullIntrinsic<u8>(rightText)) {
+      return 0i32;
+    }
+    return strcmp(leftText, rightText);
   }
 }
 @Export("tn_map_get")
@@ -1401,7 +1424,7 @@ export function asyncResult(handle: * mut u8): * mut u8 {
     if (isNullIntrinsic<u8>(promise.result as * const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    const address = borrowElement<u8>(promise.result as * const u8, promise.resultOffset);
+    const address = byteAddress(promise.result as * const u8, promise.resultOffset);
     return address as * mut u8;
   }
 }
@@ -1752,7 +1775,7 @@ export function channelSend(handle: * mut u8, value: * const i32): i32 {
       return 32i32;
     }
     const index =(channel.head + channel.length) % channel.capacity;
-    const destination = borrowElement<u8>(channel.storage as * const u8, index * channel.elementSize);
+    const destination = byteAddress(channel.storage as * const u8, index * channel.elementSize);
     memcpy(destination as * mut u8, value as * const u8, channel.elementSize);
     channel.length = channel.length + 1usize;
     channelWrite(handle, channel);
@@ -1787,7 +1810,7 @@ export function channelReceive(handle: * mut u8, value: * mut i32): i32 {
       mutexUnlock(channel.mutex);
       return channel.closed !== 0i32?0i32: 11i32;
     }
-    const source = borrowElement<u8>(channel.storage as * const u8, channel.head * channel.elementSize);
+    const source = byteAddress(channel.storage as * const u8, channel.head * channel.elementSize);
     memcpy(value as * mut u8, source as * const u8, channel.elementSize);
     channel.head =(channel.head + 1usize) % channel.capacity;
     channel.length = channel.length - 1usize;
@@ -2041,10 +2064,16 @@ export function threadDetach(handle: * mut u8): i32 {
     return status;
   }
 }
+@Intrinsic("byte_address")
 function byteAddress(pointer: * const u8, offset: usize): * mut u8 {
   unsafe {
-    const address = borrowElement<u8>(pointer, offset);
-    return address as * mut u8;
+    return pointer as * mut u8;
+  }
+}
+@Intrinsic("byte_address_i32")
+function byteAddressI32(pointer: * const u8, offset: i32): * mut u8 {
+  unsafe {
+    return pointer as * mut u8;
   }
 }
 @Export("tn_process_cwd")
@@ -2103,7 +2132,7 @@ export function fileWriteAll(handle: i32, bytes: * const u8, length: usize): isi
   unsafe {
     let offset: usize = 0usize;
     while (offset !== length) {
-      const source = borrowElement<u8>(bytes, offset);
+      const source = byteAddress(bytes, offset);
       const written = write(handle, source as * const u8, length - offset);
       if (written<0isize) {
         return - 5isize;
@@ -2134,45 +2163,6 @@ export function fileRemove(path: * const u8): i32 {
     return unlink(path);
   }
 }
-@Export("tn_dir_open")
-export function directoryOpen(path: * const u8): * mut u8 {
-  unsafe {
-    return opendir(path);
-  }
-}
-@Export("tn_dir_next")
-export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32 {
-  unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(name as * const u8) || capacity === 0usize) {
-      return - 22i32;
-    }
-    const entry = readdir(handle);
-    if (isNullIntrinsic<u8>(entry as * const u8)) {
-      return 0i32;
-    }
-    const recordLength = *(byteAddress(entry as * const u8, 16usize)as * const u16);
-    const namePointer = byteAddress(entry as * const u8, 19usize);
-    let length: usize = 0usize;
-    while (length<capacity && length<(recordLength as usize - 19usize) && byteAt(namePointer as * const u8, length) !== 0u8) {
-      length = length + 1usize;
-    }
-    if (length + 1usize > capacity) {
-      return - 36i32;
-    }
-    memcpy(name, namePointer as * const u8, length);
-    setByte(name, length, 0u8);
-    if (!isNullIntrinsic<u32>(kind as * const u32)) {
-      storeRawIntrinsic<u32>(kind, byteAt(entry as * const u8, 18usize)as u32);
-    }
-    return 1i32;
-  }
-}
-@Export("tn_dir_close")
-export function directoryClose(handle: * mut u8): i32 {
-  unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?0i32: closedir(handle);
-  }
-}
 @Export("tn_path_join")
 export function pathJoin(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32 {
   unsafe {
@@ -2181,8 +2171,13 @@ export function pathJoin(left: * const u8, right: * const u8, output: * mut u8, 
     }
     const leftLength = strlen(left);
     const rightLength = strlen(right);
+    let rightStart: usize = 0usize;
+    while (rightStart + 1usize < rightLength && byteAt(right, rightStart) === 46u8 && byteAt(right, rightStart + 1usize) === 47u8) {
+      rightStart = rightStart + 2usize;
+    }
+    const rightCount = rightLength - rightStart;
     const separator = leftLength !== 0usize && byteAt(left, leftLength - 1usize) !== 47u8?1usize: 0usize;
-    if (leftLength + separator + rightLength + 1usize > capacity) {
+    if (leftLength + separator + rightCount + 1usize > capacity) {
       return - 36i32;
     }
     if (leftLength > 0usize) {
@@ -2191,10 +2186,10 @@ export function pathJoin(left: * const u8, right: * const u8, output: * mut u8, 
     if (separator !== 0usize) {
       setByte(output, leftLength, 47u8);
     }
-    if (rightLength > 0usize) {
-      memcpy(byteAddress(output as * const u8, leftLength + separator), right, rightLength);
+    if (rightCount > 0usize) {
+      memcpy(byteAddress(output as * const u8, leftLength + separator), byteAddress(right, rightStart)as * const u8, rightCount);
     }
-    setByte(output, leftLength + separator + rightLength, 0u8);
+    setByte(output, leftLength + separator + rightCount, 0u8);
     return 0i32;
   }
 }
@@ -2285,7 +2280,8 @@ export function processSpawn(command: * const u8): i32 {
       return - 12i32;
     }
     storeRawIntrinsic< * mut u8>(arguments as * mut * mut u8, command as * mut u8);
-    storeRawIntrinsic< * mut u8>(byteAddress(arguments as * const u8, sizeOfIntrinsic< * mut u8>())as * mut * mut u8, nullPointerIntrinsic<u8>());
+    const argumentOffset: usize = sizeOfIntrinsic< * mut u8>();
+    storeRawIntrinsic< * mut u8>(byteAddress(arguments as * const u8, argumentOffset)as * mut * mut u8, nullPointerIntrinsic<u8>());
     const child = fork();
     if (child === 0i32) {
       execvp(command, arguments as * mut * mut u8);
@@ -2485,7 +2481,7 @@ export function netWriteAll(handle: i32, bytes: * const u8, length: usize): i32 
   unsafe {
     let offset: usize = 0usize;
     while (offset !== length) {
-      const result = send(handle, borrowElement<u8>(bytes, offset)as * const u8, length - offset, 0i32);
+      const result = send(handle, byteAddress(bytes, offset)as * const u8, length - offset, 0i32);
       if (result === - 1isize || result === 0isize) {
         return result === 0isize?5i32: 5i32;
       }

@@ -1,12 +1,12 @@
 
-@derive(Copy)export struct Span {
+@Copy export struct Span {
   public start: usize;
   public end: usize;
 }
-@derive(Copy)export enum Severity {
+@Copy export enum Severity {
   Error, Warning, Note,
 }
-@derive(Copy)export struct Diagnostic {
+@Copy export struct Diagnostic {
   public code: i32;
   public severity: Severity;
   public primary: Span;
@@ -30,16 +30,7 @@ export function withSecondary(primary: Diagnostic, start: usize, end: usize): Di
   };
 }
 export function isError(value: Diagnostic): bool {
-  match (value.severity) {
-    case Severity.Error: {
-      return true;
-    }
-    case Severity.Warning: {
-      return false;
-    }
-    case Severity.Note: {
-      return false;
-    }
+  return switch(value.severity) {
+    case Severity.Error: true, default: false,
   };
-  return false;
 }

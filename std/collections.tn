@@ -18,8 +18,10 @@ declare extern "C" {
   function tn_map_capacity(handle: * mut u8): usize;
   function tn_map_reserve(handle: * mut u8, minimumCapacity: usize): i32;
   function tn_map_shrink_to_fit(handle: * mut u8): i32;
+  function tn_map_set_flags(handle: * mut u8, stringKeys: i32, stringValues: i32): void;
   function tn_map_next(handle: * mut u8, cursor: * mut usize, key: * mut u8, value: * mut u8): i32;
   function tn_map_destroy(handle: * mut u8): i32;
+  function tn_string_compare_slots(left: * const u8, right: * const u8): i32;
 }
 export interface Hash {
 }
@@ -30,6 +32,11 @@ export interface Ord {
 @Intrinsic("size_of")
 function sizeOf<T>(): usize {
   return 0usize;
+}
+function rawAllocTyped<T>(size: usize): * mut T {
+  unsafe {
+    return rawAlloc(size)as * mut T;
+  }
 }
 @Intrinsic("is_string")
 function isString<T>(): bool {
@@ -88,7 +95,7 @@ export class Array<T> {
   public constructor(options: ArrayOptions) {
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
       this.initialized = rawAlloc(options.capacity);
     }
     this.length = 0usize;
@@ -123,7 +130,7 @@ export class Array<T> {
       next = minimumCapacity;
     }
     unsafe {
-      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
       let initializedIndex: usize = 0usize;
       while (initializedIndex<next) {
@@ -155,7 +162,7 @@ export class Array<T> {
       unsafe {
         rawFree(this.pointer as * mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAlloc(0usize)as * mut T;
+        this.pointer = rawAllocTyped<T>(0usize);
         this.initialized = rawAlloc(0usize);
       }
       this.capacity = 0usize;
@@ -163,7 +170,7 @@ export class Array<T> {
     }
     const target = this.length;
     unsafe {
-      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
       let index: usize = 0usize;
       while (index<target) {
@@ -204,7 +211,7 @@ export class Array<T> {
     }
     if (isCopy<T>()) {
       unsafe {
-        const output = rawAlloc(this.elementSize)as * mut T;
+        const output = rawAllocTyped<T>(this.elementSize);
         if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
           rawFree(output as * mut u8);
           return undefined;
@@ -264,7 +271,7 @@ export class Array<T> {
       }
     }
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
         rawFree(output as * mut u8);
         return undefined;
@@ -349,7 +356,7 @@ export class Queue<T> {
   public constructor(options: QueueOptions) {
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
       this.initialized = rawAlloc(options.capacity);
     }
     this.length = 0usize;
@@ -383,7 +390,7 @@ export class Queue<T> {
       next = minimumCapacity;
     }
     unsafe {
-      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
       let initializedIndex: usize = 0usize;
       while (initializedIndex<next) {
@@ -417,7 +424,7 @@ export class Queue<T> {
       unsafe {
         rawFree(this.pointer as * mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAlloc(0usize)as * mut T;
+        this.pointer = rawAllocTyped<T>(0usize);
         this.initialized = rawAlloc(0usize);
       }
       this.capacity = 0usize;
@@ -426,7 +433,7 @@ export class Queue<T> {
     }
     const target = this.length;
     unsafe {
-      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
       let initializedIndex: usize = 0usize;
       while (initializedIndex<target) {
@@ -482,7 +489,7 @@ export class Queue<T> {
       }
     }
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
         rawFree(output as * mut u8);
         return undefined;
@@ -538,7 +545,7 @@ export class Deque<T> {
   public constructor(options: DequeOptions) {
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
       this.initialized = rawAlloc(options.capacity);
     }
     this.length = 0usize;
@@ -572,7 +579,7 @@ export class Deque<T> {
       next = minimumCapacity;
     }
     unsafe {
-      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
       let initializedIndex: usize = 0usize;
       while (initializedIndex<next) {
@@ -606,7 +613,7 @@ export class Deque<T> {
       unsafe {
         rawFree(this.pointer as * mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAlloc(0usize)as * mut T;
+        this.pointer = rawAllocTyped<T>(0usize);
         this.initialized = rawAlloc(0usize);
       }
       this.capacity = 0usize;
@@ -615,7 +622,7 @@ export class Deque<T> {
     }
     const target = this.length;
     unsafe {
-      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
       let initializedIndex: usize = 0usize;
       while (initializedIndex<target) {
@@ -695,7 +702,7 @@ export class Deque<T> {
       }
     }
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
         rawFree(output as * mut u8);
         return undefined;
@@ -721,7 +728,7 @@ export class Deque<T> {
       }
     }
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
         rawFree(output as * mut u8);
         return undefined;
@@ -781,15 +788,17 @@ export class Heap<T extends Ord> {
   public readonly length: usize;
   public readonly capacity: usize;
   private elementSize: usize;
+  private stringElements: bool;
   public constructor(options: HeapOptions) {
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAlloc(options.capacity * elementSize)as * mut T;
+      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
       this.initialized = rawAlloc(options.capacity);
     }
     this.length = 0usize;
     this.capacity = options.capacity;
     this.elementSize = elementSize;
+    this.stringElements = isString<T>();
     let index: usize = 0usize;
     while (index<options.capacity) {
       unsafe {
@@ -809,6 +818,9 @@ export class Heap<T extends Ord> {
     unsafe {
       const left = borrowElement<T>(this.pointer as * const T, leftIndex);
       const right = borrowElement<T>(this.pointer as * const T, rightIndex);
+      if (this.stringElements) {
+        return tn_string_compare_slots(left as * const u8, right as * const u8) < 0i32;
+      }
       return * left< * right;
     }
   }
@@ -845,7 +857,7 @@ export class Heap<T extends Ord> {
       next = minimumCapacity;
     }
     unsafe {
-      const replacement = rawAlloc(next * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
       let initializedIndex: usize = 0usize;
       while (initializedIndex<next) {
@@ -877,7 +889,7 @@ export class Heap<T extends Ord> {
       unsafe {
         rawFree(this.pointer as * mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAlloc(0usize)as * mut T;
+        this.pointer = rawAllocTyped<T>(0usize);
         this.initialized = rawAlloc(0usize);
       }
       this.capacity = 0usize;
@@ -885,7 +897,7 @@ export class Heap<T extends Ord> {
     }
     const target = this.length;
     unsafe {
-      const replacement = rawAlloc(target * this.elementSize)as * mut T;
+      const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
       let index: usize = 0usize;
       while (index<target) {
@@ -955,7 +967,7 @@ export class Heap<T extends Ord> {
       }
     }
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, 0usize, this.elementSize, output as * mut u8);
       const result = * output;
       rawFree(output as * mut u8);
@@ -1051,7 +1063,7 @@ export class Map<K extends Equal<K > & Hash, V> {
   }
   public get(key: & K): V | undefined {
     unsafe {
-      const output = rawAlloc(this.valueSize)as * mut V;
+      const output = rawAllocTyped<V>(this.valueSize);
       if (tn_map_get(this.handle, key as * const u8, output as * mut u8) !== 1) {
         rawFree(output as * mut u8);
         return undefined;
@@ -1123,8 +1135,8 @@ class MapIterator<K extends Equal<K > & Hash, V> {
   }
   mut next(): MapEntry<K, V > | undefined {
     unsafe {
-      const keyOutput = rawAlloc(this.keySize)as * mut K;
-      const valueOutput = rawAlloc(this.valueSize)as * mut V;
+      const keyOutput = rawAllocTyped<K>(this.keySize);
+      const valueOutput = rawAllocTyped<V>(this.valueSize);
       if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, keyOutput as * mut u8, valueOutput as * mut u8) !== 1i32) {
         rawFree(keyOutput as * mut u8);
         rawFree(valueOutput as * mut u8);
@@ -1237,7 +1249,7 @@ class SetIterator<T extends Equal<T > & Hash> {
   }
   mut next(): T | undefined {
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, output as * mut u8, output as * mut u8) !== 1i32) {
         rawFree(output as * mut u8);
         return undefined;
@@ -1294,7 +1306,7 @@ export class OrderedMap<K extends Equal<K > & Hash, V> {
   }
   public get(key: & K): V | undefined {
     unsafe {
-      const output = rawAlloc(this.valueSize)as * mut V;
+      const output = rawAllocTyped<V>(this.valueSize);
       if (tn_map_get(this.handle, key as * const u8, output as * mut u8) !== 1i32) {
         rawFree(output as * mut u8);
         return undefined;
@@ -1366,8 +1378,8 @@ class OrderedMapIterator<K extends Equal<K > & Hash, V> {
   }
   mut next(): MapEntry<K, V > | undefined {
     unsafe {
-      const keyOutput = rawAlloc(this.keySize)as * mut K;
-      const valueOutput = rawAlloc(this.valueSize)as * mut V;
+      const keyOutput = rawAllocTyped<K>(this.keySize);
+      const valueOutput = rawAllocTyped<V>(this.valueSize);
       if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, keyOutput as * mut u8, valueOutput as * mut u8) !== 1i32) {
         rawFree(keyOutput as * mut u8);
         rawFree(valueOutput as * mut u8);
@@ -1480,7 +1492,7 @@ class OrderedSetIterator<T extends Equal<T > & Hash> {
   }
   mut next(): T | undefined {
     unsafe {
-      const output = rawAlloc(this.elementSize)as * mut T;
+      const output = rawAllocTyped<T>(this.elementSize);
       if (tn_map_next(this.handle,( & mut this.cursor)as * mut usize, output as * mut u8, output as * mut u8) !== 1i32) {
         rawFree(output as * mut u8);
         return undefined;
