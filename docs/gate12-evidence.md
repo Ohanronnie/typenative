@@ -133,14 +133,14 @@ artifact size, startup latency, RSS, RSS growth, and all per-sample values.
 
 | implementation | startup median (ms) | pipelined PING median (ops/s) | non-pipelined PING median (ops/s) | SET median (ops/s) | GET median (ops/s) | RSS growth median (KiB) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| TypeNative Node addon | 82.152 | 644,058 | 27,391 | 26,953 | 26,504 | 320 |
-| TypeNative native executable | 26.433 | 588,231 | 35,540 | 34,523 | 34,576 | 320 |
-| Handwritten Node.js | 83.498 | 711,548 | 29,252 | 26,638 | 26,739 | 7,248 |
+| TypeNative Node addon | 82.017 | 638,607 | 29,767 | 28,566 | 28,445 | 368 |
+| TypeNative native executable | 27.497 | 579,508 | 29,915 | 28,622 | 28,442 | 368 |
+| Handwritten Node.js | 83.407 | 684,326 | 24,958 | 22,968 | 22,958 | 7,216 |
 
-Compilation medians are recorded as 1.57 seconds for the addon and 1.69
+Compilation medians are recorded as 1.68 seconds for the addon and 1.66
 seconds for the native executable. Artifact sizes are 138,584 bytes and
 116,224 bytes respectively. The result hash at this evidence revision is
-`4b350f7a5ba04c993fce0894839e8417453b511e9026b20ee62a2f3927e0de82`.
+`2272b63f865e5d7e6146cd1d79909653f0c27551f34fd6cc398ea1c57c3589ed`.
 
 ## Determinism, diagnostics, and hierarchy semantics
 
@@ -169,7 +169,10 @@ suite. The sanitizer suite passed ordinary TypeNative and Redis Address/Undefine
 checks plus ordinary TypeNative and Redis Thread checks. The lexer and parser
 fuzz targets each passed 10,000 runs with `-max_len=4096 -timeout=5`.
 
-The clean local clone reproduction and delivery SHA are recorded below after
-the delivery commit and push. The protected
+The clean local clone at `/tmp/typenative-clean-gate12.XHwsjC` checked out
+`84d459e30fc351f3fa9a42a43aa5199d3b866460`, built the release CLI in 28.87
+seconds, and ran the full Forge runner to `forge-conformance=pass`. The
+benchmark refresh is based on that pushed source commit. The final delivery
+SHA is the last commit reported with the remote equality proof. The protected
 `benchmarks/json-parser/results.json` is excluded from every staging command
 and remains the only unstaged worktree modification.
