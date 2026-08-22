@@ -26,6 +26,13 @@ else
 fi
 
 [ -x "$tn" ] || { echo "tn compiler is not executable: $tn" >&2; exit 2; }
+compiler=$tn
+tn_guard="$root/scripts/tn-guarded.sh"
+export TYPENATIVE_TN_BIN="$compiler"
+
+run_tn() {
+  "$tn_guard" "$@"
+}
 
 time_stage() {
   stage=$1
@@ -41,14 +48,15 @@ time_stage() {
 }
 
 time_stage compiler scripts/verify-design.sh
+time_stage compiler sh scripts/check-direct-llvm-backend.sh
 time_stage compiler scripts/check-toolchain.sh
 time_stage compiler scripts/check-native-sources.sh
 time_stage compiler cargo fmt --all -- --check
-time_stage compiler "$tn" fmt --check runtime std validation benchmarks/http-log-analyzer
+time_stage compiler env TYPENATIVE_TN_BIN="$compiler" TYPENATIVE_RUNTIME_ROOT="$root" "$tn_guard" fmt --check runtime std validation benchmarks/http-log-analyzer
 time_stage compiler scripts/check-foreign-syntax.sh
 for source in "$root"/std/*.tn; do
   [ -f "$source" ] || continue
-  time_stage compiler "$tn" check "$source"
+  time_stage compiler env TYPENATIVE_TN_BIN="$compiler" TYPENATIVE_RUNTIME_ROOT="$root" "$tn_guard" check "$source"
 done
 
 time_stage tests cargo test --workspace --all-targets
@@ -57,6 +65,18 @@ time_stage tests env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
 
 parallel_dir=$(mktemp -d "${TMPDIR:-/tmp}/typenative-verify-all.XXXXXX")
 trap 'rm -rf -- "$parallel_dir"' EXIT
+
+if [ -n "${TYPENATIVE_RUNTIME_SOURCE:-}" ]; then
+  runtime_source=$TYPENATIVE_RUNTIME_SOURCE
+else
+  case "$(uname -s):$(uname -m)" in
+    Darwin:arm64) runtime_source=$root/runtime/platform/darwin-arm64.tn ;;
+    Linux:x86_64) runtime_source=$root/runtime/platform/linux-x86_64.tn ;;
+    *) echo "unsupported host; set TYPENATIVE_RUNTIME_SOURCE" >&2; exit 2 ;;
+  esac
+fi
+time_stage compiler env -u TYPENATIVE_RUNTIME_OBJECT TYPENATIVE_TN_BIN="$compiler" TYPENATIVE_RUNTIME_ROOT="$root" "$tn_guard" build "$runtime_source" --profile optimized --emit object --out "$parallel_dir/runtime.o"
+export TYPENATIVE_RUNTIME_OBJECT="$parallel_dir/runtime.o"
 
 time_log() {
   label=$1
@@ -78,17 +98,17 @@ time_log() {
 }
 
 printf '%s\n' 'verify-parallel: cli stdlib runtime time fs debug-info c-abi node redis-and-sanitizers'
-(time_log tests-cli env TN_BIN="$tn" scripts/verify-cli.sh) & cli_pid=$!
-(time_log tests-stdlib env TN_BIN="$tn" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) & stdlib_pid=$!
-(time_log tests-runtime env TN_BIN="$tn" scripts/verify-runtime.sh) & runtime_pid=$!
-(time_log tests-time env TN_BIN="$tn" scripts/verify-time.sh) & time_pid=$!
-(time_log tests-fs env TN_BIN="$tn" scripts/verify-fs.sh) & fs_pid=$!
-(time_log tests-debug-info env TN_BIN="$tn" scripts/verify-debug-info.sh) & debug_info_pid=$!
-(time_log tests-abi env TN_BIN="$tn" scripts/verify-c-abi.sh) & c_abi_pid=$!
-(time_log tests-node env TN_BIN="$tn" scripts/verify-node.sh) & node_pid=$!
+(time_log tests-cli env TN_BIN="$tn_guard" scripts/verify-cli.sh) & cli_pid=$!
+(time_log tests-stdlib env TN_BIN="$tn_guard" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) & stdlib_pid=$!
+(time_log tests-runtime env TN_BIN="$tn_guard" scripts/verify-runtime.sh) & runtime_pid=$!
+(time_log tests-time env TN_BIN="$tn_guard" scripts/verify-time.sh) & time_pid=$!
+(time_log tests-fs env TN_BIN="$tn_guard" scripts/verify-fs.sh) & fs_pid=$!
+(time_log tests-debug-info env TN_BIN="$tn_guard" scripts/verify-debug-info.sh) & debug_info_pid=$!
+(time_log tests-abi env TN_BIN="$tn_guard" scripts/verify-c-abi.sh) & c_abi_pid=$!
+(time_log tests-node env TN_BIN="$tn_guard" scripts/verify-node.sh) & node_pid=$!
 run_redis_checks() {
-  (time_log benchmarks env TN_BIN="$tn" scripts/verify-redis.sh)
-  (time_log sanitizers env TN_BIN="$tn" scripts/run-sanitizers.sh)
+  (time_log benchmarks env TN_BIN="$tn_guard" scripts/verify-redis.sh)
+  (time_log sanitizers env TN_BIN="$tn_guard" scripts/run-sanitizers.sh)
 }
 
 (run_redis_checks) & redis_pid=$!

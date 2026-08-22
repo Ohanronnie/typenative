@@ -3230,6 +3230,43 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             Rvalue::RawOperation {
                 operation,
                 operands,
+                ty,
+            } if operation == "byte_read_i32" => {
+                let pointer = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("byte_read_i32 operation lacks a pointer".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let offset = operands
+                    .get(2)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("byte_read_i32 operation lacks an index".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let address = unsafe {
+                    self.builder.build_gep(
+                        self.generator.context.i8_type(),
+                        pointer,
+                        &[offset],
+                        "byte.read.address",
+                    )?
+                };
+                let value = self
+                    .builder
+                    .build_load(self.generator.context.i8_type(), address, "byte.read.value")?
+                    .into_int_value();
+                let result_type = self.generator.basic_type(ty)?.into_int_type();
+                Ok(self
+                    .builder
+                    .build_int_z_extend(value, result_type, "byte.read.i32")?
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
                 ..
             } if operation == "borrow_element" => {
                 let pointer_operand = operands.first().ok_or_else(|| {
@@ -3753,11 +3790,23 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             return self.lower_optional_equality(operator, left, right);
         }
 
+        if left.is_pointer_value() || right.is_pointer_value() {
+            return self.lower_pointer_binary(operator, left, right, ty);
+        }
+
         if left.is_float_value() {
             return self.lower_float_binary(operator, left, right);
         }
-        let left = left.into_int_value();
-        let right = right.into_int_value();
+        self.lower_integer_binary(operator, left.into_int_value(), right.into_int_value(), ty)
+    }
+
+    fn lower_integer_binary(
+        &self,
+        operator: BinaryOperator,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let signed = is_signed(ty);
         Ok(match operator {
             BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply => self
@@ -3842,6 +3891,44 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 )?
                 .into(),
         })
+    }
+
+    fn lower_pointer_binary(
+        &self,
+        operator: BinaryOperator,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if !left.is_pointer_value()
+            || !right.is_pointer_value()
+            || !matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual)
+        {
+            return Err(CodegenError::Unsupported(format!(
+                "unsupported pointer binary operation: operator={operator:?}, type={ty:?}, left={}, right={}",
+                left.get_type().print_to_string(),
+                right.get_type().print_to_string()
+            )));
+        }
+        let left = self.builder.build_ptr_to_int(
+            left.into_pointer_value(),
+            self.generator.pointer_int_type(),
+            "pointer.left",
+        )?;
+        let right = self.builder.build_ptr_to_int(
+            right.into_pointer_value(),
+            self.generator.pointer_int_type(),
+            "pointer.right",
+        )?;
+        Ok(self
+            .builder
+            .build_int_compare(
+                integer_predicate(operator, false)?,
+                left,
+                right,
+                "pointer.compare",
+            )?
+            .into())
     }
 
     fn lower_string_binary(

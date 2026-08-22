@@ -20,7 +20,7 @@ fi
 
 guarded() {
   started=$(date +%s)
-  if perl -e 'alarm 175; exec @ARGV' -- "$@"; then
+  if TYPENATIVE_RUNTIME_ROOT="$root" perl -e 'alarm 175; exec @ARGV' -- "$@"; then
     status=0
   else
     status=$?
@@ -36,8 +36,8 @@ guarded() {
       printf '\n'
     } >>"$run/command-trace.tsv"
   fi
-  if [ "$elapsed" -ge 180 ]; then
-    echo "TypeNative compiler command exceeded the 180-second budget: $*" >&2
+  if [ "$elapsed" -ge 175 ]; then
+    echo "TypeNative compiler command reached the 175-second guard: $*" >&2
     return 124
   fi
   return "$status"
@@ -48,6 +48,7 @@ mkdir -p "$out"
 run="$out/run-$(date +%s)-$$"
 mkdir -p "$run"
 printf 'started_epoch\tfinished_epoch\texit_status\tcommand\targuments...\n' >"$run/command-trace.tsv"
+sh "$root/scripts/check-direct-llvm-backend.sh" "$run"
 
 if [ -n "${TYPENATIVE_RUNTIME_SOURCE:-}" ]; then
   runtime_source=$TYPENATIVE_RUNTIME_SOURCE
@@ -61,13 +62,36 @@ else
       ;;
   esac
 fi
-runtime_object="$run/runtime.o"
+runtime_object="$run/runtime-a.o"
+llvm_config=${TYPENATIVE_LLVM_CONFIG:-}
+if [ -z "$llvm_config" ] && command -v llvm-config >/dev/null 2>&1; then
+  llvm_config=$(command -v llvm-config)
+fi
+if [ -z "$llvm_config" ] && [ -x /opt/homebrew/opt/llvm/bin/llvm-config ]; then
+  llvm_config=/opt/homebrew/opt/llvm/bin/llvm-config
+fi
+llvm_link_arguments=""
+if [ -n "$llvm_config" ]; then
+  for argument in $("$llvm_config" --ldflags --libs --system-libs); do
+    llvm_link_arguments="$llvm_link_arguments --link-argument=$argument"
+  done
+fi
+if [ -z "$llvm_link_arguments" ]; then
+  echo "llvm-config not found; set TYPENATIVE_LLVM_CONFIG" >&2
+  exit 2
+fi
+
+build_runtime() {
+  compiler=$1
+  name=$2
+  runtime_object="$run/runtime-$name.o"
+  guarded "$compiler" build "$runtime_source" --profile optimized --emit object --out "$runtime_object" $llvm_link_arguments
+}
 
 build_compiler() {
-  name=$1
-  guarded "$tn" build "$root/compiler-tn/main.tn" --profile optimized --out "$run/$name"
-  guarded "$tn" build "$runtime_source" --profile optimized --emit object --out "$runtime_object"
-  export TYPENATIVE_RUNTIME_OBJECT="$runtime_object"
+  compiler=$1
+  name=$2
+  guarded "$compiler" build "$root/compiler-tn/main.tn" --profile optimized --out "$run/$name" $llvm_link_arguments
 }
 
 rewrite_sources() {
@@ -84,7 +108,12 @@ rewrite_sources() {
 check_frontend() {
   compiler=$1
   printf '%s\n' 'function main(): void {}' >"$run/frontend-valid.tn"
+  rewrite_started=$(date +%s)
   guarded "$compiler" "$run/frontend-valid.tn" "$run/frontend-valid.out.tn"
+  rewrite_finished=$(date +%s)
+  rewrite_elapsed=$((rewrite_finished - rewrite_started))
+  [ "$rewrite_elapsed" -lt 175 ]
+  printf '%s%s%s\n' 'self-hosted-rewrite-seconds=' "$rewrite_elapsed" ' budget=175'
   [ -s "$run/frontend-valid.out.tn" ]
   cmp "$run/frontend-valid.tn" "$run/frontend-valid.out.tn"
   printf '%s\n' 'self-hosted-llvm-c-api=pass'
@@ -138,13 +167,13 @@ check_frontend() {
   set -e
   [ "$status" -ne 0 ]
   printf '%s\n' 'self-hosted-mir-borrow-move-await=pass'
-  printf '%s\n' 'export function answer(): i32 { return 7i32; } function main(): i32 { return 7i32; }' >"$run/frontend-build.tn"
+  printf '%s\n' '@Export("answer") function answer(): i32 { return 7i32; } function main(): i32 { return 7i32; }' >"$run/frontend-build.tn"
   guarded "$compiler" build "$run/frontend-build.tn" --emit llvm-ir --out "$run/frontend-build.ll"
-  rg -q 'define i32 @tn_user_main' "$run/frontend-build.ll"
+  rg -q 'define (internal )?i32 @tn_user_main' "$run/frontend-build.ll"
   rg -q 'ret i32 7' "$run/frontend-build.ll"
   printf '%s\n' 'function answer(value: i32): i32 { return value + 5i32 + 2i32; } function main(): i32 { return answer(2i32 + 3i32); }' >"$run/frontend-helper.tn"
   guarded "$compiler" build "$run/frontend-helper.tn" --emit llvm-ir --out "$run/frontend-helper.ll"
-  rg -q 'define i32' "$run/frontend-helper.ll"
+  rg -q 'define (internal )?i32' "$run/frontend-helper.ll"
   set +e
   guarded "$compiler" run "$run/frontend-helper.tn" >/dev/null
   status=$?
@@ -174,7 +203,7 @@ check_frontend() {
   guarded "$compiler" build "$run/frontend-build.tn" --emit node-addon --out "$run/frontend-build.node"
   [ -s "$run/frontend-build.node" ]
   [ -s "$run/frontend-build.d.ts" ]
-  node -e 'const addon = require(process.argv[1]); if (addon.main() !== 7) process.exit(1);' "$run/frontend-build.node"
+  node -e 'const addon = require(require("node:path").resolve(process.argv[1])); if (addon.answer() !== 7) process.exit(1);' "$run/frontend-build.node"
   printf '%s\n' 'self-hosted-node-addon=pass'
   set +e
   guarded "$compiler" run "$run/frontend-build.tn" >/dev/null
@@ -198,7 +227,7 @@ check_frontend() {
   [ "$status" -ne 0 ]
   printf '%s\n' 'function main(): void {}' >"$run/frontend-void.tn"
   guarded "$compiler" build "$run/frontend-void.tn" --emit llvm-ir --out "$run/frontend-void.ll"
-  rg -q 'define void @tn_user_main' "$run/frontend-void.ll"
+  rg -q 'define (internal )?void @tn_user_main' "$run/frontend-void.ll"
   guarded "$compiler" build "$run/frontend-void.tn" --emit bitcode --out "$run/frontend-void.bc"
   guarded "$compiler" build "$run/frontend-void.tn" --emit assembly --out "$run/frontend-void.s"
   guarded "$compiler" build "$run/frontend-void.tn" --emit object --out "$run/frontend-void.o"
@@ -221,7 +250,7 @@ check_frontend() {
   [ "$status" -eq 0 ]
   printf '%s\n' 'function consume(value: i32): void {} function main(): void { consume(42i32); }' >"$run/frontend-parameterized-void-call.tn"
   guarded "$compiler" build "$run/frontend-parameterized-void-call.tn" --emit llvm-ir --out "$run/frontend-parameterized-void-call.ll"
-  rg -Fq 'define void @tn_m0_consume(i32' "$run/frontend-parameterized-void-call.ll"
+  rg -q 'define (internal )?void @tn_m0_consume\(i32' "$run/frontend-parameterized-void-call.ll"
   rg -q 'call void @tn_m0_consume\(i32 .*42\)' "$run/frontend-parameterized-void-call.ll"
   guarded "$compiler" build "$run/frontend-parameterized-void-call.tn" --emit executable --out "$run/frontend-parameterized-void-call"
   set +e
@@ -250,7 +279,7 @@ check_frontend() {
   [ "$status" -eq 8 ]
   printf '%s\n' 'import { argumentCount } from "std/process"; function main(): i32 { return argumentCount() !== 0i32 ? 7i32 : 9i32; }' >"$run/frontend-conditional.tn"
   guarded "$compiler" build "$run/frontend-conditional.tn" --emit llvm-ir --out "$run/frontend-conditional.ll"
-  rg -q 'select i1' "$run/frontend-conditional.ll"
+  rg -q 'select i1|br i1' "$run/frontend-conditional.ll"
   set +e
   guarded "$compiler" run "$run/frontend-conditional.tn" >/dev/null
   status=$?
@@ -375,25 +404,33 @@ check_syntax_differential() {
   printf '%s\n' 'self-hosted-syntax-differential=pass'
 }
 
-build_compiler compiler-a
+build_runtime "$tn" a
+export TYPENATIVE_RUNTIME_OBJECT="$run/runtime-a.o"
+build_compiler "$tn" compiler-a
 check_frontend "$run/compiler-a"
 check_syntax_differential "$run/compiler-a"
 rewrite_sources "$run/compiler-a" "$root/compiler-tn" "$run/compiler-src"
-if ! guarded "$run/compiler-a" build "$run/compiler-src/main.tn" --profile optimized --timings --out "$run/compiler-b"; then
+build_runtime "$run/compiler-a" b
+export TYPENATIVE_RUNTIME_OBJECT="$run/runtime-b.o"
+if ! guarded "$run/compiler-a" build "$run/compiler-src/main.tn" --profile optimized --timings --out "$run/compiler-b" $llvm_link_arguments; then
   echo "independent self-hosting failed: compiler A could not build compiler B" >&2
   exit 1
 fi
 guarded "$run/compiler-b" >/dev/null
 check_frontend "$run/compiler-b"
 rewrite_sources "$run/compiler-b" "$run/compiler-src" "$run/compiler-src"
-if ! guarded "$run/compiler-b" build "$run/compiler-src/main.tn" --profile optimized --timings --out "$run/compiler-c"; then
+build_runtime "$run/compiler-b" c
+export TYPENATIVE_RUNTIME_OBJECT="$run/runtime-c.o"
+if ! guarded "$run/compiler-b" build "$run/compiler-src/main.tn" --profile optimized --timings --out "$run/compiler-c" $llvm_link_arguments; then
   echo "independent self-hosting failed: compiler B could not build compiler C" >&2
   exit 1
 fi
 guarded "$run/compiler-c" >/dev/null
 check_frontend "$run/compiler-c"
 rewrite_sources "$run/compiler-c" "$run/compiler-src" "$run/compiler-src"
-if ! guarded "$run/compiler-c" build "$run/compiler-src/main.tn" --profile optimized --timings --out "$run/compiler-d"; then
+build_runtime "$run/compiler-c" d
+export TYPENATIVE_RUNTIME_OBJECT="$run/runtime-d.o"
+if ! guarded "$run/compiler-c" build "$run/compiler-src/main.tn" --profile optimized --timings --out "$run/compiler-d" $llvm_link_arguments; then
   echo "independent self-hosting failed: compiler C could not build compiler D" >&2
   exit 1
 fi
@@ -483,7 +520,8 @@ sha_a=$(artifact_digest "$run/compiler-a")
 sha_b=$(artifact_digest "$run/compiler-b")
 sha_c=$(artifact_digest "$run/compiler-c")
 sha_d=$(artifact_digest "$run/compiler-d")
-guarded "$run/compiler-a" build "$run/compiler-src/main.tn" --profile optimized --out "$run/compiler-b-repeat"
+export TYPENATIVE_RUNTIME_OBJECT="$run/runtime-b.o"
+guarded "$run/compiler-a" build "$run/compiler-src/main.tn" --profile optimized --out "$run/compiler-b-repeat" $llvm_link_arguments
 sha_b_repeat=$(artifact_digest "$run/compiler-b-repeat")
 [ "$sha_b" = "$sha_c" ]
 [ "$sha_c" = "$sha_d" ]
@@ -508,8 +546,14 @@ manifest="$run/bootstrap-manifest.txt"
   printf '%s\n' "node=$(node --version)"
   printf '%s\n' "runtime-source=$runtime_source"
   printf '%s\n' "runtime-source-sha256=$(shasum -a 256 "$runtime_source" | awk '{print $1}')"
-  printf '%s\n' "runtime-object=$runtime_object"
-  printf '%s\n' "runtime-object-sha256=$(artifact_digest "$runtime_object")"
+  printf '%s\n' "runtime-object-a=$run/runtime-a.o"
+  printf '%s\n' "runtime-object-a-sha256=$(artifact_digest "$run/runtime-a.o")"
+  printf '%s\n' "runtime-object-b=$run/runtime-b.o"
+  printf '%s\n' "runtime-object-b-sha256=$(artifact_digest "$run/runtime-b.o")"
+  printf '%s\n' "runtime-object-c=$run/runtime-c.o"
+  printf '%s\n' "runtime-object-c-sha256=$(artifact_digest "$run/runtime-c.o")"
+  printf '%s\n' "runtime-object-d=$run/runtime-d.o"
+  printf '%s\n' "runtime-object-d-sha256=$(artifact_digest "$run/runtime-d.o")"
   printf '%s\n' "source-manifest=$source_manifest"
   printf '%s\n' "source-fixed-point=$source_c"
   printf '%s\n' "compiler-a-sha256=$sha_a"
@@ -523,6 +567,7 @@ manifest="$run/bootstrap-manifest.txt"
   printf '%s\n' "command-trace=$run/command-trace.tsv"
 } >"$manifest"
 printf '%s\n' "bootstrap-fixed-point=$sha_c"
+sh "$root/scripts/check-direct-llvm-backend.sh" "$run"
 printf '%s\n' "bootstrap-digest=$sha_d"
 printf '%s\n' "bootstrap-repeatable=$sha_b_repeat"
 printf '%s\n' "bootstrap-source-fixed-point=$source_c"

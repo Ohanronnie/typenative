@@ -1,9 +1,9 @@
-# Gate 11 Preparation Record
+# Gate 11 Preparation Record (Historical)
 
-This document defines the evidence boundary for independent full self-hosting.
-It is a preparation record, not a Gate 11 completion claim. The protected
-self-hosting source and orchestration paths remain untouched and no
-self-hosting command is part of the current evidence.
+This document records the evidence boundary that was defined before independent
+full self-hosting was completed. It is retained as historical preparation
+material, not as the current Gate 11 status. The completion evidence is recorded
+in [`gate11-parity-ledger.md`](gate11-parity-ledger.md).
 
 ## Entry contract
 
@@ -91,9 +91,10 @@ must not be used to waive a missing native acceptance result, and a passing
 fixed-point digest must not be used to waive semantic, runtime, or sanitizer
 coverage.
 
-## Current boundary
+## Boundary at preparation time
 
-The current goal has completed compiler-independent preparation only:
+At the time this record was written, the goal had completed
+compiler-independent preparation only:
 
 - no self-hosting script or self-hosting check was run;
 - no final Gate 11 result is claimed;

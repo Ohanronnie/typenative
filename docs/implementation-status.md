@@ -28,6 +28,21 @@ After this target-surface cleanup, `cargo fmt --all -- --check`, `cargo test --w
 --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `RUSTDOCFLAGS=-Dwarnings
 cargo doc --workspace --no-deps`, and `sh -n scripts/*.sh` pass on macOS ARM64.
 
+## Current Gate 11 status (2026-08-22)
+
+Gate 11 is complete. Commit `4b3137e19bd62b567e48f04ed84629681e5abe7a` remains
+recorded as a deterministic TypeNative-to-C bootstrap checkpoint only. The
+useful self-hosted frontend, typed analysis, MIR, ownership/drop, tooling,
+runtime, and bootstrap work was preserved while the backend was replaced.
+
+The compiler now uses `compiler-tn/direct_ir.tn` and
+`compiler-tn/direct_codegen.tn` to construct, verify, optimize, and emit LLVM
+objects through the LLVM C API, then links those objects into native products.
+The whole-program C renderer and `generic_codegen.tn` were removed. The final
+guarded A → B → C → D plus repeat bootstrap reached a normalized direct-LLVM
+fixed point, and `scripts/verify-all.sh` passed the full product, runtime, ABI,
+Node, Redis, sanitizer, and fuzz matrix.
+
 ## Foreign declaration syntax cleanup (2026-08-14)
 
 The ordinary Rust-bootstrap compiler now has one foreign declaration-block
@@ -1227,18 +1242,20 @@ Planned scope:
 
 ## Gate eleven: independent full self-hosting
 
-Status: not started. Entry requirements are recorded in
-[`gate11-preparation.md`](gate11-preparation.md); no final Gate 11 result is
-claimed.
+Status: complete. The final result is recorded in
+[`gate11-parity-ledger.md`](gate11-parity-ledger.md); the original C-bootstrap
+checkpoint remains historical evidence only.
 
-Planned scope:
+Delivered scope:
 
-- Replace the current bounded TypeNative hosted analysis/lowering slice with a
-  complete TypeNative compiler, macro host, generator lowering, LLVM backend,
-  formatter, CLI, documentation generator, test runner, and language server.
-- Build compiler B from TypeNative compiler A and compiler C from B without a
-  Rust-driver-assisted compiler pipeline.
-- Run every prior-gate suite independently under B and C on macOS ARM64.
+- Replaced the TypeNative-to-C backend and narrow LLVM fixture with the direct
+  TypeNative LLVM C API backend.
+- Built compiler B from TypeNative compiler A and compiler C from B without
+  Rust-driver-assisted semantic or codegen delegation after B.
+- Re-proved B → C → D and the repeat build at a direct-LLVM fixed point on
+  macOS ARM64.
+- Ran the prior-gate product, runtime, sanitizer, ABI, Node, Redis, and fuzz
+  verification matrix successfully.
 
 ## Gate twelve: final conformance and cross-host verification
 

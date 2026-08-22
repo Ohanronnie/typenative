@@ -6,7 +6,7 @@ import { emitProgram } from "./codegen";
 import { compile } from "./driver";
 import { format } from "./formatter";
 import { lowerHir } from "./hir";
-import { Source, Token, TokenKind, isKeyword, next } from "./lexer";
+import { Source, Token, TokenKind, cacheSourceTokens, isKeyword, next, releaseSourceTokens } from "./lexer";
 import { isEnd, parse } from "./parser";
 import { SourceBuffer, cstringEqual, freeSource, loadSource, sourceByte, supportNullPointer, pathHasTnSuffix, pathIsDirectory, runLanguageServer, validateImports, writeDiagnostic, writeDocumentation, writeFile, writeTiming, writeTimingValue } from "./support";
 
@@ -43,6 +43,11 @@ function staticPointer(text: & str): * const u8 {
 function pointerIsNull(pointer: * mut u8): bool {
   unsafe {
     return isNull(pointer as * const u8);
+  }
+}
+function sourceIsNull(source: Source): bool {
+  unsafe {
+    return isNull(source.pointer);
   }
 }
 function mutableU32Pointer(value: & mut u32): * mut u32 {
@@ -341,9 +346,10 @@ function checkFile(input: * const u8, json: bool): i32 {
     reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
     return failProcess(1i32);
   }
-  const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  const base: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length, tokenPointer: supportNullPointer(), tokenCount: 0usize
   };
+  const source = cacheSourceTokens(base);
   const checked = compile(source);
   const firstCode = checked.firstErrorCode;
   const firstStart = checked.firstErrorStart;
@@ -376,7 +382,7 @@ function formatFile(input: * const u8, checkOnly: bool): i32 {
     return 4i32;
   }
   const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
+    pointer: asConstPointer(loaded.pointer), length: loaded.length, tokenPointer: supportNullPointer(), tokenCount: 0usize
   };
   const checked = compile(source);
   const firstCode = checked.firstErrorCode;
@@ -418,7 +424,7 @@ function rewriteFile(input: * const u8, output: * const u8): i32 {
     return 4i32;
   }
   const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
+    pointer: asConstPointer(loaded.pointer), length: loaded.length, tokenPointer: supportNullPointer(), tokenCount: 0usize
   };
   const parsed = parse(source);
   const formatted = format(source);
@@ -462,7 +468,7 @@ function documentFile(input: * const u8, output: * const u8): i32 {
     return 4i32;
   }
   const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
+    pointer: asConstPointer(loaded.pointer), length: loaded.length, tokenPointer: supportNullPointer(), tokenCount: 0usize
   };
   const checked = compile(source);
   reportDiagnostic(checked.firstErrorCode, checked.firstErrorStart, checked.firstErrorEnd, checked.errorCount, false);
@@ -479,7 +485,14 @@ function documentFile(input: * const u8, output: * const u8): i32 {
   }
   return result;
 }
-function checkedSource(input: * const u8, json: bool): SourceBuffer {
+function emptySource(): Source {
+  unsafe {
+    return {
+      pointer: supportNullPointer<u8>()as * const u8, length: 0usize, tokenPointer: supportNullPointer<u8>(), tokenCount: 0usize,
+    };
+  }
+}
+function checkedSource(input: * const u8, json: bool): Source {
   let loaded: SourceBuffer = {
     pointer: emptyPointer(), length: 0usize
   };
@@ -489,9 +502,7 @@ function checkedSource(input: * const u8, json: bool): SourceBuffer {
     status = loadSource(input, output as * mut SourceBuffer);
   }
   if (status !== 0i32) {
-    return {
-      pointer: emptyPointer(), length: 0usize
-    };
+    return emptySource();
   }
   let importStatus: i32 = 0i32;
   unsafe {
@@ -502,13 +513,12 @@ function checkedSource(input: * const u8, json: bool): SourceBuffer {
       freeSource(loaded.pointer);
     }
     reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
-    return {
-      pointer: emptyPointer(), length: 0usize
-    };
+    return emptySource();
   }
-  const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
+  const base: Source = {
+    pointer: asConstPointer(loaded.pointer), length: loaded.length, tokenPointer: supportNullPointer(), tokenCount: 0usize
   };
+  const source = cacheSourceTokens(base);
   const checked = compile(source);
   const firstCode = checked.firstErrorCode;
   const firstStart = checked.firstErrorStart;
@@ -518,14 +528,13 @@ function checkedSource(input: * const u8, json: bool): SourceBuffer {
   const formatted = checked.formatted;
   reportDiagnostic(firstCode, firstStart, firstEnd, errors, json);
   if (tokens === 0usize || errors !== 0usize || firstCode !== 0i32 || !formatted) {
+    releaseSourceTokens(source);
     unsafe {
       freeSource(loaded.pointer);
     }
-    return {
-      pointer: emptyPointer(), length: 0usize
-    };
+    return emptySource();
   }
-  return loaded;
+  return source;
 }
 function buildSimple(input: * const u8, output: * const u8, emitArgument: * const u8, timings: bool): i32 {
   let started: u64 = 0u64;
@@ -537,12 +546,10 @@ function buildSimple(input: * const u8, output: * const u8, emitArgument: * cons
   const loaded = checkedSource(input, false);
   emitTiming(timings, "module-check", started);
   emitTiming(timings, "ownership", started);
-  if (pointerIsNull(loaded.pointer)) {
+  if (sourceIsNull(loaded)) {
     return 1i32;
   }
-  const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length
-  };
+  const source = loaded;
   const parsed = parse(source);
   const hir = lowerHir(source, parsed);
   const backend = lowerBackend(source, & hir);
@@ -565,12 +572,14 @@ function buildSimple(input: * const u8, output: * const u8, emitArgument: * cons
   }
   const product = emitKind(emitArgument);
   if (product === 5i32 && !sharedExportsValid(source)) {
+    releaseSourceTokens(source);
     unsafe {
-      freeSource(loaded.pointer);
+      freeSource(loaded.pointer as * mut u8);
     }
     return 2i32;
   }
-  if (product >= 0i32 &&(backend.entryIndex !== source.length || product !== 4i32) && backend.functionCount > 0usize && backend.lowerableFunctions > 0usize && backend.instructionWords > 0usize) {
+  const directDeclarationOnly = hir.declarationCount > 0usize;
+  if (product >= 0i32 &&(backend.entryIndex !== source.length || product !== 4i32) &&((backend.functionCount > 0usize && backend.lowerableFunctions > 0usize && backend.instructionWords > 0usize) || directDeclarationOnly)) {
     const entry = backendFunction( & backend, backend.entryIndex);
     if (timings) {
       unsafe {
@@ -579,22 +588,19 @@ function buildSimple(input: * const u8, output: * const u8, emitArgument: * cons
     }
     if (product >= 0i32) {
       emitTiming(timings, "monomorphization", started);
-      const linkArgument = optionValue(staticPointer("--link-argument"));
-      if (!argumentIs(linkArgument, staticPointer(""))) {
-        unsafe {
-          setenv(staticPointer("TYPENATIVE_LINK_ARGUMENT"), linkArgument, 1i32);
-        }
-      }
+      setLinkArguments();
       const result = emitProgram(output, input, source, product);
       emitTiming(timings, "llvm-link", started);
+      releaseSourceTokens(source);
       unsafe {
-        freeSource(loaded.pointer);
+        freeSource(loaded.pointer as * mut u8);
       }
       return result;
     }
   }
+  releaseSourceTokens(source);
   unsafe {
-    freeSource(loaded.pointer);
+    freeSource(loaded.pointer as * mut u8);
   }
   return 2i32;
 }
@@ -612,12 +618,10 @@ function bytesMutPointer(value: & BytesMut): * const u8 {
 }
 function runSimple(input: * const u8): i32 {
   const loaded = checkedSource(input, false);
-  if (pointerIsNull(loaded.pointer)) {
+  if (sourceIsNull(loaded)) {
     return 1i32;
   }
-  const source: Source = {
-    pointer: asConstPointer(loaded.pointer), length: loaded.length,
-  };
+  const source = loaded;
   let output = new BytesMut({
     capacity: 4096usize,
   });
@@ -627,8 +631,9 @@ function runSimple(input: * const u8): i32 {
   output.appendAscii(".typenative-run");
   const outputPointer = bytesMutPointer( & output);
   const buildStatus = emitProgram(outputPointer, input, source, 4i32);
+  releaseSourceTokens(source);
   unsafe {
-    freeSource(loaded.pointer);
+    freeSource(loaded.pointer as * mut u8);
   }
   if (buildStatus !== 0i32) {
     return 2i32;
@@ -672,6 +677,45 @@ function optionValue(name: * const u8): * const u8 {
     index = index + 1i32;
   }
   return staticPointer("");
+}
+function setLinkArguments(): void {
+  let output = new BytesMut({
+    capacity: 4096usize,
+  });
+  let index: i32 = 2i32;
+  while (index<argumentCount()) {
+    const candidate = argument(index);
+    if (argumentIs(candidate, staticPointer("--link-argument")) && index + 1i32 < argumentCount()) {
+      if (output.length > 0usize) {
+        output.push(32u8);
+      }
+      const value = argument(index + 1i32);
+      unsafe {
+        appendRaw( & mut output, value, strlen(value));
+      }
+      index = index + 2i32;
+      continue;
+    }
+    if (argumentStartsWithOption(candidate, staticPointer("--link-argument"))) {
+      if (output.length > 0usize) {
+        output.push(32u8);
+      }
+      let value: * const u8 = staticPointer("");
+      unsafe {
+        value = tn_bytes_slice(candidate, strlen(candidate), strlen(staticPointer("--link-argument")) + 1usize, strlen(candidate));
+      }
+      unsafe {
+        appendRaw( & mut output, value, strlen(value));
+      }
+    }
+    index = index + 1i32;
+  }
+  if (output.length > 0usize) {
+    output.push(0u8);
+    unsafe {
+      setenv(staticPointer("TYPENATIVE_LINK_ARGUMENTS"), bytesMutPointer( & output), 1i32);
+    }
+  }
 }
 function optionPresent(name: * const u8): bool {
   let index: i32 = 2i32;
@@ -880,7 +924,7 @@ function main(): i32 {
     sampleLength = strlen(sample as * const u8);
   }
   const source: Source = {
-    pointer: staticPointer(sample), length: sampleLength
+    pointer: staticPointer(sample), length: sampleLength, tokenPointer: supportNullPointer(), tokenCount: 0usize
   };
   return checkSource(source);
 }

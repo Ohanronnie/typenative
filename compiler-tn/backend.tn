@@ -1,8 +1,8 @@
-import { CompilerBuffer, bufferGet, bufferPush, bufferWithCapacity } from "./collections";
+import { CompilerBuffer, bufferWithCapacity } from "./collections";
 import { HirProgram } from "./hir";
 import { Source, Token, TokenKind, firstByte, isKeyword, next } from "./lexer";
 import { isEnd } from "./parser";
-import { sourceByte } from "./support";
+import { byteAddress, sourceByte, storeRaw } from "./support";
 
 @Copy export enum BackendResultKind {
   Unknown, Void, Value,
@@ -31,23 +31,21 @@ export struct BackendProgram {
   public lowerableFunctions: usize;
   public instructionWords: usize;
 }
-function mutableUsizePointer(value: & mut usize): * mut u8 {
-  unsafe {
-    return value as * mut usize as * mut u8;
-  }
-}
 function pushWord(words: & mut CompilerBuffer<usize>, value: usize): void {
-  let writable = value;
   unsafe {
-    bufferPush<usize>(words, mutableUsizePointer( & mut writable)as * const u8);
+    const destination = byteAddress(words.pointer as * const u8, words.length * words.elementSize);
+    storeRaw<usize>(destination as * mut usize, value);
   }
+  words.length = words.length + 1usize;
 }
 function readWord(words: & CompilerBuffer<usize>, index: usize): usize {
-  let value: usize = 0usize;
-  unsafe {
-    bufferGet<usize>(words, index, mutableUsizePointer( & mut value));
+  if (index >= words.length) {
+    return 0usize;
   }
-  return value;
+  unsafe {
+    const source = byteAddress(words.pointer as * const u8, index * words.elementSize);
+    return *(source as * const usize);
+  }
 }
 function functionPointer(functions: & CompilerBuffer<usize >): * const u8 {
   unsafe {

@@ -3673,6 +3673,26 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
+        if self.is_intrinsic_operation(start, callee_end, "byte_read_i32") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "byte_read_i32".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
         if self.is_intrinsic_operation(start, callee_end, "borrow_element") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));

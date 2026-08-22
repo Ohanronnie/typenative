@@ -1,7 +1,11 @@
-import { hashSource, sourceByte, tokenMatches, validateNumericLiteral } from "./support";
+import { isNull, rawAlloc, rawFree, sizeOf } from "std/alloc";
+import { byteAddress, hashSource, sourceByte, tokenMatches, validateNumericLiteral } from "./support";
+
 @Copy export struct Source {
   public pointer: * const u8;
   public length: usize;
+  public tokenPointer: * mut u8;
+  public tokenCount: usize;
 }
 @Copy export enum TokenKind {
   Identifier, Number, String, Punctuation, Invalid, End,
@@ -19,15 +23,97 @@ import { hashSource, sourceByte, tokenMatches, validateNumericLiteral } from "./
   public end: usize;
   public invalid: bool;
 }
+declare extern "C" {
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceStart: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationStart: usize): i32;
+}
 export function lexer(source: Source): Lexer {
   return {
     source: source, offset: 0usize
   };
 }
+export function cacheSourceTokens(source: Source): Source {
+  if (source.tokenCount > 0usize) {
+    return source;
+  }
+  const capacity = source.length + 1usize;
+  const pointer = rawAlloc(capacity * sizeOf<Token>());
+  unsafe {
+    if (isNull(pointer as * const u8)) {
+      return source;
+    }
+  }
+  let offset: usize = 0usize;
+  let count: usize = 0usize;
+  while (offset<source.length && count<capacity) {
+    const token = next(source, offset);
+    if (token.start === token.end) {
+      break;
+    }
+    unsafe {
+      tn_bytes_copy_to_at(( & token)as * const u8, sizeOf<Token>(), 0usize, sizeOf<Token>(), pointer, capacity * sizeOf<Token>(), count * sizeOf<Token>());
+    }
+    count = count + 1usize;
+    if (token.end <= offset) {
+      break;
+    }
+    offset = token.end;
+  }
+  return {
+    pointer: source.pointer, length: source.length, tokenPointer: pointer, tokenCount: count,
+  };
+}
+export function releaseSourceTokens(source: Source): void {
+  unsafe {
+    if (!isNull(source.tokenPointer as * const u8)) {
+      rawFree(source.tokenPointer);
+    }
+  }
+}
 export function byteAt(source: Source, offset: usize): i32 {
   unsafe {
     return sourceByte(source.pointer, source.length, offset);
   }
+}
+function cachedTokenAt(source: Source, index: usize): Token {
+  unsafe {
+    const address = byteAddress(source.tokenPointer as * const u8, index * sizeOf<Token>())as * const Token;
+    return * address;
+  }
+}
+function cachedTokenStartAt(source: Source, index: usize): usize {
+  unsafe {
+    const address = byteAddress(source.tokenPointer as * const u8, index * sizeOf<Token>() + sizeOf<usize>())as * const usize;
+    return * address;
+  }
+}
+function cachedNext(source: Source, offset: usize): Token {
+  if (offset >= source.length) {
+    return {
+      kind: TokenKind.End, start: source.length, end: source.length,
+    };
+  }
+  let low: usize = 0usize;
+  let high = source.tokenCount;
+  while (low<high) {
+    const middle = low +(high - low) / 2usize;
+    if (cachedTokenStartAt(source, middle) < offset) {
+      low = middle + 1usize;
+    } else {
+      high = middle;
+    }
+  }
+  if (low >= source.tokenCount) {
+    return {
+      kind: TokenKind.End, start: source.length, end: source.length,
+    };
+  }
+  return cachedTokenAt(source, low);
+}
+export function nextCached(source: Source, offset: usize): Token {
+  if (source.tokenCount > 0usize) {
+    return cachedNext(source, offset);
+  }
+  return next(source, offset);
 }
 export function sourceIdentity(source: Source): u64 {
   unsafe {
@@ -47,6 +133,12 @@ function isIdentifierContinueByte(value: i32): bool {
   return isIdentifierStartByte(value) ||(value >= 48i32 && value <= 57i32);
 }
 export function next(source: Source, offset: usize): Token {
+  if (source.tokenCount > 0usize) {
+    const cached = cachedNext(source, offset);
+    if (!isInvalid(cached) || cached.start !== source.length) {
+      return cached;
+    }
+  }
   let cursor = offset;
   while (cursor<source.length) {
     const current = byteAt(source, cursor);

@@ -42,13 +42,13 @@ fi
 
 run_tn "$tn" build "$root/validation/native/class-virtual.tn" --profile debug --out "$work/program" >/dev/null
 if command -v lldb >/dev/null 2>&1; then
-  symbol=$(nm "$work/program.o" | awk '$2 ~ /^[Tt]$/ && $3 ~ /^_tn_[0-9]+/ {sub(/^_/, "", $3); print $3; exit}')
+  symbol=$(nm "$work/program.o" | awk '$2 ~ /^[Tt]$/ && $3 ~ /^_tn_/ {sub(/^_/, "", $3); print $3; exit}')
   test -n "$symbol"
   lldb --batch \
     -o "target modules lookup -n $symbol" \
     "$work/program" 2>&1 | grep -q 'class-virtual.tn'
 elif command -v gdb >/dev/null 2>&1; then
-  symbol=$(nm "$work/program.o" | awk '$2 ~ /^[Tt]$/ && $3 ~ /^_tn_[0-9]+/ {sub(/^_/, "", $3); print $3; exit}')
+  symbol=$(nm "$work/program.o" | awk '$2 ~ /^[Tt]$/ && $3 ~ /^_tn_/ {sub(/^_/, "", $3); print $3; exit}')
   test -n "$symbol"
   gdb -batch \
     -ex "info line $symbol" \

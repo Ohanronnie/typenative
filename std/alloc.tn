@@ -42,7 +42,7 @@ function allocationError(): AllocError {
   }
 }
 @Intrinsic("size_of")
-function sizeOf<T>(): usize {
+export function sizeOf<T>(): usize {
   return 0usize;
 }
 @Intrinsic("is_null")

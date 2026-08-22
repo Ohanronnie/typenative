@@ -1,0 +1,323 @@
+import { isNull, nullPointer } from "std/alloc";
+import { BytesMut, appendAscii, appendRaw } from "std/bytes";
+import { DirectProject, DirectType, collectDirectFunctions, collectDirectStructs, defineDirectFunctions, defineDirectGlobals, directFunctionValueType, directKindIsVoid, directMainCompletionType, directMainReturnsThrows, directMainReturnsVoid, directMainValueType, directProjectFor, disposeDirectProject, emitDirectFunctions, emitDirectNodeAddon, finalizeDirectDebugInfo, prepareDirectDebugInfo, preserveDirectObjectFunctions, setDirectStructBodies, writeDirectNodeDeclarations } from "./direct_ir";
+import { Source, Token, TokenKind, isKeyword, next } from "./lexer";
+import { createContext, createModule, disposeContext, disposeModule, llvmAddFunction, llvmAppendBlock, llvmBr, llvmBuildCompare, llvmCall0, llvmCall2, llvmCondBr, llvmConstInt, llvmCreateBuilder, llvmCreateTargetMachine, llvmDefaultTarget, llvmDisposeBuilder, llvmDisposeTargetData, llvmDisposeTargetMachine, llvmFreeMessage, llvmFunctionType, llvmFunctionType2, llvmGetNamedFunction, llvmGetParam, llvmInitializeTargets, llvmInt8Type, llvmInt32Type, llvmLoad, llvmOptimize, llvmPointerType, llvmPosition, llvmPrint, llvmRet, llvmSetExternal, llvmSetTarget, llvmStructGep, llvmTargetDataLayout, llvmTargetFromTriple, llvmTargetLayoutString, llvmEmitTargetFile, llvmVerify, llvmWriteBitcode, llvmVoidType } from "./llvm";
+import { isEnd } from "./parser";
+import { sourceByte } from "./support";
+
+declare extern "C" {
+  function strlen(bytes: * const u8): usize;
+  function getenv(name: * const u8): * const u8;
+  function system(command: * const u8): i32;
+  function write(fd: i32, bytes: * const u8, length: usize): isize;
+}
+function punctuation(source: Source, token: Token, value: i32): bool {
+  const isPunctuationToken = switch(token.kind) {
+    case TokenKind.Punctuation: true, default: false,
+  };
+  if (!isPunctuationToken || token.end <= token.start) {
+    return false;
+  }
+  unsafe {
+    return sourceByte(source.pointer, source.length, token.start) === value;
+  }
+}
+function matchingBrace(source: Source, opening: Token): Token {
+  let depth: usize = 1usize;
+  let cursor = next(source, opening.end);
+  while (!isEnd(cursor)) {
+    if (punctuation(source, cursor, 123i32)) {
+      depth = depth + 1usize;
+    } else if (punctuation(source, cursor, 125i32)) {
+      depth = depth - 1usize;
+      if (depth === 0usize) {
+        return cursor;
+      }
+    }
+    cursor = next(source, cursor.end);
+  }
+  return {
+    kind: TokenKind.End, start: source.length, end: source.length,
+  };
+}
+function llvmName(value: & str): * const u8 {
+  unsafe {
+    return value as * const u8;
+  }
+}
+function pointerMissing(value: * mut u8): bool {
+  unsafe {
+    return isNull(value as * const u8);
+  }
+}
+function constPointerMissing(value: * const u8): bool {
+  unsafe {
+    return isNull(value);
+  }
+}
+function productIsText(product: i32): bool {
+  return product === 0i32 || product === 1i32;
+}
+function appendQuoted(output: & mut BytesMut, value: * const u8): void {
+  appendAscii(output, "'");
+  unsafe {
+    appendRaw(output, value, strlen(value));
+  }
+  appendAscii(output, "'");
+}
+function bufferPointer(value: & BytesMut): * const u8 {
+  unsafe {
+    return value.pointer as * const u8;
+  }
+}
+function environment(name: & str): * const u8 {
+  unsafe {
+    return getenv(name as * const u8);
+  }
+}
+function appendObjectPath(output: * const u8): BytesMut {
+  let buffer = new BytesMut({
+    capacity: 4096usize,
+  });
+  unsafe {
+    appendRaw( & mut buffer, output, strlen(output));
+  }
+  appendAscii( & mut buffer, ".direct.o");
+  return buffer;
+}
+function linkNativeProduct(output: * const u8, objectPath: * const u8, product: i32): bool {
+  const runtime = environment("TYPENATIVE_RUNTIME_OBJECT");
+  let runtimeMissing = false;
+  unsafe {
+    runtimeMissing = isNull(runtime);
+  }
+  if (runtimeMissing) {
+    return false;
+  }
+  let command = new BytesMut({
+    capacity: 8192usize,
+  });
+  appendAscii( & mut command, "clang ");
+  appendQuoted( & mut command, objectPath);
+  appendAscii( & mut command, " ");
+  appendQuoted( & mut command, runtime);
+  appendAscii( & mut command, " -pthread ");
+  const linkArguments = environment("TYPENATIVE_LINK_ARGUMENTS");
+  if (!constPointerMissing(linkArguments)) {
+    unsafe {
+      appendRaw( & mut command, linkArguments, strlen(linkArguments));
+    }
+    appendAscii( & mut command, " ");
+  }
+  if (product === 5i32 || product === 6i32) {
+    appendAscii( & mut command, "-dynamiclib ");
+  }
+  if (product === 6i32) {
+    appendAscii( & mut command, "-undefined dynamic_lookup ");
+  }
+  appendAscii( & mut command, "-o ");
+  appendQuoted( & mut command, output);
+  let result: i32 = 1i32;
+  unsafe {
+    result = system(bufferPointer( & command));
+  }
+  return result === 0i32;
+}
+function emitTargetProduct(module: * mut u8, output: * const u8, product: i32): bool {
+  llvmInitializeTargets();
+  let triple = llvmDefaultTarget();
+  if (pointerMissing(triple)) {
+    return false;
+  }
+  let targetError: * mut u8 = nullPointer<u8>();
+  let target: * mut u8 = nullPointer<u8>();
+  unsafe {
+    target = llvmTargetFromTriple(triple as * const u8,( & mut targetError)as * mut * mut u8);
+  }
+  if (pointerMissing(target)) {
+    llvmFreeMessage(targetError);
+    llvmFreeMessage(triple);
+    return false;
+  }
+  let targetMachine: * mut u8 = nullPointer<u8>();
+  unsafe {
+    targetMachine = llvmCreateTargetMachine(target, triple as * const u8, 2i32);
+  }
+  if (pointerMissing(targetMachine)) {
+    llvmFreeMessage(triple);
+    return false;
+  }
+  const targetData = llvmTargetDataLayout(targetMachine);
+  const layout = llvmTargetLayoutString(targetData);
+  unsafe {
+    llvmSetTarget(module, triple as * const u8, layout as * const u8);
+  }
+  let valid = llvmVerify(module);
+  if (!valid) {
+    unsafe {
+      write(2i32, "LLVM module verification failed\n" as * const u8, 34usize);
+    }
+  }
+  if (valid) {
+    valid = llvmOptimize(module, targetMachine, true);
+  }
+  if (valid) {
+    let errorMessage: * mut u8 = nullPointer<u8>();
+    const fileType = product === 2i32?0i32: 1i32;
+    unsafe {
+      valid = llvmEmitTargetFile(targetMachine, module, output, fileType,( & mut errorMessage)as * mut * mut u8);
+    }
+    if (!valid && !pointerMissing(errorMessage)) {
+      unsafe {
+        write(2i32, "LLVM target emission failed: " as * const u8, 28usize);
+        write(2i32, errorMessage as * const u8, strlen(errorMessage as * const u8));
+        write(2i32, "\n" as * const u8, 1usize);
+      }
+    }
+    llvmFreeMessage(errorMessage);
+  } else {
+    unsafe {
+      write(2i32, "LLVM target stage failed\n" as * const u8, 25usize);
+    }
+  }
+  llvmDisposeTargetData(targetData);
+  llvmDisposeTargetMachine(targetMachine);
+  llvmFreeMessage(layout);
+  llvmFreeMessage(triple);
+  return valid;
+}
+function appendExecutableWrapper(context: * mut u8, module: * mut u8, userReturnsVoid: bool, userThrows: bool, userValueType: DirectType, completionType: DirectType): bool {
+  let mainType: * mut u8 = nullPointer<u8>();
+  unsafe {
+    mainType = llvmFunctionType2(llvmInt32Type(context), llvmInt32Type(context), llvmPointerType(context), false);
+  }
+  let mainFunction = llvmGetNamedFunction(module, llvmName("main"));
+  if (pointerMissing(mainFunction)) {
+    mainFunction = llvmAddFunction(module, llvmName("main"), mainType);
+  }
+  if (pointerMissing(mainFunction)) {
+    return false;
+  }
+  llvmSetExternal(mainFunction);
+  const block = llvmAppendBlock(context, mainFunction, llvmName("entry"));
+  const builder = llvmCreateBuilder(context);
+  if (pointerMissing(block) || pointerMissing(builder)) {
+    if (!pointerMissing(builder)) {
+      llvmDisposeBuilder(builder);
+    }
+    return false;
+  }
+  llvmPosition(builder, block);
+  let processType: * mut u8 = nullPointer<u8>();
+  unsafe {
+    processType = llvmFunctionType2(llvmVoidType(context), llvmInt32Type(context), llvmPointerType(context), false);
+  }
+  let process = llvmGetNamedFunction(module, llvmName("tn_process_set_args"));
+  if (pointerMissing(process)) {
+    process = llvmAddFunction(module, llvmName("tn_process_set_args"), processType);
+  }
+  if (pointerMissing(process)) {
+    llvmDisposeBuilder(builder);
+    return false;
+  }
+  llvmSetExternal(process);
+  const argc = llvmGetParam(mainFunction, 0u32);
+  const argv = llvmGetParam(mainFunction, 1u32);
+  llvmCall2(builder, processType, process, argc, argv, llvmName(""));
+  let userType: * mut u8 = nullPointer<u8>();
+  unsafe {
+    userType = llvmFunctionType(userThrows?completionType.llvm: userReturnsVoid?llvmVoidType(context): userValueType.llvm, nullPointer< * mut u8>()as * const * mut u8, 0u32, false);
+  }
+  const user = llvmGetNamedFunction(module, llvmName("tn_user_main"));
+  if (pointerMissing(user)) {
+    llvmDisposeBuilder(builder);
+    return false;
+  }
+  if (userThrows) {
+    const completion = llvmCall0(builder, userType, user, llvmName(""));
+    const tagAddress = llvmStructGep(builder, completionType.pointee, completion, 0u32, llvmName(""));
+    const tag = llvmLoad(builder, llvmInt8Type(context), tagAddress, llvmName(""));
+    const failed = llvmBuildCompare(builder, 33i32, tag, llvmConstInt(llvmInt8Type(context), 0i64, false), llvmName(""));
+    const successBlock = llvmAppendBlock(context, mainFunction, llvmName("success"));
+    const errorBlock = llvmAppendBlock(context, mainFunction, llvmName("error"));
+    llvmCondBr(builder, failed, errorBlock, successBlock);
+    llvmPosition(builder, errorBlock);
+    llvmRet(builder, llvmConstInt(llvmInt32Type(context), 1i64, true));
+    llvmPosition(builder, successBlock);
+    if (userReturnsVoid) {
+      llvmRet(builder, llvmConstInt(llvmInt32Type(context), 0i64, true));
+    } else {
+      const payloadAddress = llvmStructGep(builder, completionType.pointee, completion, 1u32, llvmName(""));
+      llvmRet(builder, llvmLoad(builder, userValueType.llvm, payloadAddress, llvmName("")));
+    }
+  } else if (userReturnsVoid) {
+    llvmCall0(builder, userType, user, llvmName(""));
+    llvmRet(builder, llvmConstInt(llvmInt32Type(context), 0i64, true));
+  } else {
+    const result = llvmCall0(builder, userType, user, llvmName(""));
+    llvmRet(builder, result);
+  }
+  llvmDisposeBuilder(builder);
+  return true;
+}
+export function emitDirectProgram(output: * const u8, input: * const u8, source: Source, product: i32): i32 {
+  let context = createContext();
+  if (pointerMissing(context.handle)) {
+    return 3i32;
+  }
+  let module = createModule( & context, "typenative-direct");
+  if (pointerMissing(module.handle)) {
+    disposeContext( & mut context);
+    return 3i32;
+  }
+  let project = directProjectFor(input, source);
+  prepareDirectDebugInfo( & mut project, context.handle, module.handle);
+  collectDirectStructs( & mut project, context.handle);
+  setDirectStructBodies( & project, context.handle);
+  collectDirectFunctions( & mut project);
+  defineDirectFunctions( & mut project, context.handle, module.handle);
+  defineDirectGlobals( & mut project, context.handle, module.handle);
+  emitDirectFunctions( & project, context.handle, module.handle);
+  finalizeDirectDebugInfo( & mut project);
+  if (product === 0i32) {
+    llvmPrint(module.handle, output);
+  }
+  let valid = llvmVerify(module.handle);
+  if (valid && productIsText(product)) {
+    if (product === 0i32) {
+      valid = llvmPrint(module.handle, output);
+    } else {
+      valid = llvmWriteBitcode(module.handle, output);
+    }
+  }
+  if (valid &&(product === 2i32 || product === 3i32)) {
+    preserveDirectObjectFunctions( & project);
+    valid = emitTargetProduct(module.handle, output, product);
+  }
+  if (valid && product === 4i32) {
+    const userThrows = directMainReturnsThrows( & project);
+    const userReturnsVoid = directMainReturnsVoid( & project, context.handle);
+    const userValueType = directMainValueType( & project, context.handle);
+    const completionType = directMainCompletionType( & project, context.handle);
+    valid = appendExecutableWrapper(context.handle, module.handle, userReturnsVoid, userThrows, userValueType, completionType);
+  }
+  if (valid && product === 6i32) {
+    valid = emitDirectNodeAddon( & project, context.handle, module.handle);
+  }
+  if (valid &&(product === 4i32 || product === 5i32 || product === 6i32)) {
+    preserveDirectObjectFunctions( & project);
+    let objectPath = appendObjectPath(output);
+    valid = emitTargetProduct(module.handle, bufferPointer( & objectPath), 3i32);
+    if (valid) {
+      valid = linkNativeProduct(output, bufferPointer( & objectPath), product);
+    }
+    if (valid && product === 6i32) {
+      valid = writeDirectNodeDeclarations( & project, output) === 0i32;
+    }
+  }
+  disposeDirectProject( & mut project);
+  disposeModule( & mut module);
+  disposeContext( & mut context);
+  return valid?0i32: 4i32;
+}

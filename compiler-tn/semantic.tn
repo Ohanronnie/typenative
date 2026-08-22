@@ -1,8 +1,8 @@
-import { CompilerBuffer, bufferGet } from "./collections";
+import { CompilerBuffer } from "./collections";
 import { HirProgram } from "./hir";
 import { Source, Token, TokenKind, byteAt, firstByte, isKeyword, tokenEqual, next } from "./lexer";
 import { ParseSummary, isEnd, parse } from "./parser";
-import { spansEqual, wordOccursInRange } from "./support";
+import { byteAddress, spansEqual, storeRaw, wordOccursInRange } from "./support";
 
 @Copy export struct SemanticProgram {
   public tokenCount: usize;
@@ -1504,17 +1504,15 @@ function duplicateCountBefore(source: Source, limit: usize, name: Token): usize 
   }
   return duplicates;
 }
-function mutableUsizePointer(value: & mut usize): * mut usize {
-  unsafe {
-    return value as * mut usize;
-  }
-}
 function declarationWord(declarations: & CompilerBuffer<usize>, index: usize, field: usize): usize {
-  let value: usize = 0usize;
-  unsafe {
-    bufferGet<usize>(declarations, index * 8usize + field, mutableUsizePointer( & mut value)as * mut u8);
+  const wordIndex = index * 8usize + field;
+  if (wordIndex >= declarations.length) {
+    return 0usize;
   }
-  return value;
+  unsafe {
+    const source = byteAddress(declarations.pointer as * const u8, wordIndex * declarations.elementSize);
+    return *(source as * const usize);
+  }
 }
 function hirDuplicateCount(source: Source, declarations: & CompilerBuffer<usize>, index: usize): usize {
   const declarationStart = declarationWord(declarations, index, 1usize);

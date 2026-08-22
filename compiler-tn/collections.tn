@@ -1,7 +1,8 @@
 import { rawAlloc, rawFree } from "std/alloc";
+import { byteAddress, storeRaw } from "./support";
+
 declare extern "C" {
   function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
-  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
 }
 @Drop export struct CompilerBuffer<T> {
   public pointer: * mut u8;
@@ -42,20 +43,25 @@ export function bufferWithCapacity<T>(elementSize: usize, capacity: usize): Comp
     pointer: rawAlloc(actualCapacity * elementSize), length: 0usize, capacity: actualCapacity, elementSize: elementSize,
   };
 }
-export function bufferPush<T>(vector: & mut CompilerBuffer<T>, value: * const u8): void {
+export function bufferPushValue<T>(vector: & mut CompilerBuffer<T>, value: T): void {
   const required = vector.length + 1usize;
   grow<T>(vector, required);
   unsafe {
-    tn_bytes_copy_to_at(value, vector.elementSize, 0usize, vector.elementSize, vector.pointer, vector.capacity * vector.elementSize, vector.length * vector.elementSize);
+    const destination = byteAddress(vector.pointer as * const u8, vector.length * vector.elementSize);
+    storeRaw<T>(destination as * mut T, value);
   }
   vector.length = vector.length + 1usize;
 }
-export function bufferGet<T>(vector: & CompilerBuffer<T>, index: usize, output: * mut u8): bool {
-  if (index >= vector.length) {
-    return false;
-  }
+export function bufferValue<T>(vector: & CompilerBuffer<T>, index: usize): T {
   unsafe {
-    return tn_bytes_copy_to_at(vector.pointer as * const u8, vector.capacity * vector.elementSize, index * vector.elementSize, vector.elementSize, output, vector.elementSize, 0usize) === 0i32;
+    const source = byteAddress(vector.pointer as * const u8, index * vector.elementSize);
+    return *(source as * const T);
+  }
+}
+export function bufferStoreValue<T>(vector: & mut CompilerBuffer<T>, index: usize, value: T): void {
+  unsafe {
+    const destination = byteAddress(vector.pointer as * const u8, index * vector.elementSize);
+    storeRaw<T>(destination as * mut T, value);
   }
 }
 export function bufferPop<T>(vector: & mut CompilerBuffer<T >): bool {

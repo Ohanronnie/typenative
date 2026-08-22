@@ -42,7 +42,7 @@ function main(): i32 {
 }
 EOF
 "$tn" build "$work/helper-call.tn" --emit llvm-ir --out "$work/helper-call.ll" >/dev/null
-grep -q 'define i32' "$work/helper-call.ll"
+rg -q 'define (internal )?i32' "$work/helper-call.ll"
 run_status 12 "$tn" run "$work/helper-call.tn"
 
 for profile in debug optimized; do

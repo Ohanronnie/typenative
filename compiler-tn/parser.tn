@@ -48,38 +48,6 @@ function isClose(byte: i32): bool {
 function isDeclaration(source: Source, token: Token): bool {
   return isKeyword(source, token, "function") || isKeyword(source, token, "struct") || isKeyword(source, token, "enum") || isKeyword(source, token, "class") || isKeyword(source, token, "interface") || isKeyword(source, token, "impl") || isKeyword(source, token, "type") || isKeyword(source, token, "const") || isKeyword(source, token, "static") || isKeyword(source, token, "extern");
 }
-function isInsideStructBody(source: Source, limit: usize): bool {
-  let offset: usize = 0usize;
-  let depth: usize = 0usize;
-  let structDepth: usize = 0usize;
-  let pendingStruct = false;
-  while (offset<limit) {
-    const token = next(source, offset);
-    if (isEnd(token) || token.start >= limit) {
-      break;
-    }
-    if (depth === 0usize && isKeyword(source, token, "struct")) {
-      pendingStruct = true;
-    }
-    const byte = firstByte(source, token);
-    if (byte === 123i32) {
-      depth = depth + 1usize;
-      if (pendingStruct) {
-        structDepth = depth;
-        pendingStruct = false;
-      }
-    } else if (byte === 125i32) {
-      if (depth === structDepth) {
-        structDepth = 0usize;
-      }
-      if (depth > 0usize) {
-        depth = depth - 1usize;
-      }
-    }
-    offset = token.end;
-  }
-  return structDepth > 0usize;
-}
 function isIdentifierToken(token: Token): bool {
   return switch(token.kind) {
     case TokenKind.Identifier: true, default: false,
@@ -133,6 +101,8 @@ export function parse(source: Source): ParseSummary {
   let typeAlias = false;
   let throwsClause = false;
   let optionalBarPending = false;
+  let pendingStruct = false;
+  let structDepth: usize = 0usize;
   let angleDepth: usize = 0usize;
   let angleLastIdentifier = false;
   while (true) {
@@ -154,7 +124,7 @@ export function parse(source: Source): ParseSummary {
     if (isKeyword(source, token, "null")) {
       recordError( & mut errors, 1002i32, token.start, token.end);
     }
-    if (isKeyword(source, token, "dyn") || isKeyword(source, token, "match") || isKeyword(source, token, "self") || isKeyword(source, token, "where") || isKeyword(source, token, "impl") ||(isKeyword(source, token, "constructor") && isInsideStructBody(source, token.start))) {
+    if (isKeyword(source, token, "dyn") || isKeyword(source, token, "match") || isKeyword(source, token, "self") || isKeyword(source, token, "where") || isKeyword(source, token, "impl") ||(isKeyword(source, token, "constructor") && structDepth > 0usize)) {
       recordError( & mut errors, 1016i32, token.start, token.end);
     }
     if (isKeyword(source, token, "import")) {
@@ -232,6 +202,9 @@ export function parse(source: Source): ParseSummary {
     if (isDeclaration(source, token)) {
       declarationCount = declarationCount + 1usize;
     }
+    if (depth === 0usize && isKeyword(source, token, "struct")) {
+      pendingStruct = true;
+    }
     const byte = firstByte(source, token);
     if (isOpen(byte)) {
       if (depth >= 32usize) {
@@ -248,6 +221,10 @@ export function parse(source: Source): ParseSummary {
         if (depth > maxDepth) {
           maxDepth = depth;
         }
+        if (byte === 123i32 && pendingStruct) {
+          structDepth = depth;
+          pendingStruct = false;
+        }
       }
     } else if (isClose(byte)) {
       let marker: u64 = 3u64;
@@ -260,8 +237,13 @@ export function parse(source: Source): ParseSummary {
         recordError( & mut errors, 1012i32, token.start, token.end);
       } else {
         expected = expected / 4u64;
+        if (depth === structDepth) {
+          structDepth = 0usize;
+        }
         depth = depth - 1usize;
       }
+    } else if (pendingStruct && byte === 59i32) {
+      pendingStruct = false;
     }
     tokenCount = tokenCount + 1usize;
     previous = token;

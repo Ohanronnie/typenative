@@ -1,46 +1,74 @@
 # Gate 11 parity ledger
 
-Status: complete.
+Status: complete. Direct LLVM self-hosting is verified.
 
-This ledger records the compiler/tooling implementation and the evidence for the
-independent self-hosting gate. The canonical starting point was
-`8b93db96d8fb3861e2edc3da2636f99c66b6e7fc` on `main`.
+The previous completion claim was incorrect. Commit
+`4b3137e19bd62b567e48f04ed84629681e5abe7a` is preserved as a deterministic
+TypeNative-to-C bootstrap checkpoint, not as evidence of the required direct
+LLVM pipeline.
 
-## Scope delivered
+## Delivered pipeline
 
-- `compiler-tn/` contains the self-hosted lexer, parser, formatter, HIR, type
-  checking, ownership checks, semantic analysis, MIR, drop lowering, LLVM
-  lowering, diagnostics, tooling, driver, collections, and generic codegen.
-- The self-hosted compiler handles executable, library, Node addon, directory
-  project, async, error propagation, filesystem, class/method, generic,
-  collection, foreign-function, C ABI, and debug-information paths exercised by
-  the product matrix.
-- The runtime and standard library contain the platform declarations,
-  byte-addressing intrinsics, typed collection allocation, map/string helpers,
-  and the supporting async, filesystem, and error paths.
-- The host LLVM backend recognizes the runtime byte-addressing intrinsics needed
-  to compile the committed runtime source. This is backend plumbing, not a
-  semantic fallback for the self-hosted compiler.
-- `scripts/bootstrap-self-host.sh` records source discovery, compiler hashes,
-  runtime-object hashing, every guarded command, and fixed-point artifact
-  evidence. `scripts/measure-compiler-check.sh` is the focused performance
-  regression check.
+- The useful TypeNative lexer, parser, formatter, HIR, semantic checks, MIR,
+  ownership/drop work, tooling, runtime, and bootstrap harness are preserved.
+- `compiler-tn/direct_ir.tn` constructs typed LLVM modules through the LLVM C
+  API for the self-hosted compiler, runtime, standard library, product, async,
+  error, aggregate, pointer, collection, debug-info, and foreign-call paths.
+- `compiler-tn/direct_codegen.tn` verifies and optimizes those modules, emits
+  LLVM target-machine objects, and links only already-emitted objects into
+  native products. No generated C is a TypeNative compilation stage.
+- `compiler-tn/generic_codegen.tn` and the whole-program C renderer are gone.
 
-## Independence evidence
+The normal pipeline is:
 
-The guarded bootstrap command was:
-
-```sh
-TYPENATIVE_RUNTIME_ROOT=/Users/ronnie/Projects/typenative \
-TN_BIN=/Users/ronnie/.cargo.target/release/tn \
-scripts/bootstrap-self-host.sh
+```text
+TypeNative source
+  -> lossless CST/AST
+  -> typed HIR
+  -> validated MIR
+  -> direct LLVM C API module construction in TypeNative
+  -> LLVM verification and optimization
+  -> LLVM target-machine object emission
+  -> system linker
+  -> native product
 ```
 
-The latest successful run is recorded at:
+The deterministic regression scan rejects generated C, C-source compiler
+subprocesses, the removed renderer, and source-pattern backend remnants.
 
+## Direct self-hosting evidence
+
+The final guarded command was:
+
+```sh
+TN_BIN=/Users/ronnie/.cargo.target/release/tn \
+TYPENATIVE_BOOTSTRAP_DIR=/tmp/gate11-final \
+sh scripts/bootstrap-self-host.sh
+```
+
+The manifest was
+`/tmp/gate11-final/run-1787383007-17394/bootstrap-manifest.txt` and reports:
+
+```text
+compiler-b-sha256=ed69a2e3d52a2afae2b41d64be08eda1da17ecccce47dc3e864e2fa017d55b44
+compiler-c-sha256=ed69a2e3d52a2afae2b41d64be08eda1da17ecccce47dc3e864e2fa017d55b44
+compiler-d-sha256=ed69a2e3d52a2afae2b41d64be08eda1da17ecccce47dc3e864e2fa017d55b44
+compiler-b-repeat-sha256=ed69a2e3d52a2afae2b41d64be08eda1da17ecccce47dc3e864e2fa017d55b44
+fixed-point=compiler-b=compiler-c=compiler-d=compiler-b-repeat
+```
+
+Stage A is the Rust-seed host that produces the first direct-LLVM compiler.
+Stages B, C, D, and the repeat stage compile the TypeNative compiler source
+through self-hosted direct LLVM object emission and the platform linker. The
+runtime objects for B, C, and D are independently rebuilt from the runtime
+source and have identical digests. The command trace reports
+`max_guarded_seconds=13` under the 175-second alarm guard.
+
+## Historical C-bootstrap checkpoint
+
+The previous bootstrap run at
 `/Users/ronnie/Projects/typenative/build/bootstrap/run-1786741378-10144`
-
-Its evidence manifest reports:
+reported:
 
 ```text
 fixed-point=compiler-b=compiler-c=compiler-d=compiler-b-repeat
@@ -51,68 +79,28 @@ compiler-d-sha256=1761f57cbe5edb7d89f7914ae1ca5ea6e4649d284e705064d6a7f944afd49d
 compiler-b-repeat-sha256=1761f57cbe5edb7d89f7914ae1ca5ea6e4649d284e705064d6a7f944afd49d29
 ```
 
-Stage A is the committed host driver that produces the first self-hosted
-compiler. Stages B, C, D, and the repeat stage compile the committed compiler
-source, runtime object, and product inputs through the self-hosted driver and
-the platform linker. No stage delegates semantic analysis or lowering to the
-Rust implementation.
+These hashes remain useful reproducibility evidence for the old backend and are
+not used as evidence for the direct pipeline.
 
-The source manifest is discovered in sorted order, and the artifact digest
-uses allocated executable sections so linker metadata does not make identical
-machine code appear different. The full command record is in
-`command-trace.tsv` beside the manifest.
+## Performance policy
 
-## Performance evidence
+The compiler performance guard remains part of this gate: every individual
+TypeNative compiler check or build is alarm-guarded below 175 seconds. If one
+approaches that limit, feature work stops, the stage is profiled and optimized,
+and the command repeats below the limit before continuing.
 
-An early self-hosted collection build exposed an unbounded backward source scan;
-it was stopped before the three-minute limit. The scan was replaced with a
-bounded forward pass, and the regression probe now reports:
+## Completion evidence
 
-```text
-tn-timing phase=module-check micros=98315
-tn-timing phase=ownership micros=1397359
-tn-timing phase=mir-drop micros=823348
-compiler-check-regression: seconds=2 timeout=175 status=0 driver=/Users/ronnie/.cargo.target/release/tn
-```
+- [x] Whole-program C renderer and all `.tn.c`/C-source subprocess paths are removed.
+- [x] TypeNative constructs general typed LLVM modules through the LLVM C API.
+- [x] LLVM verification, optimization, target-machine object emission, and linking are direct.
+- [x] No normal TypeNative build creates a `.tn.c` file or invokes Clang on generated C.
+- [x] A deterministic regression scan rejects forbidden C-backend paths.
+- [x] B builds C through direct LLVM object emission without Rust codegen delegation.
+- [x] C builds D through direct LLVM object emission without Rust codegen delegation.
+- [x] D and a repeat build reach a direct-LLVM fixed point.
+- [x] Product behavior and prior acceptance suites pass under the direct pipeline.
+- [x] The protected benchmark remains unchanged by this work and unstaged.
 
-The bootstrap command trace has `max-guarded-seconds=95`. The two slowest
-stages were the self-hosted compiler builds from B to C and C to D, each at 95
-seconds, below the 180-second limit. Any future guarded TypeNative compiler
-check or build exceeding that limit must be profiled and corrected before
-feature work continues.
-
-## Product and repository evidence
-
-The final `scripts/verify-all.sh` matrix completed with:
-
-```text
-verification-matrix=pass
-```
-
-It covers native source and formatting checks, all standard-library checks,
-Rust tests, lint and documentation checks, CLI behavior, hosted standard
-library and async execution, runtime/time/filesystem behavior, debug info, C
-ABI layout and calls, Node behavior, Redis benchmarks, sanitizers, and lexer/
-parser fuzz checks. Every TypeNative compiler invocation is alarm-guarded.
-
-The protected benchmark file remains byte-identical to the starting state:
-
-```text
-634c57f2f3b53be3bd51912b3321026a80f0099043b50f6dc0b53587d485634d  benchmarks/json-parser/results.json
-```
-
-Generated fuzz corpus files are verification artifacts and are kept out of the
-commit. The benchmark result is also kept out of the commit.
-
-## Completion checklist
-
-- [x] Self-hosted compiler frontend and semantic pipeline are implemented.
-- [x] MIR, drop lowering, LLVM lowering, runtime, and tooling paths are covered.
-- [x] Product behavior is checked beyond compiler-only fixtures.
-- [x] No bounded integer-program evaluator or source-pattern evaluator remains.
-- [x] A→B→C→D and repeat-stage artifact hashes reach a fixed point.
-- [x] Every guarded compiler command stays below 180 seconds.
-- [x] The performance regression probe is committed and passes below the limit.
-- [x] The full verification matrix passes.
-- [x] The protected benchmark remains unchanged and unstaged.
-- [x] The evidence manifest and command trace are reproducible from the script.
+The preserved worktree hash of `benchmarks/json-parser/results.json` is
+`634c57f2f3b53be3bd51912b3321026a80f0099043b50f6dc0b53587d485634d`.

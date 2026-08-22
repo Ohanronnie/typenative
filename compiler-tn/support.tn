@@ -20,6 +20,18 @@ declare extern "C" {
   function read(fd: i32, bytes: * mut u8, length: usize): usize;
   function write(fd: i32, bytes: * const u8, length: usize): isize;
 }
+@Intrinsic("byte_read_i32")
+function byteReadI32(pointer: * const u8, length: usize, offset: usize): i32 {
+  return 0i32;
+}
+@Intrinsic("byte_address")
+export function byteAddress(pointer: * const u8, offset: usize): * const u8 {
+  return pointer;
+}
+@Intrinsic("store_raw")
+export function storeRaw<T>(pointer: * mut T, value: T): bool {
+  return false;
+}
 @Copy export struct SourceBuffer {
   public pointer: * mut u8;
   public length: usize;
@@ -28,13 +40,9 @@ export function supportNullPointer<T>(): * mut T {
   return nullPointer<T>();
 }
 function byteAt(pointer: * const u8, length: usize, offset: usize): i32 {
-  let value: i32 = 0i32;
   unsafe {
-    if (tn_bytes_read_u8(pointer, length, offset,( & mut value)as * mut u8) !== 0i32) {
-      return - 1i32;
-    }
+    return byteReadI32(pointer, length, offset);
   }
-  return value;
 }
 function byteValue(pointer: * const u8, length: usize, offset: usize): u8 {
   let value: u8 = 0u8;
@@ -312,6 +320,61 @@ export function parseI32Literal(source: * const u8, start: usize, end: usize, ou
   }
   unsafe {
     tn_bytes_copy(( & value)as * const u8, 4usize, output as * mut u8);
+  }
+  return 0i32;
+}
+function digitValueI64(value: i32): i64 {
+  if (value >= 48i32 && value <= 57i32) {
+    return value === 48i32?0i64: value === 49i32?1i64: value === 50i32?2i64: value === 51i32?3i64: value === 52i32?4i64: value === 53i32?5i64: value === 54i32?6i64: value === 55i32?7i64: value === 56i32?8i64: 9i64;
+  }
+  if (value >= 65i32 && value <= 70i32) {
+    return value === 65i32?10i64: value === 66i32?11i64: value === 67i32?12i64: value === 68i32?13i64: value === 69i32?14i64: 15i64;
+  }
+  if (value >= 97i32 && value <= 102i32) {
+    return value === 97i32?10i64: value === 98i32?11i64: value === 99i32?12i64: value === 100i32?13i64: value === 101i32?14i64: 15i64;
+  }
+  return - 1i64;
+}
+export function parseI64Literal(source: * const u8, start: usize, end: usize, output: * mut i64): i32 {
+  if (validateNumericLiteral(source, start, end) !== 0i32) {
+    return 1i32;
+  }
+  let cursor = start;
+  let base: i64 = 10i64;
+  if (end - cursor >= 2usize && byteAt(source, end, cursor) === 48i32) {
+    const prefix = byteAt(source, end, cursor + 1usize);
+    if (prefix === 98i32 || prefix === 66i32) {
+      base = 2i64;
+      cursor = cursor + 2usize;
+    } else if (prefix === 111i32 || prefix === 79i32) {
+      base = 8i64;
+      cursor = cursor + 2usize;
+    } else if (prefix === 120i32 || prefix === 88i32) {
+      base = 16i64;
+      cursor = cursor + 2usize;
+    }
+  }
+  let value: i64 = 0i64;
+  let sawDigit = false;
+  while (cursor<end) {
+    const byte = byteAt(source, end, cursor);
+    if (byte === 95i32) {
+      cursor = cursor + 1usize;
+      continue;
+    }
+    const digit = digitValueI64(byte);
+    if (digit<0i64 || digit >= base) {
+      break;
+    }
+    value = value * base + digit;
+    sawDigit = true;
+    cursor = cursor + 1usize;
+  }
+  if (!sawDigit ||(cursor !== end && !validIntegerSuffix(source, cursor, end))) {
+    return 1i32;
+  }
+  unsafe {
+    tn_bytes_copy(( & value)as * const u8, 8usize, output as * mut u8);
   }
   return 0i32;
 }

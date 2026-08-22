@@ -1,22 +1,136 @@
-import { isNull, nullPointer } from "std/alloc";
+import { isNull, nullPointer, rawAlloc, rawFree, sizeOf } from "std/alloc";
 declare extern "C" {
+  function strlen(bytes: * const u8): usize;
+  function write(fd: i32, bytes: * const u8, length: usize): isize;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
   function LLVMGetVersion(major: * mut u32, minor: * mut u32, patch: * mut u32): void;
   function LLVMContextCreate(): * mut u8;
   function LLVMContextDispose(context: * mut u8): void;
   function LLVMModuleCreateWithNameInContext(name: * const u8, context: * mut u8): * mut u8;
   function LLVMDisposeModule(module: * mut u8): void;
+  function LLVMSetTarget(module: * mut u8, triple: * const u8): void;
+  function LLVMSetDataLayout(module: * mut u8, layout: * const u8): void;
   function LLVMVerifyModule(module: * mut u8, action: i32, message: * mut * mut u8): i32;
   function LLVMDisposeMessage(message: * mut u8): void;
   function LLVMPrintModuleToFile(module: * mut u8, output: * const u8, message: * mut * mut u8): i32;
+  function LLVMWriteBitcodeToFile(module: * mut u8, output: * const u8): i32;
+  function LLVMInitializeAArch64TargetInfo(): void;
+  function LLVMInitializeAArch64Target(): void;
+  function LLVMInitializeAArch64TargetMC(): void;
+  function LLVMInitializeAArch64AsmPrinter(): void;
+  function LLVMInitializeX86TargetInfo(): void;
+  function LLVMInitializeX86Target(): void;
+  function LLVMInitializeX86TargetMC(): void;
+  function LLVMInitializeX86AsmPrinter(): void;
+  function LLVMGetDefaultTargetTriple(): * mut u8;
+  function LLVMGetTargetFromTriple(triple: * const u8, target: * mut * mut u8, errorMessage: * mut * mut u8): i32;
+  function LLVMCreateTargetMachine(target: * mut u8, triple: * const u8, cpu: * const u8, features: * const u8, level: i32, reloc: i32, codeModel: i32): * mut u8;
+  function LLVMCreateTargetDataLayout(targetMachine: * mut u8): * mut u8;
+  function LLVMCopyStringRepOfTargetData(targetData: * mut u8): * mut u8;
+  function LLVMDisposeTargetData(targetData: * mut u8): void;
+  function LLVMDisposeTargetMachine(targetMachine: * mut u8): void;
+  function LLVMTargetMachineEmitToFile(targetMachine: * mut u8, module: * mut u8, output: * const u8, fileType: i32, errorMessage: * mut * mut u8): i32;
+  function LLVMCreatePassBuilderOptions(): * mut u8;
+  function LLVMDisposePassBuilderOptions(options: * mut u8): void;
+  function LLVMRunPasses(module: * mut u8, passes: * const u8, targetMachine: * mut u8, options: * mut u8): * mut u8;
+  function LLVMGetErrorMessage(error: * mut u8): * mut u8;
+  function LLVMDisposeErrorMessage(message: * mut u8): void;
+  function LLVMConsumeError(error: * mut u8): void;
+  function LLVMVoidTypeInContext(context: * mut u8): * mut u8;
+  function LLVMInt1TypeInContext(context: * mut u8): * mut u8;
+  function LLVMInt8TypeInContext(context: * mut u8): * mut u8;
+  function LLVMInt16TypeInContext(context: * mut u8): * mut u8;
   function LLVMInt32TypeInContext(context: * mut u8): * mut u8;
+  function LLVMInt64TypeInContext(context: * mut u8): * mut u8;
+  function LLVMInt128TypeInContext(context: * mut u8): * mut u8;
+  function LLVMIntTypeInContext(context: * mut u8, bits: u32): * mut u8;
+  function LLVMFloatTypeInContext(context: * mut u8): * mut u8;
+  function LLVMDoubleTypeInContext(context: * mut u8): * mut u8;
+  function LLVMPointerTypeInContext(context: * mut u8, addressSpace: u32): * mut u8;
+  function LLVMArrayType2(elementType: * mut u8, count: u64): * mut u8;
+  function LLVMStructCreateNamed(context: * mut u8, name: * const u8): * mut u8;
+  function LLVMStructSetBody(structType: * mut u8, elements: * mut * mut u8, count: u32, packed: i32): void;
   function LLVMFunctionType(result: * mut u8, parameters: * const * mut u8, parameterCount: u32, variadic: i32): * mut u8;
   function LLVMAddFunction(module: * mut u8, name: * const u8, functionType: * mut u8): * mut u8;
+  function LLVMAddGlobal(module: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMSetInitializer(global: * mut u8, value: * mut u8): void;
+  function LLVMGetNamedFunction(module: * mut u8, name: * const u8): * mut u8;
+  function LLVMGetParam(functionValue: * mut u8, index: u32): * mut u8;
+  function LLVMSetLinkage(functionValue: * mut u8, linkage: i32): void;
   function LLVMAppendBasicBlockInContext(context: * mut u8, functionValue: * mut u8, name: * const u8): * mut u8;
+  function LLVMGetEntryBasicBlock(functionValue: * mut u8): * mut u8;
   function LLVMCreateBuilderInContext(context: * mut u8): * mut u8;
   function LLVMDisposeBuilder(builder: * mut u8): void;
+  function LLVMPositionBuilderBefore(builder: * mut u8, instruction: * mut u8): void;
   function LLVMPositionBuilderAtEnd(builder: * mut u8, block: * mut u8): void;
+  function LLVMGetInsertBlock(builder: * mut u8): * mut u8;
+  function LLVMGetFirstInstruction(block: * mut u8): * mut u8;
+  function LLVMBuildAlloca(builder: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildLoad2(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildStore(builder: * mut u8, value: * mut u8, pointer: * mut u8): * mut u8;
+  function LLVMBuildGEP2(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, indices: * mut * mut u8, count: u32, name: * const u8): * mut u8;
+  function LLVMBuildStructGEP2(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, index: u32, name: * const u8): * mut u8;
+  function LLVMBuildGlobalStringPtr(builder: * mut u8, value: * const u8, name: * const u8): * mut u8;
   function LLVMConstInt(integerType: * mut u8, value: i64, signExtend: i32): * mut u8;
+  function LLVMConstNull(valueType: * mut u8): * mut u8;
+  function LLVMConstReal(realType: * mut u8, value: f64): * mut u8;
+  function LLVMSizeOf(valueType: * mut u8): * mut u8;
+  function LLVMBuildFAdd(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildFSub(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildFMul(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildFDiv(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildFRem(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildAdd(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildSub(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildMul(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildSDiv(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildUDiv(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildSRem(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildURem(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildShl(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildLShr(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildAShr(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildAnd(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildOr(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildXor(builder: * mut u8, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildNeg(builder: * mut u8, value: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildNot(builder: * mut u8, value: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildICmp(builder: * mut u8, predicate: i32, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildFCmp(builder: * mut u8, predicate: i32, left: * mut u8, right: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildBr(builder: * mut u8, block: * mut u8): * mut u8;
+  function LLVMBuildCondBr(builder: * mut u8, condition: * mut u8, thenBlock: * mut u8, elseBlock: * mut u8): * mut u8;
+  function LLVMBuildRetVoid(builder: * mut u8): * mut u8;
   function LLVMBuildRet(builder: * mut u8, value: * mut u8): * mut u8;
+  function LLVMBuildCall2(builder: * mut u8, functionType: * mut u8, functionValue: * mut u8, arguments: * mut * mut u8, argumentCount: u32, name: * const u8): * mut u8;
+  function LLVMBuildPhi(builder: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMAddIncoming(phi: * mut u8, values: * mut * mut u8, blocks: * mut * mut u8, count: u32): void;
+  function LLVMBuildSelect(builder: * mut u8, condition: * mut u8, thenValue: * mut u8, elseValue: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildTrunc(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildZExt(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildSExt(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildPtrToInt(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildIntToPtr(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildBitCast(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildZExtOrBitCast(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildSExtOrBitCast(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildTruncOrBitCast(builder: * mut u8, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8;
+  function LLVMBuildUnreachable(builder: * mut u8): * mut u8;
+  function LLVMCreateDIBuilder(module: * mut u8): * mut u8;
+  function LLVMDisposeDIBuilder(builder: * mut u8): void;
+  function LLVMDIBuilderFinalize(builder: * mut u8): void;
+  function LLVMDIBuilderCreateFile(builder: * mut u8, filename: * const u8, filenameLength: usize, directory: * const u8, directoryLength: usize): * mut u8;
+  function LLVMDIBuilderCreateCompileUnit(builder: * mut u8, language: i32, file: * mut u8, producer: * const u8, producerLength: usize, optimized: i32, flags: * const u8, flagsLength: usize, runtimeVersion: u32, splitName: * const u8, splitNameLength: usize, emissionKind: i32, dwoId: u32, splitDebugInlining: i32, debugInfoForProfiling: i32, sysRoot: * const u8, sysRootLength: usize, sdk: * const u8, sdkLength: usize): * mut u8;
+  function LLVMDIBuilderCreateSubroutineType(builder: * mut u8, file: * mut u8, parameterTypes: * mut * mut u8, parameterCount: u32, flags: u32): * mut u8;
+  function LLVMDIBuilderCreateFunction(builder: * mut u8, scope: * mut u8, name: * const u8, nameLength: usize, linkageName: * const u8, linkageNameLength: usize, file: * mut u8, line: u32, typeValue: * mut u8, localToUnit: i32, definition: i32, scopeLine: u32, flags: u32, optimized: i32): * mut u8;
+  function LLVMDIBuilderCreateDebugLocation(context: * mut u8, line: u32, column: u32, scope: * mut u8, inlinedAt: * mut u8): * mut u8;
+  function LLVMSetSubprogram(functionValue: * mut u8, subprogram: * mut u8): void;
+  function LLVMSetCurrentDebugLocation2(builder: * mut u8, location: * mut u8): void;
+  function LLVMInstructionSetDebugLoc(instruction: * mut u8, location: * mut u8): void;
+  function LLVMGetFirstBasicBlock(functionValue: * mut u8): * mut u8;
+  function LLVMGetNextBasicBlock(block: * mut u8): * mut u8;
+  function LLVMGetNextInstruction(instruction: * mut u8): * mut u8;
+  function LLVMValueAsMetadata(value: * mut u8): * mut u8;
+  function LLVMAddModuleFlag(module: * mut u8, behavior: i32, key: * const u8, keyLength: usize, value: * mut u8): void;
 }
 @Copy export struct LlvmContext {
   public handle: * mut u8;
@@ -38,6 +152,624 @@ function pointerIsNull(pointer: * mut u8): bool {
 function staticPointer(value: & static str): * const u8 {
   unsafe {
     return value as * const u8;
+  }
+}
+export function llvmVoidType(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMVoidTypeInContext(context);
+  }
+}
+export function llvmIntType(context: * mut u8, bits: u32): * mut u8 {
+  unsafe {
+    return LLVMIntTypeInContext(context, bits);
+  }
+}
+export function llvmInt1Type(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMInt1TypeInContext(context);
+  }
+}
+export function llvmInt8Type(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMInt8TypeInContext(context);
+  }
+}
+export function llvmInt16Type(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMInt16TypeInContext(context);
+  }
+}
+export function llvmInt32Type(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMInt32TypeInContext(context);
+  }
+}
+export function llvmInt64Type(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMInt64TypeInContext(context);
+  }
+}
+export function llvmInt128Type(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMInt128TypeInContext(context);
+  }
+}
+export function llvmFloatType(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMFloatTypeInContext(context);
+  }
+}
+export function llvmDoubleType(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMDoubleTypeInContext(context);
+  }
+}
+export function llvmPointerType(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMPointerTypeInContext(context, 0u32);
+  }
+}
+export function llvmArrayType(valueType: * mut u8, count: u64): * mut u8 {
+  unsafe {
+    return LLVMArrayType2(valueType, count);
+  }
+}
+export function llvmStructCreate(context: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMStructCreateNamed(context, name);
+  }
+}
+export function llvmStructBody(valueType: * mut u8, elements: * mut * mut u8, count: u32): void {
+  unsafe {
+    LLVMStructSetBody(valueType, elements, count, 0i32);
+  }
+}
+export function llvmFunctionType(result: * mut u8, parameters: * const * mut u8, count: u32, variadic: bool): * mut u8 {
+  unsafe {
+    return LLVMFunctionType(result, parameters, count, variadic?1i32: 0i32);
+  }
+}
+export function llvmFunctionType1(result: * mut u8, first: * mut u8, variadic: bool): * mut u8 {
+  const pointerSize = sizeOf< * mut u8>();
+  const parameters = rawAlloc(pointerSize);
+  let firstValue = first;
+  unsafe {
+    tn_bytes_copy_to_at(( & mut firstValue)as * const u8, pointerSize, 0usize, pointerSize, parameters, pointerSize, 0usize);
+    const functionType = LLVMFunctionType(result, parameters as * const * mut u8, 1u32, variadic?1i32: 0i32);
+    rawFree(parameters);
+    return functionType;
+  }
+}
+export function llvmFunctionType2(result: * mut u8, first: * mut u8, second: * mut u8, variadic: bool): * mut u8 {
+  const pointerSize = sizeOf< * mut u8>();
+  const parameters = rawAlloc(2usize * pointerSize);
+  let firstValue = first;
+  let secondValue = second;
+  unsafe {
+    tn_bytes_copy_to_at(( & mut firstValue)as * const u8, pointerSize, 0usize, pointerSize, parameters, 2usize * pointerSize, 0usize);
+    tn_bytes_copy_to_at(( & mut secondValue)as * const u8, pointerSize, 0usize, pointerSize, parameters, 2usize * pointerSize, pointerSize);
+    const functionType = LLVMFunctionType(result, parameters as * const * mut u8, 2u32, variadic?1i32: 0i32);
+    rawFree(parameters);
+    return functionType;
+  }
+}
+export function llvmCreateDebugBuilder(module: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMCreateDIBuilder(module);
+  }
+}
+export function llvmAddDebugInfoVersion(module: * mut u8, context: * mut u8): void {
+  unsafe {
+    const dwarfVersion = LLVMConstInt(LLVMInt32TypeInContext(context), 5i64, 0i32);
+    const dwarfMetadata = LLVMValueAsMetadata(dwarfVersion);
+    LLVMAddModuleFlag(module, 1i32, "Dwarf Version" as * const u8, 13usize, dwarfMetadata);
+    const value = LLVMConstInt(LLVMInt32TypeInContext(context), 3i64, 0i32);
+    const metadata = LLVMValueAsMetadata(value);
+    LLVMAddModuleFlag(module, 1i32, "Debug Info Version" as * const u8, 18usize, metadata);
+  }
+}
+export function llvmDisposeDebugBuilder(builder: * mut u8): void {
+  unsafe {
+    LLVMDisposeDIBuilder(builder);
+  }
+}
+export function llvmFinalizeDebugBuilder(builder: * mut u8): void {
+  unsafe {
+    LLVMDIBuilderFinalize(builder);
+  }
+}
+export function llvmDebugCreateFile(builder: * mut u8, filename: * const u8, filenameLength: usize): * mut u8 {
+  unsafe {
+    return LLVMDIBuilderCreateFile(builder, filename, filenameLength, "" as * const u8, 0usize);
+  }
+}
+export function llvmDebugCreateCompileUnit(builder: * mut u8, file: * mut u8, producer: * const u8, producerLength: usize, optimized: bool): * mut u8 {
+  unsafe {
+    return LLVMDIBuilderCreateCompileUnit(builder, 27i32, file, producer, producerLength, optimized?1i32: 0i32, "" as * const u8, 0usize, 0u32, "" as * const u8, 0usize, 1i32, 0u32, 0i32, 0i32, "" as * const u8, 0usize, "" as * const u8, 0usize);
+  }
+}
+export function llvmDebugCreateSubroutineType(builder: * mut u8, file: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMDIBuilderCreateSubroutineType(builder, file, nullPointer< * mut u8>()as * mut * mut u8, 0u32, 0u32);
+  }
+}
+export function llvmDebugCreateFunction(builder: * mut u8, scope: * mut u8, name: * const u8, nameLength: usize, file: * mut u8, line: u32, typeValue: * mut u8, localToUnit: bool, optimized: bool): * mut u8 {
+  unsafe {
+    return LLVMDIBuilderCreateFunction(builder, scope, name, nameLength, name, nameLength, file, line, typeValue, localToUnit?1i32: 0i32, 1i32, line, 0u32, optimized?1i32: 0i32);
+  }
+}
+export function llvmDebugCreateLocation(context: * mut u8, line: u32, scope: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMDIBuilderCreateDebugLocation(context, line, 1u32, scope, nullPointer<u8>());
+  }
+}
+export function llvmSetSubprogram(functionValue: * mut u8, subprogram: * mut u8): void {
+  unsafe {
+    LLVMSetSubprogram(functionValue, subprogram);
+  }
+}
+export function llvmSetDebugLocation(builder: * mut u8, location: * mut u8): void {
+  unsafe {
+    LLVMSetCurrentDebugLocation2(builder, location);
+  }
+}
+export function llvmSetInstructionDebugLocation(instruction: * mut u8, location: * mut u8): void {
+  unsafe {
+    LLVMInstructionSetDebugLoc(instruction, location);
+  }
+}
+export function llvmFirstBasicBlock(functionValue: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMGetFirstBasicBlock(functionValue);
+  }
+}
+export function llvmNextBasicBlock(block: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMGetNextBasicBlock(block);
+  }
+}
+export function llvmNextInstruction(instruction: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMGetNextInstruction(instruction);
+  }
+}
+export function llvmAddFunction(module: * mut u8, name: * const u8, functionType: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMAddFunction(module, name, functionType);
+  }
+}
+export function llvmAddGlobal(module: * mut u8, valueType: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMAddGlobal(module, valueType, name);
+  }
+}
+export function llvmSetInitializer(global: * mut u8, value: * mut u8): void {
+  unsafe {
+    LLVMSetInitializer(global, value);
+  }
+}
+export function llvmGetNamedFunction(module: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMGetNamedFunction(module, name);
+  }
+}
+export function llvmGetParam(functionValue: * mut u8, index: u32): * mut u8 {
+  unsafe {
+    return LLVMGetParam(functionValue, index);
+  }
+}
+export function llvmSetExternal(functionValue: * mut u8): void {
+  unsafe {
+    LLVMSetLinkage(functionValue, 0i32);
+  }
+}
+export function llvmSetInternal(functionValue: * mut u8): void {
+  unsafe {
+    LLVMSetLinkage(functionValue, 8i32);
+  }
+}
+export function llvmAppendBlock(context: * mut u8, functionValue: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMAppendBasicBlockInContext(context, functionValue, name);
+  }
+}
+export function llvmGetEntryBlock(functionValue: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMGetEntryBasicBlock(functionValue);
+  }
+}
+export function llvmCreateBuilder(context: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMCreateBuilderInContext(context);
+  }
+}
+export function llvmDisposeBuilder(builder: * mut u8): void {
+  unsafe {
+    LLVMDisposeBuilder(builder);
+  }
+}
+export function llvmPosition(builder: * mut u8, block: * mut u8): void {
+  unsafe {
+    LLVMPositionBuilderAtEnd(builder, block);
+  }
+}
+export function llvmPositionBefore(builder: * mut u8, instruction: * mut u8): void {
+  unsafe {
+    LLVMPositionBuilderBefore(builder, instruction);
+  }
+}
+export function llvmGetInsertBlock(builder: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMGetInsertBlock(builder);
+  }
+}
+export function llvmFirstInstruction(block: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMGetFirstInstruction(block);
+  }
+}
+export function llvmAlloca(builder: * mut u8, valueType: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildAlloca(builder, valueType, name);
+  }
+}
+export function llvmLoad(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildLoad2(builder, valueType, pointer, name);
+  }
+}
+export function llvmStore(builder: * mut u8, value: * mut u8, pointer: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMBuildStore(builder, value, pointer);
+  }
+}
+export function llvmGep(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, indices: * mut * mut u8, count: u32, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildGEP2(builder, valueType, pointer, indices, count, name);
+  }
+}
+export function llvmGep1(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, index: * mut u8, name: * const u8): * mut u8 {
+  let mutableIndex = index;
+  unsafe {
+    return LLVMBuildGEP2(builder, valueType, pointer,( & mut mutableIndex)as * mut * mut u8, 1u32, name);
+  }
+}
+export function llvmStructGep(builder: * mut u8, valueType: * mut u8, pointer: * mut u8, index: u32, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildStructGEP2(builder, valueType, pointer, index, name);
+  }
+}
+export function llvmGlobalString(builder: * mut u8, value: * const u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildGlobalStringPtr(builder, value, name);
+  }
+}
+export function llvmConstInt(valueType: * mut u8, value: i64, signExtend: bool): * mut u8 {
+  unsafe {
+    return LLVMConstInt(valueType, value, signExtend?1i32: 0i32);
+  }
+}
+export function llvmConstNull(valueType: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMConstNull(valueType);
+  }
+}
+export function llvmConstReal(valueType: * mut u8, value: f64): * mut u8 {
+  unsafe {
+    return LLVMConstReal(valueType, value);
+  }
+}
+export function llvmSizeOf(valueType: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMSizeOf(valueType);
+  }
+}
+export function llvmBuildFloatBinary(builder: * mut u8, opcode: i32, left: * mut u8, right: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    if (opcode === 0i32) {
+      return LLVMBuildFAdd(builder, left, right, name);
+    }
+    if (opcode === 1i32) {
+      return LLVMBuildFSub(builder, left, right, name);
+    }
+    if (opcode === 2i32) {
+      return LLVMBuildFMul(builder, left, right, name);
+    }
+    if (opcode === 3i32) {
+      return LLVMBuildFDiv(builder, left, right, name);
+    }
+    return LLVMBuildFRem(builder, left, right, name);
+  }
+}
+export function llvmBuildBinary(builder: * mut u8, opcode: i32, left: * mut u8, right: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    if (opcode === 0i32) {
+      return LLVMBuildAdd(builder, left, right, name);
+    }
+    if (opcode === 1i32) {
+      return LLVMBuildSub(builder, left, right, name);
+    }
+    if (opcode === 2i32) {
+      return LLVMBuildMul(builder, left, right, name);
+    }
+    if (opcode === 3i32) {
+      return LLVMBuildSDiv(builder, left, right, name);
+    }
+    if (opcode === 4i32) {
+      return LLVMBuildUDiv(builder, left, right, name);
+    }
+    if (opcode === 5i32) {
+      return LLVMBuildSRem(builder, left, right, name);
+    }
+    if (opcode === 6i32) {
+      return LLVMBuildURem(builder, left, right, name);
+    }
+    if (opcode === 7i32) {
+      return LLVMBuildShl(builder, left, right, name);
+    }
+    if (opcode === 8i32) {
+      return LLVMBuildLShr(builder, left, right, name);
+    }
+    if (opcode === 9i32) {
+      return LLVMBuildAShr(builder, left, right, name);
+    }
+    if (opcode === 10i32) {
+      return LLVMBuildAnd(builder, left, right, name);
+    }
+    if (opcode === 11i32) {
+      return LLVMBuildOr(builder, left, right, name);
+    }
+    return LLVMBuildXor(builder, left, right, name);
+  }
+}
+export function llvmBuildUnary(builder: * mut u8, opcode: i32, value: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    if (opcode === 0i32) {
+      return LLVMBuildNeg(builder, value, name);
+    }
+    return LLVMBuildNot(builder, value, name);
+  }
+}
+export function llvmBuildCompare(builder: * mut u8, predicate: i32, left: * mut u8, right: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildICmp(builder, predicate, left, right, name);
+  }
+}
+export function llvmBuildFloatCompare(builder: * mut u8, predicate: i32, left: * mut u8, right: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildFCmp(builder, predicate, left, right, name);
+  }
+}
+export function llvmBr(builder: * mut u8, block: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMBuildBr(builder, block);
+  }
+}
+export function llvmCondBr(builder: * mut u8, condition: * mut u8, thenBlock: * mut u8, elseBlock: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMBuildCondBr(builder, condition, thenBlock, elseBlock);
+  }
+}
+export function llvmRetVoid(builder: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMBuildRetVoid(builder);
+  }
+}
+export function llvmRet(builder: * mut u8, value: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMBuildRet(builder, value);
+  }
+}
+export function llvmCall(builder: * mut u8, functionType: * mut u8, functionValue: * mut u8, arguments: * mut * mut u8, count: u32, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildCall2(builder, functionType, functionValue, arguments, count, name);
+  }
+}
+export function llvmCall0(builder: * mut u8, functionType: * mut u8, functionValue: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildCall2(builder, functionType, functionValue, nullPointer< * mut u8>()as * mut * mut u8, 0u32, name);
+  }
+}
+export function llvmCall1(builder: * mut u8, functionType: * mut u8, functionValue: * mut u8, argument: * mut u8, name: * const u8): * mut u8 {
+  const pointerSize = sizeOf< * mut u8>();
+  const arguments = rawAlloc(pointerSize);
+  let argumentValue = argument;
+  unsafe {
+    tn_bytes_copy_to_at(( & mut argumentValue)as * const u8, pointerSize, 0usize, pointerSize, arguments, pointerSize, 0usize);
+    const result = LLVMBuildCall2(builder, functionType, functionValue, arguments as * mut * mut u8, 1u32, name);
+    rawFree(arguments);
+    return result;
+  }
+}
+export function llvmCall2(builder: * mut u8, functionType: * mut u8, functionValue: * mut u8, first: * mut u8, second: * mut u8, name: * const u8): * mut u8 {
+  const pointerSize = sizeOf< * mut u8>();
+  const arguments = rawAlloc(2usize * pointerSize);
+  let firstValue = first;
+  let secondValue = second;
+  unsafe {
+    tn_bytes_copy_to_at(( & mut firstValue)as * const u8, pointerSize, 0usize, pointerSize, arguments, 2usize * pointerSize, 0usize);
+    tn_bytes_copy_to_at(( & mut secondValue)as * const u8, pointerSize, 0usize, pointerSize, arguments, 2usize * pointerSize, pointerSize);
+    const result = LLVMBuildCall2(builder, functionType, functionValue, arguments as * mut * mut u8, 2u32, name);
+    rawFree(arguments);
+    return result;
+  }
+}
+export function llvmPhi(builder: * mut u8, valueType: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildPhi(builder, valueType, name);
+  }
+}
+export function llvmAddIncoming(phi: * mut u8, values: * mut * mut u8, blocks: * mut * mut u8, count: u32): void {
+  unsafe {
+    LLVMAddIncoming(phi, values, blocks, count);
+  }
+}
+export function llvmSelect(builder: * mut u8, condition: * mut u8, thenValue: * mut u8, elseValue: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    return LLVMBuildSelect(builder, condition, thenValue, elseValue, name);
+  }
+}
+export function llvmCast(builder: * mut u8, opcode: i32, value: * mut u8, valueType: * mut u8, name: * const u8): * mut u8 {
+  unsafe {
+    if (opcode === 0i32) {
+      return LLVMBuildTruncOrBitCast(builder, value, valueType, name);
+    }
+    if (opcode === 1i32) {
+      return LLVMBuildZExtOrBitCast(builder, value, valueType, name);
+    }
+    if (opcode === 2i32) {
+      return LLVMBuildSExtOrBitCast(builder, value, valueType, name);
+    }
+    if (opcode === 3i32) {
+      return LLVMBuildPtrToInt(builder, value, valueType, name);
+    }
+    if (opcode === 4i32) {
+      return LLVMBuildIntToPtr(builder, value, valueType, name);
+    }
+    return LLVMBuildBitCast(builder, value, valueType, name);
+  }
+}
+export function llvmUnreachable(builder: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMBuildUnreachable(builder);
+  }
+}
+export function llvmInitializeTargets(): void {
+  unsafe {
+    LLVMInitializeAArch64TargetInfo();
+    LLVMInitializeAArch64Target();
+    LLVMInitializeAArch64TargetMC();
+    LLVMInitializeAArch64AsmPrinter();
+    LLVMInitializeX86TargetInfo();
+    LLVMInitializeX86Target();
+    LLVMInitializeX86TargetMC();
+    LLVMInitializeX86AsmPrinter();
+  }
+}
+export function llvmDefaultTarget(): * mut u8 {
+  unsafe {
+    return LLVMGetDefaultTargetTriple();
+  }
+}
+export function llvmTargetFromTriple(triple: * const u8, errorMessage: * mut * mut u8): * mut u8 {
+  let target: * mut u8 = nullPointer<u8>();
+  unsafe {
+    if (LLVMGetTargetFromTriple(triple,( & mut target)as * mut * mut u8, errorMessage) !== 0i32) {
+      return nullPointer<u8>();
+    }
+  }
+  return target;
+}
+export function llvmCreateTargetMachine(target: * mut u8, triple: * const u8, profile: i32): * mut u8 {
+  unsafe {
+    return LLVMCreateTargetMachine(target, triple, "generic" as * const u8, "" as * const u8, profile, 0i32, 0i32);
+  }
+}
+export function llvmTargetDataLayout(targetMachine: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMCreateTargetDataLayout(targetMachine);
+  }
+}
+export function llvmTargetLayoutString(targetData: * mut u8): * mut u8 {
+  unsafe {
+    return LLVMCopyStringRepOfTargetData(targetData);
+  }
+}
+export function llvmEmitTargetFile(targetMachine: * mut u8, module: * mut u8, output: * const u8, fileType: i32, errorMessage: * mut * mut u8): bool {
+  unsafe {
+    return LLVMTargetMachineEmitToFile(targetMachine, module, output, fileType, errorMessage) === 0i32;
+  }
+}
+export function llvmOptimize(module: * mut u8, targetMachine: * mut u8, optimized: bool): bool {
+  if (!optimized) {
+    return true;
+  }
+  let options: * mut u8 = nullPointer<u8>();
+  unsafe {
+    options = LLVMCreatePassBuilderOptions();
+  }
+  if (pointerIsNull(options)) {
+    return false;
+  }
+  let error: * mut u8 = nullPointer<u8>();
+  unsafe {
+    error = LLVMRunPasses(module, "default<O2>" as * const u8, targetMachine, options);
+    LLVMDisposePassBuilderOptions(options);
+  }
+  if (pointerIsNull(error)) {
+    return true;
+  }
+  unsafe {
+    const message = LLVMGetErrorMessage(error);
+    if (!pointerIsNull(message)) {
+      write(2i32, "LLVM optimization failed: " as * const u8, 26usize);
+      write(2i32, message as * const u8, strlen(message as * const u8));
+      write(2i32, "\n" as * const u8, 1usize);
+      LLVMDisposeErrorMessage(message);
+    } else {
+      write(2i32, "LLVM optimization failed\n" as * const u8, 26usize);
+    }
+  }
+  return false;
+}
+export function llvmDisposeTargetData(targetData: * mut u8): void {
+  if (!pointerIsNull(targetData)) {
+    unsafe {
+      LLVMDisposeTargetData(targetData);
+    }
+  }
+}
+export function llvmDisposeTargetMachine(targetMachine: * mut u8): void {
+  if (!pointerIsNull(targetMachine)) {
+    unsafe {
+      LLVMDisposeTargetMachine(targetMachine);
+    }
+  }
+}
+export function llvmSetTarget(module: * mut u8, triple: * const u8, layout: * const u8): void {
+  unsafe {
+    LLVMSetTarget(module, triple);
+    LLVMSetDataLayout(module, layout);
+  }
+}
+export function llvmVerify(module: * mut u8): bool {
+  if (pointerIsNull(module)) {
+    return false;
+  }
+  let message: * mut u8 = nullPointer<u8>();
+  let result: i32 = 1i32;
+  unsafe {
+    result = LLVMVerifyModule(module, 2i32,( & mut message)as * mut * mut u8);
+  }
+  if (result !== 0i32 && !pointerIsNull(message)) {
+    unsafe {
+      write(2i32, "LLVM verification: " as * const u8, 19usize);
+      write(2i32, message as * const u8, strlen(message as * const u8));
+      write(2i32, "\n" as * const u8, 1usize);
+    }
+  }
+  disposeMessage(message);
+  return result === 0i32;
+}
+export function llvmPrint(module: * mut u8, output: * const u8): bool {
+  let message: * mut u8 = nullPointer<u8>();
+  let result: i32 = 1i32;
+  unsafe {
+    result = LLVMPrintModuleToFile(module, output,( & mut message)as * mut * mut u8);
+  }
+  disposeMessage(message);
+  return result === 0i32;
+}
+export function llvmWriteBitcode(module: * mut u8, output: * const u8): bool {
+  unsafe {
+    return LLVMWriteBitcodeToFile(module, output) === 0i32;
+  }
+}
+export function llvmFreeMessage(message: * mut u8): void {
+  if (!pointerIsNull(message)) {
+    unsafe {
+      LLVMDisposeMessage(message);
+    }
   }
 }
 function disposeMessage(message: * mut u8): void {
