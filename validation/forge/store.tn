@@ -1,0 +1,31 @@
+import { fromStatic } from "std/bytes";
+import { Map } from "std/collections";
+import { FileError, close, metadata, openWriteChecked, remove, writeAll } from "std/fs";
+
+export struct ArtifactStore {
+  public count: i32;
+}
+export function storeProbe(): i32 throws FileError {
+  let values = new Map<i32, i32>({
+    capacity: 8usize,
+  });
+  values.set(7i32, 49i32);
+  const key = 7i32;
+  const stored = values.get( & key);
+  if (stored === undefined || stored! !== 49i32) {
+    return 1i32;
+  }
+  let file = try openWriteChecked("/tmp/typenative-forge-artifact");
+  const marker = fromStatic("forge-artifact\n");
+  try writeAll( & file, marker.pointer, marker.length);
+  close( & mut file);
+  const info = try metadata("/tmp/typenative-forge-artifact");
+  if (info.size !== marker.length) {
+    remove("/tmp/typenative-forge-artifact");
+    return 2i32;
+  }
+  if (remove("/tmp/typenative-forge-artifact") !== 0i32) {
+    return 3i32;
+  }
+  return 0i32;
+}

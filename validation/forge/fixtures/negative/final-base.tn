@@ -1,0 +1,4 @@
+export final class FinalBase {
+  public constructor() {
+  }
+}

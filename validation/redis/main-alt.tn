@@ -1,10 +1,10 @@
 import { run } from "std/async";
 import { NetworkError } from "std/net";
-import { serve } from "./redis-server";
+import { servePort } from "./redis-server";
 
 async function runAlternate(): Promise<i32, never> {
   try {
-    try await serve("127.0.0.1:6389", 4096);
+    try await servePort(6389u16, 4096);
   } catch (error: NetworkError) {
     return 1;
   }

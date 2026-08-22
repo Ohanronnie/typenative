@@ -1,0 +1,45 @@
+import { runI32, TaskGroup } from "std/async";
+import { atomicI32 } from "std/core";
+import { Mutex } from "std/sync";
+import { atomicAddI32, atomicLoadI32, channelI32, closeChannelI32, destroyChannelI32, receiveI32, sendI32 } from "std/sync";
+
+async function compute(value: i32): Promise<i32, never> {
+  return value * 2i32;
+}
+export function schedulerProbe(): i32 {
+  let counter = atomicI32(0i32);
+  atomicAddI32( & mut counter, 4i32);
+  if (atomicLoadI32( & counter) !== 4i32) {
+    return 1i32;
+  }
+  let mutex = new Mutex<i32>(8i32);
+  {
+    using locked = mutex.lock();
+    if (!locked.locked) {
+      return 2i32;
+    }
+  }
+  if (mutex.value !== 8i32) {
+    return 3i32;
+  }
+  let channel = channelI32(2usize);
+  if (sendI32( & mut channel, 17i32) !== 0i32) {
+    destroyChannelI32( & mut channel);
+    return 4i32;
+  }
+  let received: i32 = 0i32;
+  if (receiveI32( & mut channel, & mut received) !== 1i32 || received !== 17i32) {
+    destroyChannelI32( & mut channel);
+    return 5i32;
+  }
+  closeChannelI32( & mut channel);
+  destroyChannelI32( & mut channel);
+  let group = new TaskGroup<never>();
+  if (!group.spawn(compute(21i32))) {
+    return 6i32;
+  }
+  if (runI32(compute(21i32)) !== 42i32) {
+    return 7i32;
+  }
+  return 0i32;
+}

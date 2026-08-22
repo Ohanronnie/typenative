@@ -1,0 +1,78 @@
+import { BytesMut, cursor, fromStatic, readU8 } from "std/bytes";
+import { Error } from "std/core";
+
+@Conform(Error)
+export enum ProtocolError {
+  Truncated, Invalid,
+}
+export enum Command {
+  Ping, Build, Shutdown,
+}
+export struct Request {
+  public command: Command;
+  public id: u8;
+}
+function encode(request: Request): BytesMut {
+  let output = new BytesMut({
+    capacity: 8usize,
+  });
+  const marker = switch(request.command) {
+    case Command.Ping: 1u8, case Command.Build: 2u8, case Command.Shutdown: 3u8,
+  };
+  output.push(marker);
+  output.push(request.id);
+  return output;
+}
+function decode(input: & BytesMut): Request throws ProtocolError {
+  let view = input.slice(0usize, input.length);
+  let inputCursor = cursor(view);
+  let marker: u8 = 0u8;
+  let id: u8 = 0u8;
+  if (!readU8( & mut inputCursor, & mut marker) || !readU8( & mut inputCursor, & mut id)) {
+    throw ProtocolError.Truncated;
+  }
+  let command = Command.Ping;
+  if (marker === 2u8) {
+    command = Command.Build;
+  } else if (marker === 3u8) {
+    command = Command.Shutdown;
+  } else if (marker !== 1u8) {
+    throw ProtocolError.Invalid;
+  }
+  return {
+    command: command, id: id,
+  };
+}
+export function protocolProbe(): i32 {
+  const request: Request = {
+    command: Command.Build, id: 42u8,
+  };
+  let encoded = encode(request);
+  try {
+    const decoded = try decode( & encoded);
+    const commandMatches = switch(decoded.command) {
+      case Command.Build: true, default: false,
+    };
+    if (!commandMatches || decoded.id !== 42u8) {
+      return 1i32;
+    }
+  } catch (error: ProtocolError) {
+    return 2i32;
+  }
+  let malformed = new BytesMut({
+    capacity: 1usize,
+  });
+  malformed.push(1u8);
+  try {
+    const ignored = try decode( & malformed);
+    return 3i32;
+  } catch (error: ProtocolError) {
+    return switch(error) {
+      case ProtocolError.Truncated: 0i32, default: 4i32,
+    };
+  }
+}
+export function staticProtocolProbe(): i32 {
+  const bytes = fromStatic("forge");
+  return bytes.length === 5usize?0i32: 1i32;
+}

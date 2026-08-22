@@ -343,7 +343,7 @@ function checkFile(input: * const u8, json: bool): i32 {
     unsafe {
       freeSource(loaded.pointer);
     }
-    reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
+    reportDiagnostic(importStatus === 2013i32 || importStatus === 2016i32 || importStatus === 2017i32?importStatus: 2026i32, 0usize, loaded.length, 1usize, json);
     return failProcess(1i32);
   }
   const base: Source = {
@@ -512,7 +512,7 @@ function checkedSource(input: * const u8, json: bool): Source {
     unsafe {
       freeSource(loaded.pointer);
     }
-    reportDiagnostic(2026i32, 0usize, loaded.length, 1usize, json);
+    reportDiagnostic(importStatus === 2013i32 || importStatus === 2016i32 || importStatus === 2017i32?importStatus: 2026i32, 0usize, loaded.length, 1usize, json);
     return emptySource();
   }
   const base: Source = {

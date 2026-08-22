@@ -39,6 +39,24 @@ fn semantic_conditions(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn multi_module_signature_conditions(files: &[(&str, &str)], entry: &str) -> Vec<String> {
+    let directory = tempfile::tempdir().expect("temporary multi-module fixture");
+    let standard_library = directory.path().join("std");
+    std::fs::create_dir(&standard_library).expect("create standard library fixture");
+    for (name, source) in files {
+        std::fs::write(directory.path().join(name), source).expect("write module fixture");
+    }
+    let path = directory.path().join(entry);
+    let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+        .expect("load multi-module graph");
+    let program = tn_hir::lower_program(graph).expect("lower multi-module fixture");
+    tn_typecheck::check_signatures(&program)
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.condition.as_str().to_owned())
+        .collect()
+}
+
 #[test]
 fn lowers_canonical_foreign_declarations_and_rejects_non_c_abis() {
     let diagnostics = semantic_conditions(
@@ -90,6 +108,7 @@ class Parent {
   public final closed(): Animal { return new Animal(); }
   public safe(): Animal { return new Animal(); }
 }
+
 class Child extends Parent {
   public override closed(): Dog { return new Dog(); }
   public override unsafe safe(): Dog { return new Dog(); }
@@ -110,6 +129,48 @@ abstract class AbstractOwner {
     assert!(diagnostics.contains(&"TYPE_CONCRETE_METHOD_MISSING_BODY".into()));
     assert!(diagnostics.contains(&"TYPE_GENERIC_VIRTUAL_METHOD_EXCLUDED".into()));
     assert!(diagnostics.contains(&"TYPE_ABSTRACT_METHOD_HAS_BODY".into()));
+}
+
+#[test]
+fn enforces_sealed_classes_and_interfaces_at_module_boundaries() {
+    let same_module = signature_conditions(
+        r"
+@Sealed class Closed {}
+class Child extends Closed {}
+@Sealed interface Marker {}
+@Conform(Marker)
+struct Conforming {}
+final class FinalOwner {}
+class InvalidFinalChild extends FinalOwner {}
+",
+    );
+    assert!(!same_module.contains(&"TYPE_EXTENDS_SEALED_CLASS".into()));
+    assert!(!same_module.contains(&"TYPE_CONFORMS_TO_SEALED_INTERFACE".into()));
+    assert!(same_module.contains(&"TYPE_EXTENDS_FINAL_CLASS".into()));
+
+    let cross_module_class = multi_module_signature_conditions(
+        &[
+            ("base.tn", "@Sealed\nexport class Closed {}\n"),
+            (
+                "main.tn",
+                "import { Closed } from \"./base\";\nclass Child extends Closed {}\n",
+            ),
+        ],
+        "main.tn",
+    );
+    assert!(cross_module_class.contains(&"TYPE_EXTENDS_SEALED_CLASS".into()));
+
+    let cross_module_interface = multi_module_signature_conditions(
+        &[
+            ("base.tn", "@Sealed\nexport interface Marker {}\n"),
+            (
+                "main.tn",
+                "import { Marker } from \"./base\";\n@Conform(Marker)\nstruct Conforming {}\n",
+            ),
+        ],
+        "main.tn",
+    );
+    assert!(cross_module_interface.contains(&"TYPE_CONFORMS_TO_SEALED_INTERFACE".into()));
 }
 
 #[test]

@@ -506,7 +506,7 @@ impl OwnershipMirLowerer<'_> {
             Some(TokenKind::While) => self.lower_while(),
             Some(TokenKind::For) => self.lower_for(),
             Some(TokenKind::Yield) => self.lower_yield(),
-            Some(TokenKind::Switch | TokenKind::Identifier | TokenKind::This) => {
+            Some(TokenKind::Switch | TokenKind::Identifier | TokenKind::This | TokenKind::Star) => {
                 self.lower_expression_statement();
             }
             Some(TokenKind::Try)
@@ -1075,7 +1075,7 @@ impl OwnershipMirLowerer<'_> {
             self.lower_statement();
             return;
         };
-        let Some(DefinitionData::Interface { methods }) = self
+        let Some(DefinitionData::Interface { methods, .. }) = self
             .program
             .definition(interface)
             .map(|definition| &definition.data)
@@ -1836,9 +1836,7 @@ impl OwnershipMirLowerer<'_> {
                     );
                 }
             } else {
-                let destination = self
-                    .lower_expression_range(self.index, assignment, None)
-                    .and_then(|(operand, ty)| operand_place(operand).map(|place| (place, ty)));
+                let destination = self.lower_assignment_place(self.index, assignment);
                 if let Some((destination, destination_type)) = destination {
                     let value =
                         self.lower_expression_range(assignment + 1, end, Some(&destination_type));
@@ -1884,6 +1882,28 @@ impl OwnershipMirLowerer<'_> {
                     .get(end)
                     .is_some_and(|token| token.kind == TokenKind::Semicolon),
             );
+    }
+
+    fn lower_assignment_place(&mut self, start: usize, end: usize) -> Option<(Place, Type)> {
+        if self
+            .tokens
+            .get(start)
+            .is_some_and(|token| token.kind == TokenKind::Star)
+        {
+            let (operand, pointer_type) = self.lower_expression_range(start + 1, end, None)?;
+            let mut place = operand_place(operand)?;
+            let pointee = match pointer_type {
+                Type::RawPointer { pointee, .. }
+                | Type::Reference {
+                    referent: pointee, ..
+                } => *pointee,
+                _ => return None,
+            };
+            place.projection.push(tn_mir::Projection::Dereference);
+            return Some((place, pointee));
+        }
+        self.lower_expression_range(start, end, None)
+            .and_then(|(operand, ty)| operand_place(operand).map(|place| (place, ty)))
     }
 
     fn lower_throw(&mut self) {
@@ -3433,6 +3453,46 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
+        if self.is_intrinsic_operation(start, callee_end, "platform_sockaddr_family") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "platform_sockaddr_family".into(),
+                        operands: Vec::new(),
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "checked_u16") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "checked_u16".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
         if self.is_intrinsic_operation(start, callee_end, "is_string") {
             let type_argument = substitutions
                 .values()
@@ -4586,7 +4646,7 @@ impl OwnershipMirLowerer<'_> {
             .find_map(|definition| match &definition.data {
                 DefinitionData::Struct { methods, .. }
                 | DefinitionData::Class { methods, .. }
-                | DefinitionData::Interface { methods }
+                | DefinitionData::Interface { methods, .. }
                 | DefinitionData::Implementation { methods, .. }
                 | DefinitionData::Extern { functions: methods } => methods
                     .iter()
@@ -4600,7 +4660,7 @@ impl OwnershipMirLowerer<'_> {
         self.program.definitions.iter().find_map(|definition| {
             let (DefinitionData::Struct { methods, .. }
             | DefinitionData::Class { methods, .. }
-            | DefinitionData::Interface { methods }
+            | DefinitionData::Interface { methods, .. }
             | DefinitionData::Implementation { methods, .. }
             | DefinitionData::Extern { functions: methods }) = &definition.data
             else {
@@ -4726,7 +4786,7 @@ impl OwnershipMirLowerer<'_> {
     }
 
     fn interface_witness_slot(&self, interface: DeclarationId, member: MemberId) -> Option<u32> {
-        let DefinitionData::Interface { methods } = &self.program.definition(interface)?.data
+        let DefinitionData::Interface { methods, .. } = &self.program.definition(interface)?.data
         else {
             return None;
         };

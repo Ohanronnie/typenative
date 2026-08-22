@@ -1,0 +1,130 @@
+import { isNull, rawAlloc, rawFree } from "std/alloc";
+import { cancel, cancelGroup, closeTaskGroup, destroyPromise, enterGroup, isGroupCancelled, leaveGroup, promise, runI32, waitGroup, waitResult, TaskGroup } from "std/async";
+import { fromStatic } from "std/bytes";
+import { AsyncIterable, Clone, Copy, Drop, Iterable, Send, Sync } from "std/core";
+
+declare extern "C" {
+  function strlen(value: * const u8): usize;
+}
+@Copy struct CopyWitness {
+  public value: i32;
+}
+@Clone struct CloneWitness {
+  public value: string;
+}
+@Drop struct DropWitness {
+  public value: i32;
+  mut drop(): void {
+    this.value = 0i32;
+  }
+}
+@Conform(Send, unsafe)
+struct SendWitness {
+  public pointer: * mut i32;
+}
+@Conform(Sync, unsafe)
+struct SyncWitness {
+  public pointer: * mut i32;
+}
+@Layout("C")
+struct AbiWitness {
+  public left: i32;
+  public right: i32;
+}
+struct FeatureError {
+  public code: i32;
+}
+function featureError(code: i32): FeatureError {
+  return {
+    code: code,
+  };
+}
+function* values(): Iterable<i32> {
+  yield 3i32;
+  yield 5i32;
+}
+async function* asyncValues(): AsyncIterable<i32> {
+  yield 7i32;
+  yield 11i32;
+}
+async function consumeAsyncValues(): Promise<i32, never> {
+  let total: i32 = 0i32;
+  for await (const value of asyncValues()) {
+    total = total + value;
+  }
+  return total;
+}
+async function fallibleValue(): Promise<i32, FeatureError> {
+  throw featureError(9i32);
+}
+async function errorProbe(): Promise<i32, never> {
+  try {
+    const ignored = try await fallibleValue();
+    return ignored;
+  } catch (error: FeatureError) {
+    return error.code === 9i32?0i32: 1i32;
+  }
+}
+export function featureProbe(): i32 {
+  const original: CopyWitness = {
+    value: 4i32,
+  };
+  const copied = original;
+  if (copied.value !== 4i32) {
+    return 1i32;
+  }
+  const cloneSource: CloneWitness = {
+    value: string.from("clone"),
+  };
+  if (cloneSource.value !== "clone") {
+    return 2i32;
+  }
+  {
+    const dropped: DropWitness = {
+      value: 12i32,
+    };
+    if (dropped.value !== 12i32) {
+      return 3i32;
+    }
+  }
+  unsafe {
+    const pointer = rawAlloc(4usize);
+    if (isNull(pointer as * const u8)) {
+      return 4i32;
+    }
+    *(pointer as * mut i32) = 19i32;
+    if ( *(pointer as * const i32) !== 19i32) {
+      rawFree(pointer);
+      return 5i32;
+    }
+    rawFree(pointer);
+  }
+  const bytes = fromStatic("forge");
+  unsafe {
+    if (strlen(bytes.pointer) !== 5usize) {
+      return 6i32;
+    }
+  }
+  let total: i32 = 0i32;
+  for (const value of values()) {
+    total = total + value;
+  }
+  if (total !== 8i32) {
+    return 7i32;
+  }
+  if (runI32(consumeAsyncValues()) !== 18i32 || runI32(errorProbe()) !== 0i32) {
+    return 8i32;
+  }
+  let maybe: i32 | undefined = 13i32;
+  if (maybe === undefined) {
+    return 9i32;
+  }
+  if (maybe! !== 13i32) {
+    return 10i32;
+  }
+  maybe = undefined;
+  if (maybe !== undefined) {
+    return 11i32;
+  }
+  return 0i32;
+}

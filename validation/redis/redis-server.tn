@@ -2,11 +2,11 @@ import { Arc } from "std/alloc";
 import { run, TaskGroup } from "std/async";
 import { Map } from "std/collections";
 import { error as consoleError } from "std/console";
-import { NetworkError, TcpListener, TcpStream } from "std/net";
+import { Endpoint, NetworkError, TcpListener, TcpStream } from "std/net";
 import { Mutex } from "std/sync";
 import { Command, RedisError, Reply, RespConnection, } from "./resp";
 
-@Sealed class Database {
+@Sealed final class Database {
   private state: Map<string, string>;
   public constructor(capacity: usize) {
     this.state = new Map<string, string>({
@@ -83,8 +83,8 @@ async function serveClientTask(stream: TcpStream, database: Arc<Mutex<Database> 
   }
   return;
 }
-export async function serve(address: & str, capacity: usize,): Promise<void, NetworkError> {
-  await using listener = try new TcpListener(address);
+export async function serve(endpoint: Endpoint, capacity: usize,): Promise<void, NetworkError> {
+  await using listener = try new TcpListener(endpoint);
   using clients = new TaskGroup<RedisError>();
   const database = new Arc(new Mutex(new Database(capacity),),);
   while (true) {
@@ -94,9 +94,22 @@ export async function serve(address: & str, capacity: usize,): Promise<void, Net
     }
   }
 }
-async function runServer(address: & static str, capacity: usize,): Promise<i32, never> {
+export async function servePort(port: u16, capacity: usize,): Promise<void, NetworkError> {
+  await using listener = try new TcpListener({
+    host: "127.0.0.1", port: port
+  });
+  using clients = new TaskGroup<RedisError>();
+  const database = new Arc(new Mutex(new Database(capacity),),);
+  while (true) {
+    const stream = try await listener.accept();
+    if (!clients.spawn(serveClientTask(move stream, database.clone()))) {
+      return;
+    }
+  }
+}
+async function runServer(endpoint: Endpoint, capacity: usize,): Promise<i32, never> {
   try {
-    try await serve(address, capacity);
+    try await serve(endpoint, capacity);
   } catch (error: NetworkError) {
     consoleError("Redis server failed");
     return 1;
@@ -104,5 +117,7 @@ async function runServer(address: & static str, capacity: usize,): Promise<i32, 
   return 0;
 }
 export function main(): i32 {
-  return run(runServer("127.0.0.1:6379", 4096));
+  return run(runServer({
+    host: "127.0.0.1", port: 6379u16
+  }, 4096));
 }

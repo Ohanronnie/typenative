@@ -1,6 +1,6 @@
 import { isNull, nullPointer } from "std/alloc";
 import { BytesMut, appendAscii, appendRaw } from "std/bytes";
-import { DirectProject, DirectType, collectDirectFunctions, collectDirectStructs, defineDirectFunctions, defineDirectGlobals, directFunctionValueType, directKindIsVoid, directMainCompletionType, directMainReturnsThrows, directMainReturnsVoid, directMainValueType, directProjectFor, disposeDirectProject, emitDirectFunctions, emitDirectNodeAddon, finalizeDirectDebugInfo, prepareDirectDebugInfo, preserveDirectObjectFunctions, setDirectStructBodies, writeDirectNodeDeclarations } from "./direct_ir";
+import { DirectProject, DirectType, collectDirectFunctions, collectDirectStructs, defineDirectFunctions, defineDirectGlobals, directFunctionValueType, directKindIsVoid, directMainCompletionType, directMainReturnsThrows, directMainReturnsVoid, directMainValueType, directProjectFor, disposeDirectProject, emitDirectFunctions, emitDirectNodeAddon, finalizeDirectDebugInfo, prepareDirectDebugInfo, preserveDirectObjectFunctions, setDirectStructBodies, setDirectTargetDarwin, writeDirectNodeDeclarations } from "./direct_ir";
 import { Source, Token, TokenKind, isKeyword, next } from "./lexer";
 import { createContext, createModule, disposeContext, disposeModule, llvmAddFunction, llvmAppendBlock, llvmBr, llvmBuildCompare, llvmCall0, llvmCall2, llvmCondBr, llvmConstInt, llvmCreateBuilder, llvmCreateTargetMachine, llvmDefaultTarget, llvmDisposeBuilder, llvmDisposeTargetData, llvmDisposeTargetMachine, llvmFreeMessage, llvmFunctionType, llvmFunctionType2, llvmGetNamedFunction, llvmGetParam, llvmInitializeTargets, llvmInt8Type, llvmInt32Type, llvmLoad, llvmOptimize, llvmPointerType, llvmPosition, llvmPrint, llvmRet, llvmSetExternal, llvmSetTarget, llvmStructGep, llvmTargetDataLayout, llvmTargetFromTriple, llvmTargetLayoutString, llvmEmitTargetFile, llvmVerify, llvmWriteBitcode, llvmVoidType } from "./llvm";
 import { isEnd } from "./parser";
@@ -55,6 +55,23 @@ function constPointerMissing(value: * const u8): bool {
   unsafe {
     return isNull(value);
   }
+}
+function targetIsDarwin(triple: * const u8): bool {
+  let length: usize = 0usize;
+  unsafe {
+    length = strlen(triple);
+  }
+  if (length<12usize) {
+    return false;
+  }
+  let offset: usize = 0usize;
+  while (offset + 12usize <= length) {
+    if (sourceByte(triple, length, offset) === 97i32 && sourceByte(triple, length, offset + 1usize) === 112i32 && sourceByte(triple, length, offset + 2usize) === 112i32 && sourceByte(triple, length, offset + 3usize) === 108i32 && sourceByte(triple, length, offset + 4usize) === 101i32 && sourceByte(triple, length, offset + 5usize) === 45i32 && sourceByte(triple, length, offset + 6usize) === 100i32 && sourceByte(triple, length, offset + 7usize) === 97i32 && sourceByte(triple, length, offset + 8usize) === 114i32 && sourceByte(triple, length, offset + 9usize) === 119i32 && sourceByte(triple, length, offset + 10usize) === 105i32 && sourceByte(triple, length, offset + 11usize) === 110i32) {
+      return true;
+    }
+    offset = offset + 1usize;
+  }
+  return false;
 }
 function productIsText(product: i32): bool {
   return product === 0i32 || product === 1i32;
@@ -270,6 +287,17 @@ export function emitDirectProgram(output: * const u8, input: * const u8, source:
   if (pointerMissing(module.handle)) {
     disposeContext( & mut context);
     return 3i32;
+  }
+  let defaultTriple = llvmDefaultTarget();
+  if (!pointerMissing(defaultTriple)) {
+    let isDarwin = false;
+    unsafe {
+      isDarwin = targetIsDarwin(defaultTriple as * const u8);
+    }
+    setDirectTargetDarwin(isDarwin);
+    llvmFreeMessage(defaultTriple);
+  } else {
+    setDirectTargetDarwin(false);
   }
   let project = directProjectFor(input, source);
   prepareDirectDebugInfo( & mut project, context.handle, module.handle);

@@ -2082,6 +2082,12 @@ function directEmptyValue(): DirectValue {
     value: nullPointer<u8>(), address: nullPointer<u8>(), valueType: directVoidType(), valid: false, addressable: false, deferredAsync: false, asyncFunctionIndex: 0usize, asyncArguments: nullPointer<u8>(), asyncArgumentCount: 0u32, sequence: false, sequenceLength: nullPointer<u8>(), sequenceElementType: directVoidType(),
   };
 }
+static mut directTargetDarwin: bool = false;
+export function setDirectTargetDarwin(value: bool): void {
+  unsafe {
+    directTargetDarwin = value;
+  }
+}
 function directValueWith(value: * mut u8, address: * mut u8, valueType: DirectType, valid: bool, addressable: bool): DirectValue {
   let result = directEmptyValue();
   result.value = value;
@@ -3359,6 +3365,20 @@ function directIntrinsicValue(state: & DirectState, project: & DirectProject, so
     const typeToken = next(source, genericStart);
     genericType = directTypeForSpan(project, source, typeToken.start, genericEnd, state.context);
   }
+  if (isKeyword(source, name, "platformSockAddrFamily")) {
+    let targetDarwin = false;
+    unsafe {
+      targetDarwin = directTargetDarwin;
+    }
+    return directConstantI64(state, targetDarwin?528i64: 2i64, directIntegerType(llvmInt16Type(state.context), 16u32, false));
+  }
+  if (isKeyword(source, name, "checkedU16")) {
+    const resultType = directIntegerType(llvmInt16Type(state.context), 16u32, false);
+    if (argumentCount === 0u32) {
+      return directConstantI64(state, 0i64, resultType);
+    }
+    return directCoerce(state, directArgumentAt(arguments, 0usize), resultType);
+  }
   const isSize = isKeyword(source, name, "sizeOf") || isKeyword(source, name, "sizeOfIntrinsic") || isKeyword(source, name, "platformSizeOf");
   if (isSize) {
     let value: * mut u8 = nullPointer<u8>();
@@ -3682,7 +3702,7 @@ function directIntrinsicInstanceValue(state: & DirectState, value: DirectValue, 
   return directEmptyValue();
 }
 function directInvoke(state: & mut DirectState, project: & DirectProject, source: Source, name: Token, genericStart: usize, genericEnd: usize, arguments: & CompilerBuffer<DirectValue>, argumentCount: u32, ownerIndex: usize, method: bool): DirectValue {
-  const intrinsic = !method &&(isKeyword(source, name, "byteReadI32") || isKeyword(source, name, "sizeOf") || isKeyword(source, name, "sizeOfIntrinsic") || isKeyword(source, name, "platformSizeOf") || isKeyword(source, name, "isNull") || isKeyword(source, name, "isNullIntrinsic") || isKeyword(source, name, "platformIsNull") || isKeyword(source, name, "nullPointer") || isKeyword(source, name, "nullPointerIntrinsic") || isKeyword(source, name, "storeRaw") || isKeyword(source, name, "storeRawIntrinsic") || isKeyword(source, name, "platformStoreRaw") || isKeyword(source, name, "storeElement") || isKeyword(source, name, "borrowShared") || isKeyword(source, name, "borrowMut") || isKeyword(source, name, "borrowElement") || isKeyword(source, name, "borrowElementI32") || isKeyword(source, name, "platformDirentByte") || isKeyword(source, name, "byteAddress") || isKeyword(source, name, "byteAddressI32") || isKeyword(source, name, "elementInitialized") || isKeyword(source, name, "isCopy") || isKeyword(source, name, "isString") || isKeyword(source, name, "dropInitializedElements"));
+  const intrinsic = !method &&(isKeyword(source, name, "byteReadI32") || isKeyword(source, name, "sizeOf") || isKeyword(source, name, "sizeOfIntrinsic") || isKeyword(source, name, "platformSizeOf") || isKeyword(source, name, "platformSockAddrFamily") || isKeyword(source, name, "checkedU16") || isKeyword(source, name, "isNull") || isKeyword(source, name, "isNullIntrinsic") || isKeyword(source, name, "platformIsNull") || isKeyword(source, name, "nullPointer") || isKeyword(source, name, "nullPointerIntrinsic") || isKeyword(source, name, "storeRaw") || isKeyword(source, name, "storeRawIntrinsic") || isKeyword(source, name, "platformStoreRaw") || isKeyword(source, name, "storeElement") || isKeyword(source, name, "borrowShared") || isKeyword(source, name, "borrowMut") || isKeyword(source, name, "borrowElement") || isKeyword(source, name, "borrowElementI32") || isKeyword(source, name, "platformDirentByte") || isKeyword(source, name, "byteAddress") || isKeyword(source, name, "byteAddressI32") || isKeyword(source, name, "elementInitialized") || isKeyword(source, name, "isCopy") || isKeyword(source, name, "isString") || isKeyword(source, name, "dropInitializedElements"));
   if (intrinsic) {
     return directIntrinsicValue(state, project, source, name, genericStart, genericEnd, arguments, argumentCount);
   }
@@ -4105,7 +4125,15 @@ function directParseExpression(state: & mut DirectState, project: & DirectProjec
             const priorArgumentOffset = argumentOffset;
             let argument = directEmptyValue();
             const stringStart = directQuotedStart(source, argumentOffset);
-            if (stringStart<closing.start) {
+            const argumentStart = next(source, argumentOffset);
+            let expectedType = directPointerType(llvmPointerType(state.context));
+            const functionValue = findDirectFunction(project, state.functionValue.sourceIndex, source, token, project.structs.length, false);
+            if (functionValue.nameEnd !== 0usize) {
+              expectedType = directFunctionParameterTypeAt(project, functionValue, directU32(argumentCount), state.context);
+            }
+            if (isPunctuation(source, argumentStart, 123i32) && directKindIsAggregate(expectedType.kind)) {
+              argument = directAggregateLiteral(state, project, source, argumentStart, expectedType, closing.start);
+            } else if (stringStart<closing.start) {
               const stringEnd = directQuotedEnd(source, stringStart);
               const argumentEnd = directStringArgumentEnd(source, stringStart);
               if (argumentEnd <= closing.start) {

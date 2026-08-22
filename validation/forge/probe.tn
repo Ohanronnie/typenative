@@ -1,0 +1,64 @@
+import { FileError } from "std/fs";
+import { ProcessError } from "std/process";
+import { featureProbe } from "./features";
+import { metricsProbe } from "./metrics";
+import { modelProbe } from "./model";
+import { pluginProbe } from "./plugin";
+import { protocolProbe, staticProtocolProbe } from "./protocol";
+import { schedulerProbe } from "./scheduler";
+import { storeProbe } from "./store";
+import { workerProbe } from "./workers";
+
+export function health(): i32 {
+  return 42i32;
+}
+export function model(): i32 {
+  return modelProbe();
+}
+export function protocol(): i32 {
+  return protocolProbe();
+}
+export function scheduler(): i32 {
+  return schedulerProbe();
+}
+export function metrics(): i32 {
+  return metricsProbe();
+}
+export function plugin(): i32 {
+  return pluginProbe();
+}
+export function probe(): i32 {
+  if (modelProbe() !== 0i32) {
+    return 10i32;
+  }
+  if (protocolProbe() !== 0i32 || staticProtocolProbe() !== 0i32) {
+    return 20i32;
+  }
+  try {
+    if (try storeProbe() !== 0i32) {
+      return 30i32;
+    }
+  } catch (error: FileError) {
+    return 31i32;
+  }
+  if (schedulerProbe() !== 0i32) {
+    return 40i32;
+  }
+  if (metricsProbe() !== 0i32) {
+    return 50i32;
+  }
+  if (pluginProbe() !== 0i32) {
+    return 60i32;
+  }
+  if (featureProbe() !== 0i32) {
+    return 65i32;
+  }
+  try {
+    if (try workerProbe() !== 0i32) {
+      return 70i32;
+    }
+  } catch (error: ProcessError) {
+    return 71i32;
+  }
+  return 42i32;
+}

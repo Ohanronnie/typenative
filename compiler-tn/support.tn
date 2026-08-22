@@ -663,6 +663,14 @@ function moduleExportsName(module: * const u8, moduleLength: usize, source: * co
           cursor = cursor + 1usize;
         }
       }
+      const finalStart = cursor;
+      const finalEnd = wordEndAt(module, moduleLength, finalStart);
+      if (wordIs(module, moduleLength, finalStart, finalEnd, "final")) {
+        cursor = finalEnd;
+        while (cursor<moduleLength && !nameByte(sourceByte(module, moduleLength, cursor))) {
+          cursor = cursor + 1usize;
+        }
+      }
       const declarationStart = cursor;
       const declarationEnd = wordEndAt(module, moduleLength, declarationStart);
       if (wordIs(module, moduleLength, declarationStart, declarationEnd, "function") || wordIs(module, moduleLength, declarationStart, declarationEnd, "struct") || wordIs(module, moduleLength, declarationStart, declarationEnd, "enum") || wordIs(module, moduleLength, declarationStart, declarationEnd, "class") || wordIs(module, moduleLength, declarationStart, declarationEnd, "interface") || wordIs(module, moduleLength, declarationStart, declarationEnd, "type") || wordIs(module, moduleLength, declarationStart, declarationEnd, "const") || wordIs(module, moduleLength, declarationStart, declarationEnd, "static")) {
@@ -724,6 +732,162 @@ function validateImportedExports(importSource: * const u8, importLength: usize, 
       if (!moduleExportsName(module, moduleLength, importSource, importLength, wordStart, wordEnd)) {
         return 1i32;
       }
+    }
+    cursor = wordEnd;
+  }
+  return 0i32;
+}
+function hasSealedAnnotationBefore(module: * const u8, moduleLength: usize, limit: usize): bool {
+  let cursor: usize = 0usize;
+  let found = false;
+  while (cursor<limit && cursor<moduleLength) {
+    const value = sourceByte(module, moduleLength, cursor);
+    if (value === 59i32 || value === 125i32) {
+      found = false;
+    }
+    if (value === 64i32 && cursor + 1usize < moduleLength) {
+      const nameStart = cursor + 1usize;
+      const nameEnd = wordEndAt(module, moduleLength, nameStart);
+      if (wordIs(module, moduleLength, nameStart, nameEnd, "Sealed")) {
+        found = true;
+      }
+      cursor = nameEnd;
+      continue;
+    }
+    cursor = cursor + 1usize;
+  }
+  return found;
+}
+function exportedHierarchyRestriction(module: * const u8, moduleLength: usize, imported: * const u8, importedLength: usize, nameStart: usize, nameEnd: usize): i32 {
+  let cursor: usize = 0usize;
+  while (cursor<moduleLength) {
+    if (!sourceWordAt(module, moduleLength, cursor, staticStringPointer("export"))) {
+      cursor = cursor + 1usize;
+      continue;
+    }
+    let declaration = cursor + 6usize;
+    while (declaration<moduleLength && !nameByte(sourceByte(module, moduleLength, declaration))) {
+      declaration = declaration + 1usize;
+    }
+    let modifierEnd = wordEndAt(module, moduleLength, declaration);
+    if (wordIs(module, moduleLength, declaration, modifierEnd, "async")) {
+      declaration = modifierEnd;
+      while (declaration<moduleLength && !nameByte(sourceByte(module, moduleLength, declaration))) {
+        declaration = declaration + 1usize;
+      }
+      modifierEnd = wordEndAt(module, moduleLength, declaration);
+    }
+    let finalClass = false;
+    if (wordIs(module, moduleLength, declaration, modifierEnd, "final")) {
+      finalClass = true;
+      declaration = modifierEnd;
+      while (declaration<moduleLength && !nameByte(sourceByte(module, moduleLength, declaration))) {
+        declaration = declaration + 1usize;
+      }
+      modifierEnd = wordEndAt(module, moduleLength, declaration);
+    }
+    const isClass = wordIs(module, moduleLength, declaration, modifierEnd, "class");
+    const isInterface = wordIs(module, moduleLength, declaration, modifierEnd, "interface");
+    if (isClass || isInterface) {
+      let exportedName = modifierEnd;
+      while (exportedName<moduleLength && !nameByte(sourceByte(module, moduleLength, exportedName))) {
+        exportedName = exportedName + 1usize;
+      }
+      const exportedEnd = wordEndAt(module, moduleLength, exportedName);
+      if (wordsEqual(module, moduleLength, exportedName, exportedEnd, imported, importedLength, nameStart, nameEnd)) {
+        if (finalClass && isClass) {
+          return 1i32;
+        }
+        if (hasSealedAnnotationBefore(module, moduleLength, cursor)) {
+          return isClass?2i32: 3i32;
+        }
+      }
+    }
+    cursor = cursor + 6usize;
+  }
+  return 0i32;
+}
+function sourceExtendsName(source: * const u8, sourceLength: usize, nameStart: usize, nameEnd: usize): bool {
+  let cursor: usize = 0usize;
+  while (cursor<sourceLength) {
+    if (sourceWordAt(source, sourceLength, cursor, staticStringPointer("extends"))) {
+      let base = cursor + 7usize;
+      while (base<sourceLength && !nameByte(sourceByte(source, sourceLength, base))) {
+        base = base + 1usize;
+      }
+      const baseEnd = wordEndAt(source, sourceLength, base);
+      if (wordsEqual(source, sourceLength, base, baseEnd, source, sourceLength, nameStart, nameEnd)) {
+        return true;
+      }
+      cursor = baseEnd;
+      continue;
+    }
+    cursor = cursor + 1usize;
+  }
+  return false;
+}
+function sourceConformsName(source: * const u8, sourceLength: usize, nameStart: usize, nameEnd: usize): bool {
+  let cursor: usize = 0usize;
+  while (cursor<sourceLength) {
+    const implementsFound = sourceWordAt(source, sourceLength, cursor, staticStringPointer("implements"));
+    const conform = sourceWordAt(source, sourceLength, cursor, staticStringPointer("Conform"));
+    if (implementsFound || conform) {
+      let candidate = cursor +(implementsFound?10usize: 7usize);
+      while (candidate<sourceLength && !nameByte(sourceByte(source, sourceLength, candidate))) {
+        candidate = candidate + 1usize;
+      }
+      const candidateEnd = wordEndAt(source, sourceLength, candidate);
+      if (wordsEqual(source, sourceLength, candidate, candidateEnd, source, sourceLength, nameStart, nameEnd)) {
+        return true;
+      }
+      cursor = candidateEnd;
+      continue;
+    }
+    cursor = cursor + 1usize;
+  }
+  return false;
+}
+function validateImportedHierarchy(importSource: * const u8, importLength: usize, importStart: usize, importEnd: usize, module: * const u8, moduleLength: usize): i32 {
+  let cursor = importStart;
+  let inBraces = false;
+  let skipAlias = false;
+  while (cursor<importEnd) {
+    const value = sourceByte(importSource, importLength, cursor);
+    if (value === 123i32) {
+      inBraces = true;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    if (value === 125i32) {
+      inBraces = false;
+      cursor = cursor + 1usize;
+      continue;
+    }
+    if (!nameByte(value)) {
+      cursor = cursor + 1usize;
+      continue;
+    }
+    const wordStart = cursor;
+    const wordEnd = wordEndAt(importSource, importLength, wordStart);
+    if (wordIs(importSource, importLength, wordStart, wordEnd, "as")) {
+      skipAlias = true;
+      cursor = wordEnd;
+      continue;
+    }
+    if (!inBraces || skipAlias || wordIs(importSource, importLength, wordStart, wordEnd, "import") || wordIs(importSource, importLength, wordStart, wordEnd, "type")) {
+      skipAlias = false;
+      cursor = wordEnd;
+      continue;
+    }
+    const restriction = exportedHierarchyRestriction(module, moduleLength, importSource, importLength, wordStart, wordEnd);
+    if (restriction === 1i32 && sourceExtendsName(importSource, importLength, wordStart, wordEnd)) {
+      return 2013i32;
+    }
+    if (restriction === 2i32 && sourceExtendsName(importSource, importLength, wordStart, wordEnd)) {
+      return 2016i32;
+    }
+    if (restriction === 3i32 && sourceConformsName(importSource, importLength, wordStart, wordEnd)) {
+      return 2017i32;
     }
     cursor = wordEnd;
   }
@@ -858,7 +1022,12 @@ function validateImportsDepth(input: * const u8, source: * const u8, length: usi
           } else if (validateImportedExports(source, length, cursor, importEnd, constPointer(loaded.pointer), loaded.length) !== 0i32) {
             result = 1i32;
           } else {
-            result = validateImportsDepth(constPointer(joined), constPointer(loaded.pointer), loaded.length, depth + 1usize, visited);
+            const hierarchyStatus = validateImportedHierarchy(source, length, cursor, importEnd, constPointer(loaded.pointer), loaded.length);
+            if (hierarchyStatus !== 0i32) {
+              result = hierarchyStatus;
+            } else {
+              result = validateImportsDepth(constPointer(joined), constPointer(loaded.pointer), loaded.length, depth + 1usize, visited);
+            }
             freeSource(loaded.pointer);
           }
         }
@@ -924,6 +1093,12 @@ export function writeDiagnostic(fd: i32, code: i32, start: usize, end: usize, js
       writeStatic(fd, "SYNTAX_INVALID_INTEGER_SUFFIX");
     } else if (code >= 1000i32 && code<2000i32) {
       writeStatic(fd, "SYNTAX_SELFHOST");
+    } else if (code === 2013i32) {
+      writeStatic(fd, "TYPE_EXTENDS_FINAL_CLASS");
+    } else if (code === 2016i32) {
+      writeStatic(fd, "TYPE_EXTENDS_SEALED_CLASS");
+    } else if (code === 2017i32) {
+      writeStatic(fd, "TYPE_CONFORMS_TO_SEALED_INTERFACE");
     } else if (code === 2020i32) {
       writeStatic(fd, "TYPE_STATIC_MUT_REQUIRES_UNSAFE");
     } else if (code >= 2000i32) {

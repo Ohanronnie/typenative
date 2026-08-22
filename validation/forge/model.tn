@@ -1,0 +1,73 @@
+import { Copy, Iterable } from "std/core";
+export enum JobState {
+  Queued, Running, Complete, Failed,
+}
+export interface Runnable {
+  run(): i32;
+}
+@Sealed export interface ForgeLocalOnly {
+}
+@Conform(ForgeLocalOnly)
+export struct LocalPlugin {
+}
+@Conform(Runnable)
+export struct LocalRunner {
+  public result: i32;
+  public run(): i32 {
+    return this.result;
+  }
+}
+abstract class BuildUnit {
+  public constructor() {
+  }
+  public abstract cost(): i32;
+}
+final class CompileUnit extends BuildUnit {
+  private units: i32;
+  public constructor(units: i32) {
+    super();
+    this.units = units;
+  }
+  public override cost(): i32 {
+    return this.units * 2i32;
+  }
+}
+macro accessor(name: identifier, field: identifier, value: type) {
+  public {{name}}(): {{value}} {
+    return this.{{field}};
+  }
+}
+@Expand(accessor, valueOf, result, i32)
+struct MacroValue {
+  public result: i32;
+}
+function* generatedValues(): Iterable<i32> {
+  yield 2i32;
+  yield 4i32;
+}
+function identity<T>(value: T): T {
+  return value;
+}
+export function modelProbe(): i32 {
+  const unit = new CompileUnit(3i32);
+  const runner: LocalRunner = {
+    result: identity<i32>(unit.cost()),
+  };
+  if (runner.run() !== 6i32) {
+    return 1i32;
+  }
+  const macroValue: MacroValue = {
+    result: 5i32,
+  };
+  let generated: i32 = 0i32;
+  for (const value of generatedValues()) {
+    generated = generated + value;
+  }
+  if (macroValue.valueOf() + generated !== 11i32) {
+    return 3i32;
+  }
+  const state = JobState.Complete;
+  return switch(state) {
+    case JobState.Complete: 0i32, default: 2i32,
+  };
+}

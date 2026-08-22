@@ -25,13 +25,15 @@ The architecture follows these rules:
 
 ### Current convergence boundary
 
-The ordinary Rust bootstrap is the active implementation used for canonical
-source checks. The canonical language surface is recorded in
+The ordinary Rust bootstrap remains the independent reproducible seed, while
+the canonical production compiler is the direct-LLVM implementation in
+`compiler-tn/**`. The canonical language surface is recorded in
 [`language-spec.md`](language-spec.md), and the migration obligations are
 tracked in [`canonical-migration-manifest.md`](canonical-migration-manifest.md).
-The Redis validation target is now authored in `validation/redis/*.tn` and
-must pass through the same syntax, HIR, type, ownership, MIR, and native
-boundaries as every other TypeNative program.
+The Redis validation target and Forge conformance application pass through the
+same syntax, HIR, type, ownership, MIR, and native boundaries as every other
+TypeNative program. The current A → B → C → D fixed point and product evidence
+are recorded in [`gate12-evidence.md`](gate12-evidence.md).
 
 Native functions are explicit ABI boundaries. The reviewed runtime functions
 used by allocation, strings, sockets, mutexes, promises, and task groups are
@@ -72,10 +74,11 @@ operand. Generic MIR does not prematurely fold the result; monomorphization
 substitutes the concrete type, and LLVM lowering consults the same ownership
 facts supplied by the checked program.
 
-This boundary documents compiler-independent preparation only. The protected
-`compiler-tn/**` implementation and self-hosting orchestration are not used as
-evidence here, and a complete independent compiler chain remains an open
-Gate 11 requirement.
+The historical preparation boundary is retained in
+[`gate11-preparation.md`](gate11-preparation.md). It is not the current
+implementation status: direct LLVM construction, self-hosting, LLVM
+verification, and Forge product conformance are now exercised by the Gate 12
+evidence manifest.
 
 ## 2. End-to-end pipeline
 

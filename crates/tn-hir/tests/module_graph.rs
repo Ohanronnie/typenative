@@ -15,6 +15,7 @@ fn loads_the_intrinsic_string_prelude_without_an_import() {
     let directory = tempfile::tempdir().expect("temporary HIR program");
     let root = directory.path();
     let standard_library = root.join("std");
+    std::fs::create_dir(&standard_library).expect("standard-library directory");
     write(&root.join("main.tn"), "function main(): void {}\n");
     write(
         &standard_library.join("string.tn"),
@@ -111,6 +112,39 @@ final class Derived extends Base implements Display {
             .count(),
         2
     );
+}
+
+#[test]
+fn carries_sealed_hierarchy_metadata_into_hir() {
+    let directory = tempfile::tempdir().expect("temporary HIR program");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    std::fs::create_dir(&standard_library).expect("standard-library directory");
+    write(
+        &root.join("main.tn"),
+        "@Sealed class Closed {}\n@Sealed interface Marker {}\n",
+    );
+    let graph = load_module_graph(root, &root.join("main.tn"), &standard_library)
+        .expect("sealed module graph");
+    let program = lower_program(graph).expect("sealed HIR");
+    let sealed_class = program
+        .definitions
+        .iter()
+        .find_map(|definition| match definition.data {
+            DefinitionData::Class { is_sealed, .. } => Some(is_sealed),
+            _ => None,
+        })
+        .expect("sealed class metadata");
+    let sealed_interface = program
+        .definitions
+        .iter()
+        .find_map(|definition| match definition.data {
+            DefinitionData::Interface { is_sealed, .. } => Some(is_sealed),
+            _ => None,
+        })
+        .expect("sealed interface metadata");
+    assert!(sealed_class);
+    assert!(sealed_interface);
 }
 
 #[test]

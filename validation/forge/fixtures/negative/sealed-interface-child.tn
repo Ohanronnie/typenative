@@ -1,0 +1,6 @@
+import { SealedInterface } from "./sealed-interface-base";
+@Conform(SealedInterface)
+struct ForeignConformer {
+}
+function main(): void {
+}

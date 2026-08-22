@@ -1,0 +1,8 @@
+import { FinalBase } from "./final-base";
+class ForeignFinalChild extends FinalBase {
+  public constructor() {
+    super();
+  }
+}
+function main(): void {
+}

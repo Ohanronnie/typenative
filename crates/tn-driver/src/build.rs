@@ -1336,7 +1336,7 @@ fn layouts(
             .definitions
             .iter()
             .filter_map(|definition| match &definition.data {
-                DefinitionData::Interface { methods } => Some((
+                DefinitionData::Interface { methods, .. } => Some((
                     definition.declaration,
                     u32::try_from(methods.len()).unwrap_or(u32::MAX),
                 )),
@@ -1663,6 +1663,7 @@ fn witness_layouts(
             } => {
                 let Some(DefinitionData::Interface {
                     methods: interface_methods,
+                    ..
                 }) = program
                     .definition(*interface)
                     .map(|definition| &definition.data)
@@ -1713,6 +1714,7 @@ fn witness_layouts(
                 for interface in interface_ids {
                     let Some(DefinitionData::Interface {
                         methods: interface_methods,
+                        ..
                     }) = program
                         .definition(interface)
                         .map(|definition| &definition.data)

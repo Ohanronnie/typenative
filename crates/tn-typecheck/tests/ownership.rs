@@ -258,6 +258,35 @@ function less(left: &i32, right: &i32): bool {
 }
 
 #[test]
+fn lowers_pointer_assignment_to_a_dereference_place() {
+    let program = source_program_with_workspace_standard_library(
+        r#"
+import { rawAlloc, rawFree } from "std/alloc";
+function write(): void {
+  unsafe {
+    const pointer = rawAlloc(4usize);
+    *(pointer as *mut i32) = 19i32;
+    rawFree(pointer);
+  }
+}
+function main(): void { write(); }
+"#,
+    );
+    let bodies = lower_mir(&program);
+    assert!(bodies.iter().any(|body| {
+        body.blocks.iter().any(|block| {
+            block.statements.iter().any(|statement| {
+                matches!(
+                    &statement.kind,
+                    StatementKind::Assign(place, _)
+                        if place.projection == vec![Projection::Dereference]
+                )
+            })
+        })
+    }));
+}
+
+#[test]
 fn lowers_unary_short_circuit_generic_calls_without_function_pointer_operands() {
     let program = source_program(
         r"

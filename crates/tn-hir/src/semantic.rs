@@ -243,10 +243,20 @@ fn lower_declaration(
         }
         DeclarationKind::Struct => lower_struct(&mut cursor, declaration.id, resolver, diagnostics),
         DeclarationKind::Enum => lower_enum(&mut cursor, declaration.id, resolver, diagnostics),
-        DeclarationKind::Interface => {
-            lower_interface(&mut cursor, declaration.id, resolver, diagnostics)
-        }
-        DeclarationKind::Class => lower_class(&mut cursor, declaration.id, resolver, diagnostics),
+        DeclarationKind::Interface => lower_interface(
+            &mut cursor,
+            declaration.id,
+            resolver,
+            diagnostics,
+            has_attribute(declaration, "Sealed"),
+        ),
+        DeclarationKind::Class => lower_class(
+            &mut cursor,
+            declaration.id,
+            resolver,
+            diagnostics,
+            has_attribute(declaration, "Sealed"),
+        ),
         DeclarationKind::Impl => lower_impl(&mut cursor, declaration.id, resolver, diagnostics),
         DeclarationKind::ExternBlock => {
             lower_extern(&mut cursor, declaration.id, resolver, diagnostics)
@@ -925,6 +935,7 @@ fn lower_interface(
     owner: DeclarationId,
     resolver: &Resolver,
     diagnostics: &mut Vec<Diagnostic>,
+    is_sealed: bool,
 ) -> DefinitionData {
     cursor.bump();
     cursor.name(diagnostics);
@@ -941,7 +952,7 @@ fn lower_interface(
             cursor.bump();
         }
     }
-    DefinitionData::Interface { methods }
+    DefinitionData::Interface { methods, is_sealed }
 }
 
 fn lower_class(
@@ -949,6 +960,7 @@ fn lower_class(
     owner: DeclarationId,
     resolver: &Resolver,
     diagnostics: &mut Vec<Diagnostic>,
+    is_sealed: bool,
 ) -> DefinitionData {
     let is_abstract = cursor.eat(TokenKind::Abstract);
     let is_final = cursor.eat(TokenKind::Final);
@@ -1016,7 +1028,15 @@ fn lower_class(
         methods,
         is_abstract,
         is_final,
+        is_sealed,
     }
+}
+
+fn has_attribute(declaration: &Declaration, name: &str) -> bool {
+    declaration
+        .attributes
+        .iter()
+        .any(|attribute| attribute.name == name)
 }
 
 fn lower_impl(

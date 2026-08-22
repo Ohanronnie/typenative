@@ -1,0 +1,3 @@
+
+@Sealed export interface SealedInterface {
+}

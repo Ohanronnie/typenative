@@ -313,6 +313,7 @@ pub enum DefinitionData {
     },
     Interface {
         methods: Vec<Method>,
+        is_sealed: bool,
     },
     Class {
         base: Option<DeclarationId>,
@@ -322,6 +323,7 @@ pub enum DefinitionData {
         methods: Vec<Method>,
         is_abstract: bool,
         is_final: bool,
+        is_sealed: bool,
     },
     Implementation {
         interface: Option<Type>,

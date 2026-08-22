@@ -538,7 +538,7 @@ source_manifest="$run/source-manifest.txt"
 ) >"$source_manifest"
 manifest="$run/bootstrap-manifest.txt"
 {
-  printf '%s\n' 'format=gate11-bootstrap-evidence'
+  printf '%s\n' 'format=gate12-bootstrap-evidence'
   printf '%s\n' "host=$(uname -s)-$(uname -m)"
   printf '%s\n' "compiler-driver=$tn"
   printf '%s\n' "compiler-driver-sha256=$(shasum -a 256 "$tn" | awk '{print $1}')"

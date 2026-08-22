@@ -112,7 +112,7 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
                 check_function_body(program, definition.declaration, function, &mut diagnostics);
             }
             DefinitionData::Class { methods, .. }
-            | DefinitionData::Interface { methods }
+            | DefinitionData::Interface { methods, .. }
             | DefinitionData::Implementation { methods, .. } => {
                 for method in methods {
                     check_function_body(
@@ -328,6 +328,8 @@ fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
         return false;
     };
     match operation.as_str() {
+        "checked_u16" => path.ends_with("std/env.tn"),
+        "platform_sockaddr_family" => path.ends_with("runtime/runtime.tn"),
         "size_of" => {
             path.ends_with("std/alloc.tn")
                 || path.ends_with("std/collections.tn")

@@ -1,0 +1,8 @@
+import { SealedBase } from "./sealed-base";
+class ForeignChild extends SealedBase {
+  public constructor() {
+    super();
+  }
+}
+function main(): void {
+}

@@ -182,7 +182,7 @@ fn check_definition_types(
                 }
             }
         }
-        DefinitionData::Interface { methods } => {
+        DefinitionData::Interface { methods, .. } => {
             for method in methods {
                 check_function_types(&method.function, &method.span, definitions, diagnostics);
             }
@@ -487,7 +487,7 @@ fn check_definition(
                 diagnostics,
             );
         }
-        DefinitionData::Interface { methods } => {
+        DefinitionData::Interface { methods, .. } => {
             reject_duplicate_methods(methods, diagnostics);
             let exported = program
                 .graph
@@ -517,6 +517,7 @@ fn check_definition(
             methods,
             is_abstract,
             is_final,
+            ..
         } => {
             for field in fields {
                 reject_void(&field.ty, &field.span, diagnostics);
@@ -660,6 +661,7 @@ fn check_class(
         let DefinitionData::Class {
             methods: base_methods,
             is_final,
+            is_sealed,
             ..
         } = &base_definition.data
         else {
@@ -681,6 +683,25 @@ fn check_class(
                 "TYPE_EXTENDS_FINAL_CLASS",
                 "cannot extend a final class",
                 "remove the inheritance edge",
+            );
+        }
+        if *is_sealed
+            && program
+                .graph
+                .declaration(base)
+                .map(|declaration| declaration.module)
+                != program
+                    .graph
+                    .declaration(definition.declaration)
+                    .map(|declaration| declaration.module)
+        {
+            declaration_diagnostic(
+                program,
+                definition.declaration,
+                diagnostics,
+                "TYPE_EXTENDS_SEALED_CLASS",
+                "cannot extend a sealed class outside its declaring module",
+                "move the subclass into the sealed class's module or remove `@Sealed`",
             );
         }
         for method in class.methods {
@@ -1161,6 +1182,7 @@ fn check_implementation(
     };
     let DefinitionData::Interface {
         methods: requirements,
+        is_sealed,
     } = &interface_definition.data
     else {
         declaration_diagnostic(
@@ -1173,6 +1195,25 @@ fn check_implementation(
         );
         return;
     };
+    if *is_sealed
+        && program
+            .graph
+            .declaration(interface)
+            .map(|declaration| declaration.module)
+            != program
+                .graph
+                .declaration(implementation)
+                .map(|declaration| declaration.module)
+    {
+        declaration_diagnostic(
+            program,
+            implementation,
+            diagnostics,
+            "TYPE_CONFORMS_TO_SEALED_INTERFACE",
+            "cannot conform to a sealed interface outside its declaring module",
+            "move the conforming declaration into the sealed interface's module or remove `@Sealed`",
+        );
+    }
     let mut generic_arguments = BTreeMap::new();
     for requirement in requirements {
         let Some(method) = find_method(methods, &requirement.name) else {

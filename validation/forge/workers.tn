@@ -1,0 +1,19 @@
+import { ProcessError, processId, spawnChecked, wait } from "std/process";
+import { threadId, yieldNow } from "std/thread";
+
+export function workerProbe(): i32 throws ProcessError {
+  if (processId() <= 0i32 || threadId() === 0u64) {
+    return 1i32;
+  }
+  yieldNow();
+  let child = try spawnChecked("/usr/bin/true");
+  let exitCode: i32 = 0i32;
+  let waitStatus: i32 = 0i32;
+  unsafe {
+    waitStatus = wait( & mut child,( & mut exitCode)as * mut i32);
+  }
+  if (waitStatus !== 0i32 || exitCode !== 0i32) {
+    return 2i32;
+  }
+  return 0i32;
+}

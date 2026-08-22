@@ -11,10 +11,10 @@ span. Build profiles may change optimization and debug information only; they
 must not change ownership, error, overflow, bounds, destruction, or panic
 semantics.
 
-The current implementation scope is the Rust bootstrap compiler through the
-compiler-independent preparation for Gate 11. The `compiler-tn/**` source and
-the A/B/C self-hosting chain are protected follow-up work and are not evidence
-for this specification.
+The current implementation scope includes the Rust bootstrap seed, the
+canonical direct-LLVM compiler in `compiler-tn/**`, and its independent
+self-hosted B/C/D chain. Conformance evidence, fixed-point hashes, and product
+verification are recorded in [`gate12-evidence.md`](gate12-evidence.md).
 
 ## 2. Source text and lexical rules
 
@@ -253,6 +253,14 @@ inheritance, optional `abstract`/`final`, direct constructors and methods,
 `extends`, `implements`, `override`, `super`, `readonly`, and visibility. A
 non-final instance method is virtual; an override must be marked `override`.
 Derived constructors call `super(...)` exactly once as their first statement.
+
+`final class` closes the hierarchy everywhere. `@Sealed` is distinct: on a
+class it permits direct subclasses only inside the declaring module's closed
+hierarchy, and on an interface it permits direct conformers only inside that
+module. Cross-module violations report `TYPE_EXTENDS_SEALED_CLASS` or
+`TYPE_CONFORMS_TO_SEALED_INTERFACE`; a cross-module subclass of a final class
+reports `TYPE_EXTENDS_FINAL_CLASS`. The sealed marker is represented in HIR and
+is enforced by both the Rust bootstrap and self-hosted compiler.
 
 Interfaces are nominal contracts. A struct, enum, or class declares conformance
 with `@Conform(Interface)` or `implements Interface`, and supplies the members

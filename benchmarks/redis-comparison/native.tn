@@ -1,0 +1,20 @@
+import { run } from "std/async";
+import { ParseIntegerError } from "std/core";
+import { lookupU16 } from "std/env";
+import { NetworkError } from "std/net";
+import { servePort as serveRedis } from "../../validation/redis/redis-server";
+
+async function runNative(): Promise<i32, never> {
+  try {
+    const port = try lookupU16("REDIS_NATIVE_PORT");
+    try await serveRedis(port, 4096usize);
+  } catch (error: ParseIntegerError) {
+    return 2i32;
+  } catch (error: NetworkError) {
+    return 1i32;
+  }
+  return 0i32;
+}
+function main(): i32 {
+  return run(runNative());
+}

@@ -147,7 +147,10 @@ function collectDeclarations(source: Source, summary: ParseSummary): CompilerBuf
     }
     if (depth === 0usize &&(isKeyword(source, token, "function") || isKeyword(source, token, "struct") || isKeyword(source, token, "enum") || isKeyword(source, token, "class") || isKeyword(source, token, "interface") || isKeyword(source, token, "type") || isKeyword(source, token, "impl") || isValueDeclaration(source, token, previous, hasPrevious) || isKeyword(source, token, "extern"))) {
       const firstName = next(source, token.end);
-      const name = isKeyword(source, token, "static") && isKeyword(source, firstName, "mut")?next(source, firstName.end): firstName;
+      let name = isKeyword(source, token, "static") && isKeyword(source, firstName, "mut")?next(source, firstName.end): firstName;
+      if (isKeyword(source, token, "function") && firstByte(source, name) === 42i32) {
+        name = next(source, name.end);
+      }
       const body = declarationBody(source, name);
       const end = declarationEnd(source, body);
       const bodyStart = firstByte(source, body) === 123i32?body.start: 0usize;

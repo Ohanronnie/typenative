@@ -1,0 +1,107 @@
+import { isNull } from "std/alloc";
+import { Bytes } from "std/bytes";
+import { Array } from "std/collections";
+import { ParseIntegerError } from "std/core";
+import { lookup } from "std/env";
+import { health, metrics, model, plugin, probe, protocol, scheduler } from "./probe";
+import { serverMain } from "./server";
+
+@Export("forge_health")
+function forgeHealth(): i32 {
+  return health();
+}
+@Export("forge_model_probe")
+function forgeModelProbe(): i32 {
+  return model();
+}
+@Export("forge_protocol_probe")
+function forgeProtocolProbe(): i32 {
+  return protocol();
+}
+@Export("forge_scheduler_probe")
+function forgeSchedulerProbe(): i32 {
+  return scheduler();
+}
+@Export("forge_metrics_probe")
+function forgeMetricsProbe(): i32 {
+  return metrics();
+}
+@Export("forge_plugin_probe")
+function forgePluginProbe(): i32 {
+  return plugin();
+}
+@Export("forge_feature_probe")
+function forgeFeatureProbe(): i32 {
+  const result = probe();
+  return result === 42i32?0i32: result;
+}
+@Export("forge_node_optional")
+function forgeNodeOptional(value: i32 | undefined): i32 | undefined {
+  return value;
+}
+@Export("forge_node_string")
+function forgeNodeString(value: string): string {
+  return value;
+}
+@Export("forge_node_bytes_length")
+function forgeNodeBytesLength(value: Bytes): usize {
+  return value.length;
+}
+@Export("forge_node_array_length")
+function forgeNodeArrayLength(value: & Array<i32 >): usize {
+  return value.length;
+}
+@Export("forge_node_fixed_middle")
+function forgeNodeFixedMiddle(value:[i32;
+3]): i32 {
+  return value[1];
+}
+@Export("forge_node_async")
+async function forgeNodeAsync(value: i32): Promise<i32, never> {
+  return value + 1i32;
+}
+struct ForgeNodeError {
+}
+function forgeNodeError(): ForgeNodeError {
+  return {
+  };
+}
+@Export("forge_node_async_fail")
+async function forgeNodeAsyncFail(): Promise<i32, ForgeNodeError> {
+  throw forgeNodeError();
+}
+@Drop
+@Export class ForgeJob {
+  public value: i32;
+  public constructor(value: i32) {
+    this.value = value;
+  }
+  public run(delta: i32): i32 {
+    this.value = this.value + delta;
+    return this.value;
+  }
+  mut drop(): void {
+  }
+}
+@Export("forge_probe")
+function forgeProbe(): i32 {
+  return probe();
+}
+function serveMode(): bool {
+  let active = false;
+  unsafe {
+    active = !isNull(lookup("FORGE_MODE"));
+  }
+  return active;
+}
+function main(): i32 {
+  if (serveMode()) {
+    try {
+      return try serverMain();
+    } catch (error: ParseIntegerError) {
+      return 80i32;
+    }
+  }
+  const probe = forgeProbe();
+  return probe === 42i32?0i32: probe;
+}

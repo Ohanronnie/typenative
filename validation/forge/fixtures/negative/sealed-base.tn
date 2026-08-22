@@ -1,0 +1,5 @@
+
+@Sealed export class SealedBase {
+  public constructor() {
+  }
+}

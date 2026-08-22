@@ -96,6 +96,44 @@ fn verifies_checked_integer_control_flow_before_emission() {
 }
 
 #[test]
+fn lowers_integer_constants_into_present_optional_values() {
+    let integer = Type::Primitive(PrimitiveType::I32);
+    let optional = Type::Optional(Box::new(integer));
+    let body = Body {
+        declaration: DeclarationId(6),
+        member: None,
+        locals: vec![local("result", optional.clone(), false)],
+        blocks: vec![BasicBlock {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    Place::local(LocalId(0)),
+                    Box::new(Rvalue::Use(Operand::Constant(Constant::Integer {
+                        value: 13,
+                        ty: optional.clone(),
+                    }))),
+                ),
+                span: span(),
+            }],
+            terminator: Terminator {
+                kind: TerminatorKind::Return(Some(Operand::Copy(Place::local(LocalId(0))))),
+                span: span(),
+            },
+        }],
+        return_type: optional,
+        effects: Vec::new(),
+    };
+    validate(&body).expect("optional constant MIR");
+    let ir = tn_codegen_llvm::compile_to_llvm_ir(
+        "optional_constant",
+        &[lower_typed_errors(&body)],
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("verified optional constant module");
+    assert!(ir.contains("store { i1, i32 } { i1 true, i32 13 }"));
+}
+
+#[test]
 fn lowers_owned_string_ordering_through_content_comparison() {
     let boolean = Type::Primitive(PrimitiveType::Bool);
     let body = Body {

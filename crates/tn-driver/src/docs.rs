@@ -145,7 +145,7 @@ fn render_declaration(
             }
             output.push_str("}\n```");
         }
-        DefinitionData::Interface { methods } => {
+        DefinitionData::Interface { methods, .. } => {
             render_interface(program, &display_name, methods, output)?;
         }
         DefinitionData::Class {

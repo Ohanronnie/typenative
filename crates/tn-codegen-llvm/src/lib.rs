@@ -327,6 +327,7 @@ fn generate<'ctx>(
         target_data,
         layouts.clone(),
         module_name,
+        target_triple,
         profile,
     );
     generator.declare_externs()?;
@@ -405,6 +406,7 @@ struct Generator<'ctx> {
     debug_info: DebugInfoState<'ctx>,
     async_wrappers: Vec<AsyncWrapper<'ctx>>,
     abi_wrappers: Vec<AbiWrapper<'ctx>>,
+    is_macos: bool,
 }
 
 fn collect_class_specializations(
@@ -571,6 +573,7 @@ impl<'ctx> Generator<'ctx> {
         target_data: TargetData,
         layouts: Layouts,
         module_name: &str,
+        target_triple: &str,
         profile: CodegenProfile,
     ) -> Self {
         let debug_info = DebugInfoState::new(&module, module_name, profile);
@@ -589,6 +592,7 @@ impl<'ctx> Generator<'ctx> {
             debug_info,
             async_wrappers: Vec::new(),
             abi_wrappers: Vec::new(),
+            is_macos: target_triple.contains("apple-darwin"),
         }
     }
 
@@ -2824,6 +2828,34 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     ))
                 })?;
                 Ok(size.into())
+            }
+            Rvalue::RawOperation { operation, ty, .. }
+                if operation == "platform_sockaddr_family" =>
+            {
+                let result = self.generator.basic_type(ty)?.into_int_type();
+                let value = if self.generator.is_macos { 528 } else { 2 };
+                Ok(result.const_int(value, false).into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "checked_u16" => {
+                let value = operands
+                    .first()
+                    .ok_or_else(|| CodegenError::Unsupported("checked_u16 lacks a value".into()))
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let target = self.generator.basic_type(ty)?.into_int_type();
+                let max = value.get_type().const_int(u64::from(u16::MAX), false);
+                let valid =
+                    self.builder
+                        .build_int_compare(IntPredicate::ULE, value, max, "u16.range")?;
+                self.guard(valid, "u16 conversion overflow")?;
+                Ok(self
+                    .builder
+                    .build_int_cast(value, target, "u16.cast")?
+                    .into())
             }
             Rvalue::RawOperation {
                 operation,
@@ -5654,6 +5686,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             .into_int_value())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_constant(&self, constant: &Constant) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         Ok(match constant {
             Constant::Bool(value) => self
@@ -5662,33 +5695,47 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .bool_type()
                 .const_int(u64::from(*value), false)
                 .into(),
-            Constant::Integer { value, ty } => self
-                .generator
-                .basic_type(ty)?
-                .into_int_type()
-                .const_int_arbitrary_precision(&u128_words(value.cast_unsigned()))
-                .into(),
-            Constant::Float { bits, ty } => match ty {
-                Type::Primitive(PrimitiveType::F32) => self
+            Constant::Integer { value, ty } => {
+                let payload_type = match ty {
+                    Type::Optional(inner) => inner.as_ref(),
+                    _ => ty,
+                };
+                let payload = self
                     .generator
-                    .context
-                    .f32_type()
-                    .const_float(f64::from(f32::from_bits(u32::try_from(*bits).map_err(
-                        |_| CodegenError::Unsupported("f32 constant has excess bits".into()),
-                    )?)))
-                    .into(),
-                Type::Primitive(PrimitiveType::F64) => self
-                    .generator
-                    .context
-                    .f64_type()
-                    .const_float(f64::from_bits(*bits))
-                    .into(),
-                _ => {
-                    return Err(CodegenError::Unsupported(
-                        "float constant has non-float type".into(),
-                    ));
-                }
-            },
+                    .basic_type(payload_type)?
+                    .into_int_type()
+                    .const_int_arbitrary_precision(&u128_words(value.cast_unsigned()))
+                    .into();
+                self.wrap_optional_constant(ty, payload)?
+            }
+            Constant::Float { bits, ty } => {
+                let payload_type = match ty {
+                    Type::Optional(inner) => inner.as_ref(),
+                    _ => ty,
+                };
+                let payload = match payload_type {
+                    Type::Primitive(PrimitiveType::F32) => self
+                        .generator
+                        .context
+                        .f32_type()
+                        .const_float(f64::from(f32::from_bits(u32::try_from(*bits).map_err(
+                            |_| CodegenError::Unsupported("f32 constant has excess bits".into()),
+                        )?)))
+                        .into(),
+                    Type::Primitive(PrimitiveType::F64) => self
+                        .generator
+                        .context
+                        .f64_type()
+                        .const_float(f64::from_bits(*bits))
+                        .into(),
+                    _ => {
+                        return Err(CodegenError::Unsupported(
+                            "float constant has non-float type".into(),
+                        ));
+                    }
+                };
+                self.wrap_optional_constant(ty, payload)?
+            }
             Constant::Character(value) => self
                 .generator
                 .context
@@ -5755,6 +5802,32 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .as_pointer_value()
                 .into(),
         })
+    }
+
+    fn wrap_optional_constant(
+        &self,
+        ty: &Type,
+        payload: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let Type::Optional(inner) = ty else {
+            return Ok(payload);
+        };
+        let structure = self.generator.basic_type(ty)?.into_struct_type();
+        let payload = self.lower_cast(payload, self.generator.basic_type(inner)?)?;
+        let value = self
+            .builder
+            .build_insert_value(
+                structure.const_zero(),
+                self.generator.context.bool_type().const_int(1, false),
+                0,
+                "optional.constant.present",
+            )?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(value, payload, 1, "optional.constant.payload")?
+            .into_struct_value()
+            .into())
     }
 
     fn global_pointer(&self, operation: &str) -> Result<PointerValue<'ctx>, CodegenError> {

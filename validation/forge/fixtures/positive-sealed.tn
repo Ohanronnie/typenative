@@ -1,0 +1,19 @@
+
+@Sealed interface LocalOnly {
+}
+@Conform(LocalOnly)
+struct LocalConformer {
+}
+@Sealed class LocalBase {
+  public constructor() {
+  }
+}
+class SameModuleChild extends LocalBase {
+  public constructor() {
+    super();
+  }
+}
+function main(): void {
+  const value = new SameModuleChild();
+  value;
+}

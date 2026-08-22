@@ -92,9 +92,9 @@ function networkError(code: i32): NetworkError {
 @Drop export class TcpListener {
   public handle: i32;
   public closed: bool;
-  public constructor(address: & str)throws NetworkError {
+  public constructor(endpoint: Endpoint)throws NetworkError {
     unsafe {
-      const handle = tn_net_tcp_listen_address(address as * const u8, 128i32);
+      const handle = tn_net_tcp_listen(endpoint.host as * const u8, endpoint.port, 128i32);
       if (handle<0i32) {
         throw networkError( - 1i32);
       }

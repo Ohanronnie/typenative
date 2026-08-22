@@ -1,8 +1,8 @@
 # TypeNative Implementation Status
 
 This ledger records only checks that have actually run. Historical entries are
-preserved below; current Gate 10 status is recorded in
-[`gate10-native-inventory.md`](gate10-native-inventory.md).
+preserved below; the current Gate 12 status and reproducibility manifest are in
+[`gate12-evidence.md`](gate12-evidence.md).
 
 ## Current Gate 10 status (2026-08-13)
 
@@ -43,6 +43,27 @@ guarded A → B → C → D plus repeat bootstrap reached a normalized direct-LL
 fixed point, and `scripts/verify-all.sh` passed the full product, runtime, ABI,
 Node, Redis, sanitizer, and fuzz matrix.
 
+## Current Gate 12 status (2026-08-22)
+
+Gate 12 extends the direct-LLVM implementation with the Forge conformance
+application, a repeatable Redis comparison, and enforced sealed hierarchy
+semantics. Forge is split across protocol, model, store, scheduler, worker,
+metrics, plugin, server, and feature modules. Its coverage manifest accounts for
+277 public standard-library exports and classifies only documented platform or
+internal exclusions.
+
+The compiler records `is_sealed` in HIR for classes and interfaces, rejects
+cross-module sealed subclassing or conformance with structured conditions, and
+keeps `final` as the unconditional hierarchy boundary. The self-hosted compiler
+preserves the same diagnostics. `Database` in the Redis server is `final` because
+it has no closed sealed hierarchy.
+
+The final A → B → C → D plus repeat evidence, Forge artifacts, Redis medians,
+toolchain manifest, source and artifact hashes, and platform exclusions are
+recorded in [`gate12-evidence.md`](gate12-evidence.md). The only intentionally
+remaining worktree change is the preserved unstaged
+`benchmarks/json-parser/results.json` file.
+
 ## Foreign declaration syntax cleanup (2026-08-14)
 
 The ordinary Rust-bootstrap compiler now has one foreign declaration-block
@@ -56,7 +77,10 @@ documentation sources use the canonical block form. The deterministic
 and intentionally negative syntax fixtures while checking active `.tn` sources
 and current documentation.
 
-## Current controlled convergence record (2026-08-12)
+## Historical controlled convergence record (2026-08-12)
+
+This section is retained as a dated checkpoint and is superseded by the current
+Gate 12 status above.
 
 The ordinary Rust bootstrap path now carries the canonical source convergence
 work. The current source and evidence records are:

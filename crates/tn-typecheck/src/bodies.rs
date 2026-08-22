@@ -4358,6 +4358,7 @@ fn iteration_implementation<'program>(
         };
         let Some(DefinitionData::Interface {
             methods: interface_methods,
+            ..
         }) = program
             .definition(interface)
             .map(|definition| &definition.data)
@@ -5003,7 +5004,7 @@ fn resolve_member(program: &Program, owner: DeclarationId, name: &str) -> Option
                     })
             })
             .or_else(|| base.and_then(|base| resolve_member(program, base, name))),
-        DefinitionData::Interface { methods } => methods
+        DefinitionData::Interface { methods, .. } => methods
             .iter()
             .find(|method| method.name == name)
             .map(|method| ResolvedMember {
@@ -5088,7 +5089,7 @@ fn resolved_method_receiver(program: &Program, member: MemberId) -> Option<Recei
         .iter()
         .find_map(|definition| match &definition.data {
             DefinitionData::Class { methods, .. }
-            | DefinitionData::Interface { methods }
+            | DefinitionData::Interface { methods, .. }
             | DefinitionData::Implementation { methods, .. }
             | DefinitionData::Extern { functions: methods } => methods
                 .iter()

@@ -1,0 +1,89 @@
+{
+  "schema": "typenative-std-public-export-coverage-1",
+  "scope": "std/*.tn",
+  "statuses": [
+    "behavioral",
+    "justified",
+    "internal",
+    "platform",
+    "unreachable"
+  ],
+  "modules": {
+    "std/alloc": {
+      "status": "behavioral",
+      "evidence": "Forge model/store and standard validation exercise owned allocation, collection ownership, and raw pointer helpers."
+    },
+    "std/async": {
+      "status": "behavioral",
+      "evidence": "Forge scheduler and TCP server execute promises, runI32, TaskGroup, and async disposal; low-level handles are retained for runtime coverage."
+    },
+    "std/bytes": {
+      "status": "behavioral",
+      "evidence": "Forge protocol and server paths build, slice, cursor, read, and write byte buffers."
+    },
+    "std/collections": {
+      "status": "behavioral",
+      "evidence": "Forge store uses Map; the collection validation corpus exercises the complete collection family and iterators."
+    },
+    "std/console": {
+      "status": "behavioral",
+      "evidence": "Forge server failure path and the standard validation corpus exercise console output."
+    },
+    "std/core": {
+      "status": "justified",
+      "evidence": "Core interfaces and value types are compiler contracts; Forge uses Error, Iterable, and ParseIntegerError directly."
+    },
+    "std/env": {
+      "status": "behavioral",
+      "evidence": "Forge selects its dynamic plugin and TCP port through lookup and checked u16 parsing."
+    },
+    "std/ffi": {
+      "status": "behavioral",
+      "evidence": "Forge opens the configured system library, resolves strlen, and closes the handle."
+    },
+    "std/fmt": {
+      "status": "justified",
+      "evidence": "Formatter and Display are compiler-facing contracts covered by syntax and standard-library validation."
+    },
+    "std/fs": {
+      "status": "behavioral",
+      "evidence": "Forge writes, closes, stats, and removes a filesystem artifact."
+    },
+    "std/io": {
+      "status": "justified",
+      "evidence": "IO ownership and writer APIs are covered by validation/io and runtime acceptance suites."
+    },
+    "std/net": {
+      "status": "behavioral",
+      "evidence": "Forge serves TCP, resolves IPv4, binds UDP, sends metrics, and closes sockets."
+    },
+    "std/path": {
+      "status": "justified",
+      "evidence": "Path ownership helpers are covered by the filesystem and standard-library acceptance suites."
+    },
+    "std/process": {
+      "status": "behavioral",
+      "evidence": "Forge records process identity and spawns/waits for /usr/bin/true."
+    },
+    "std/string": {
+      "status": "behavioral",
+      "evidence": "Forge server command dispatch uses owned string operations; Redis protocol validation covers UTF-8 and parsing."
+    },
+    "std/sync": {
+      "status": "behavioral",
+      "evidence": "Forge executes atomics, mutex guards, channels, and task coordination."
+    },
+    "std/testing": {
+      "status": "justified",
+      "evidence": "Test assertion exports are consumed by the TypeNative test runner corpus."
+    },
+    "std/thread": {
+      "status": "behavioral",
+      "evidence": "Forge observes thread identity and yields during worker-process orchestration."
+    },
+    "std/time": {
+      "status": "behavioral",
+      "evidence": "Instant and Duration are exercised by the runtime/time validation suites."
+    }
+  }
+}

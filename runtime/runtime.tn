@@ -99,6 +99,10 @@ function sizeOfIntrinsic<T>(): usize {
 function storeRawIntrinsic<T>(pointer: * mut T, value: T): bool {
   return false;
 }
+@Intrinsic("platform_sockaddr_family")
+function platformSockAddrFamily(): u16 {
+  return 0u16;
+}
 @Intrinsic("call_raw")
 function callRaw(callback: * mut u8, first: * mut u8, second: * mut u8): bool {
   return false;
@@ -2327,7 +2331,7 @@ function socketAddress(host: * const u8, port: u16, address: * mut SockAddrIn): 
       return - 22i32;
     }
     let value: SockAddrIn = {
-      family: 2u16, port: htons(port), address: 0u32, padding0: 0u64
+      family: platformSockAddrFamily(), port: htons(port), address: 0u32, padding0: 0u64
     };
     if (!isNullIntrinsic<u8>(host) && strlen(host) !== 0usize) {
       if (inet_pton(2i32, host,( & mut value.address)as * mut u8) !== 1i32) {
