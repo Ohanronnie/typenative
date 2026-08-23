@@ -1,42 +1,91 @@
+import { nullPointer } from "std/alloc";
 import { Drop } from "std/core";
+import { c_size, c_ssize } from "std/ffi";
+
 declare extern "C" {
   function tn_file_open(path: * const u8, flags: i32, mode: i32): i32;
   function tn_file_open_create(path: * const u8, flags: i32, mode: i32): i32;
-  function tn_file_read(handle: i32, bytes: * mut u8, length: usize): isize;
-  function tn_file_write(handle: i32, bytes: * const u8, length: usize): isize;
-  function tn_file_read_exact(handle: i32, bytes: * mut u8, length: usize): isize;
-  function tn_file_write_all(handle: i32, bytes: * const u8, length: usize): isize;
+  function tn_file_read(handle: i32, bytes: * mut u8, length: c_size): c_ssize;
+  function tn_file_write(handle: i32, bytes: * const u8, length: c_size): c_ssize;
+  function tn_file_read_exact(handle: i32, bytes: * mut u8, length: c_size): c_ssize;
+  function tn_file_write_all(handle: i32, bytes: * const u8, length: c_size): c_ssize;
   function tn_file_close(handle: i32): i32;
   function tn_file_exists(path: * const u8): i32;
   function tn_file_remove(path: * const u8): i32;
-  function tn_file_stat(path: * const u8, size: * mut usize, modified: * mut i64, mode: * mut u32): i32;
+  function tn_file_stat(path: * const u8, size: * mut c_size, modified: * mut i64, mode: * mut u32): i32;
   function tn_dir_open(path: * const u8): * mut u8;
-  function tn_dir_next(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32;
+  function tn_dir_next(handle: * mut u8, name: * mut u8, capacity: c_size, kind: * mut u32): i32;
   function tn_dir_close(handle: * mut u8): i32;
 }
 export struct Path {
-  public text: & static str;
+  private text: & static str;
+  public asStr(): & static str {
+    return this.text;
+  }
 }
 @Drop export struct File {
-  public handle: i32;
-  public closed: bool;
-  mut drop(): void {
+  private handle: i32;
+  private closed: bool;
+  public isOpen(): bool {
+    return !this.closed && this.handle >= 0i32;
+  }
+  public mut close(): void {
     if (!this.closed) {
       unsafe {
         tn_file_close(this.handle);
       }
+      this.closed = true;
     }
+  }
+  public readRaw(bytes: * mut u8, length: usize): isize {
+    unsafe {
+      return tn_file_read(this.handle, bytes, length);
+    }
+  }
+  public writeRaw(bytes: * const u8, length: usize): isize {
+    unsafe {
+      return tn_file_write(this.handle, bytes, length);
+    }
+  }
+  public readExactRaw(bytes: * mut u8, length: usize): isize {
+    unsafe {
+      return tn_file_read_exact(this.handle, bytes, length);
+    }
+  }
+  public writeAllRaw(bytes: * const u8, length: usize): isize {
+    unsafe {
+      return tn_file_write_all(this.handle, bytes, length);
+    }
+  }
+  mut drop(): void {
+    this.close();
   }
 }
 @Drop export struct Directory {
-  public handle: * mut u8;
-  public closed: bool;
-  mut drop(): void {
-    if (!this.closed) {
-      unsafe {
-        tn_dir_close(this.handle);
-      }
+  private handle: * mut u8;
+  private closed: bool;
+  public isOpen(): bool {
+    unsafe {
+      return !this.closed && this.handle !== nullPointer<u8>();
     }
+  }
+  public next(name: * mut u8, capacity: usize, kind: * mut u32): i32 {
+    unsafe {
+      return tn_dir_next(this.handle, name, capacity, kind);
+    }
+  }
+  public mut close(): i32 {
+    if (this.closed) {
+      return 0i32;
+    }
+    unsafe {
+      const status = tn_dir_close(this.handle);
+      this.closed = true;
+      return status;
+    }
+  }
+  mut drop(): void {
+    this.close();
   }
 }
 export struct FileError {
@@ -47,7 +96,7 @@ function fileError(code: i32): FileError {
     code: code
   };
 }
-export function openRead(path: & str): File {
+function openRead(path: & str): File {
   unsafe {
     const handle = tn_file_open(path as * const u8, 0i32, 0i32);
     return {
@@ -55,7 +104,7 @@ export function openRead(path: & str): File {
     };
   }
 }
-export function openWrite(path: & str): File {
+function openWrite(path: & str): File {
   unsafe {
     const handle = tn_file_open_create(path as * const u8, 577i32, 420i32);
     return {
@@ -65,35 +114,26 @@ export function openWrite(path: & str): File {
 }
 export function openReadChecked(path: & static str): File throws FileError {
   const file = openRead(path);
-  if (file.handle<0i32) {
+  if (!file.isOpen()) {
     throw fileError( - 1i32);
   }
   return file;
 }
 export function openWriteChecked(path: & static str): File throws FileError {
   const file = openWrite(path);
-  if (file.handle<0i32) {
+  if (!file.isOpen()) {
     throw fileError( - 1i32);
   }
   return file;
 }
 export function close(file: & mut File): void {
-  if (!file.closed) {
-    unsafe {
-      tn_file_close(file.handle);
-    }
-    file.closed = true;
-  }
+  file.close();
 }
 export function read(file: & File, bytes: * mut u8, length: usize): isize {
-  unsafe {
-    return tn_file_read(file.handle, bytes, length);
-  }
+  return file.readRaw(bytes, length);
 }
 export function write(file: & File, bytes: * const u8, length: usize): isize {
-  unsafe {
-    return tn_file_write(file.handle, bytes, length);
-  }
+  return file.writeRaw(bytes, length);
 }
 export function readChecked(file: & File, bytes: * mut u8, length: usize): isize throws FileError {
   const result = read(file, bytes, length);
@@ -110,19 +150,13 @@ export function writeChecked(file: & File, bytes: * const u8, length: usize): is
   return result;
 }
 export function readExact(file: & File, bytes: * mut u8, length: usize): void throws FileError {
-  let status: isize = 0isize;
-  unsafe {
-    status = tn_file_read_exact(file.handle, bytes, length);
-  }
+  const status = file.readExactRaw(bytes, length);
   if (status !== 0isize) {
     throw fileError( - 1i32);
   }
 }
 export function writeAll(file: & File, bytes: * const u8, length: usize): void throws FileError {
-  let status: isize = 0isize;
-  unsafe {
-    status = tn_file_write_all(file.handle, bytes, length);
-  }
+  const status = file.writeAllRaw(bytes, length);
   if (status !== 0isize) {
     throw fileError( - 1i32);
   }
@@ -170,25 +204,23 @@ export function metadata(path: & str): FileMetadata throws FileError {
     size: size, kind: classifyMode(mode), modifiedNanoseconds: modified,
   };
 }
-export function openDirectory(path: & static str): Directory {
+function openDirectory(path: & str): Directory {
   unsafe {
     return {
       handle: tn_dir_open(path as * const u8), closed: false
     };
   }
 }
-export function nextDirectory(directory: & Directory, name: * mut u8, capacity: usize, kind: * mut u32,): i32 {
-  unsafe {
-    return tn_dir_next(directory.handle, name, capacity, kind);
+export function openDirectoryChecked(path: & str): Directory throws FileError {
+  const directory = openDirectory(path);
+  if (!directory.isOpen()) {
+    throw fileError( - 1i32);
   }
+  return directory;
+}
+export function nextDirectory(directory: & Directory, name: * mut u8, capacity: usize, kind: * mut u32,): i32 {
+  return directory.next(name, capacity, kind);
 }
 export function closeDirectory(directory: & mut Directory): i32 {
-  if (directory.closed) {
-    return 0i32;
-  }
-  unsafe {
-    const status = tn_dir_close(directory.handle);
-    directory.closed = true;
-    return status;
-  }
+  return directory.close();
 }

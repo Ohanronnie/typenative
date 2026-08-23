@@ -1,5 +1,15 @@
 import { Bytes } from "std/bytes";
 struct Failure {
+  public code: i32;
+}
+function failure(): Failure {
+  return {
+    code: 17i32,
+  };
+}
+@Export("syncFail")
+function syncFail(): i32 throws Failure {
+  throw failure();
 }
 @Drop
 @Export class Holder {
@@ -7,5 +17,7 @@ struct Failure {
   }
   public echo(value: Bytes): Bytes throws Failure {
     return value;
+  }
+  mut drop(): void {
   }
 }

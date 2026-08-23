@@ -1,0 +1,26 @@
+import { BytesMut, SliceError } from "std/bytes";
+function main(): i32 {
+  let bytes = new BytesMut({
+    capacity: 4usize,
+  });
+  bytes.push(97u8);
+  bytes.push(98u8);
+  bytes.push(99u8);
+  try {
+    const valid = try bytes.slice(1usize, 3usize);
+    if (valid[0usize] !== 98u8 || valid[1usize] !== 99u8) {
+      return 1i32;
+    }
+  } catch (error: SliceError) {
+    return 1i32;
+  }
+  try {
+    const invalid = try bytes.slice(1usize, 4usize);
+    return 3i32;
+  } catch (error: SliceError) {
+    if (error.start !== 1usize || error.end !== 4usize || error.length !== 3usize) {
+      return 2i32;
+    }
+    return 42i32;
+  }
+}

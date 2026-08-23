@@ -1,8 +1,10 @@
 //! LLVM 22 adapter. LLVM types do not cross this crate boundary.
 
 use inkwell::AddressSpace;
-use inkwell::IntPredicate;
+use inkwell::AtomicOrdering;
+use inkwell::AtomicRMWBinOp;
 use inkwell::OptimizationLevel;
+use inkwell::attributes::AttributeLoc;
 use inkwell::basic_block::BasicBlock as LlvmBlock;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
@@ -21,8 +23,9 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType as LlvmFunctionType, StructType,
 };
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
+use inkwell::{FloatPredicate, IntPredicate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -34,11 +37,20 @@ use tn_mir::{
 };
 
 pub const REQUIRED_LLVM_VERSION: (u32, u32, u32) = (22, 1, 8);
+const STRING_HEADER_MAGIC: u64 = 6_076_299_263_593_804_116;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodegenProfile {
     Debug,
     Optimized,
+}
+
+/// Compiler-owned instrumentation requested for a native product.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Sanitizer {
+    Address,
+    Undefined,
+    Thread,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,13 +64,17 @@ pub enum Emission {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Layouts {
     pub globals: BTreeMap<DeclarationId, GlobalLayout>,
+    pub aliases: BTreeMap<DeclarationId, Type>,
     pub nominals: BTreeMap<DeclarationId, NominalLayout>,
     pub witnesses: BTreeMap<(DeclarationId, DeclarationId), Vec<VtableEntry>>,
     pub interfaces: BTreeMap<DeclarationId, u32>,
+    pub interface_names: BTreeMap<DeclarationId, String>,
     pub externs: BTreeMap<Callable, ExternLayout>,
     pub exports: BTreeMap<Callable, String>,
+    pub export_instances: BTreeMap<Instance, String>,
     pub drops: BTreeMap<DeclarationId, Callable>,
     pub copies: BTreeSet<DeclarationId>,
+    pub inlines: BTreeSet<Callable>,
     pub async_functions: BTreeMap<Callable, FunctionType>,
     pub abi_wrappers: BTreeMap<Callable, AbiWrapperKind>,
 }
@@ -206,6 +222,7 @@ pub fn compile_program_to_llvm_ir(
         layouts,
         target_triple,
         profile,
+        &[],
     )?;
     Ok(generator.module.print_to_string().to_string())
 }
@@ -267,6 +284,35 @@ pub fn emit_program_to_file(
     emission: Emission,
     path: &Path,
 ) -> Result<(), CodegenError> {
+    emit_program_to_file_with_sanitizers(
+        module_name,
+        units,
+        layouts,
+        target_triple,
+        profile,
+        emission,
+        &[],
+        path,
+    )
+}
+
+/// Emits reachable MIR with compiler-owned sanitizer instrumentation.
+///
+/// Address and thread instrumentation is inserted by the LLVM pass pipeline. Undefined behavior
+/// checks are emitted during lowering at every guarded operation because LLVM 22 has no general
+/// UBSan module pass. The resulting product still requires the matching sanitizer runtime at link
+/// time, which the active driver supplies for executable and library products.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_program_to_file_with_sanitizers(
+    module_name: &str,
+    units: &[MonomorphizedBody],
+    layouts: &Layouts,
+    target_triple: &str,
+    profile: CodegenProfile,
+    emission: Emission,
+    sanitizers: &[Sanitizer],
+    path: &Path,
+) -> Result<(), CodegenError> {
     let context = Context::create();
     let (generator, machine) = generate(
         &context,
@@ -275,6 +321,7 @@ pub fn emit_program_to_file(
         layouts,
         target_triple,
         profile,
+        sanitizers,
     )?;
     match emission {
         Emission::LlvmIr => generator
@@ -305,6 +352,88 @@ pub fn emit_program_to_file(
     }
 }
 
+/// Emits the Node-API bridge plan as a verified LLVM object.
+///
+/// The bridge is emitted in a separate module so the native `TypeNative` program and its bridge
+/// retain independent ownership of symbol declarations while sharing the final linker image.
+/// Node-API itself is intentionally represented by its stable C ABI, using opaque pointers; no
+/// Node headers or generated C source participate in this path.
+///
+/// # Errors
+///
+/// Returns an error when the LLVM version, target machine, bridge lowering, verification,
+/// optimization, or object emission fails.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_node_bridge_to_file(
+    plan: &tn_node_api::BridgePlan,
+    layouts: &Layouts,
+    target_triple: &str,
+    profile: CodegenProfile,
+    path: &Path,
+) -> Result<(), CodegenError> {
+    emit_node_bridge_to_file_with_sanitizers(
+        "typenative.node.bridge",
+        plan,
+        layouts,
+        target_triple,
+        profile,
+        &[],
+        path,
+    )
+}
+
+/// Emits a Node-API bridge with the same compiler-owned sanitizer instrumentation as the program
+/// module.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_node_bridge_to_file_with_sanitizers(
+    module_name: &str,
+    plan: &tn_node_api::BridgePlan,
+    layouts: &Layouts,
+    target_triple: &str,
+    profile: CodegenProfile,
+    sanitizers: &[Sanitizer],
+    path: &Path,
+) -> Result<(), CodegenError> {
+    verify_llvm_version()?;
+    let sanitizer_set = sanitizer_set(sanitizers)?;
+    Target::initialize_all(&InitializationConfig::default());
+    let context = Context::create();
+    let module = context.create_module("typenative.node.bridge");
+    let triple = TargetTriple::create(target_triple);
+    let machine = target_machine(&triple, profile)?;
+    module.set_triple(&triple);
+    let target_data = machine.get_target_data();
+    module.set_data_layout(&target_data.get_data_layout());
+    let bridge = NodeBridgeGenerator::new(
+        &context,
+        module,
+        target_data,
+        layouts.clone(),
+        module_name,
+        target_triple,
+        profile,
+        &sanitizer_set,
+    );
+    bridge.emit(plan)?;
+    bridge.generator.debug_info.finalize();
+    bridge
+        .generator
+        .module
+        .verify()
+        .map_err(|error| CodegenError::Verification(error.to_string()))?;
+    run_backend_pipeline(&bridge.generator.module, &machine, profile, &sanitizer_set)?;
+    if let Some(path) = std::env::var_os("TN_NODE_BRIDGE_IR") {
+        bridge
+            .generator
+            .module
+            .print_to_file(Path::new(&path))
+            .map_err(|error| CodegenError::Output(error.to_string()))?;
+    }
+    machine
+        .write_to_file(&bridge.generator.module, FileType::Object, path)
+        .map_err(|error| CodegenError::Output(error.to_string()))
+}
+
 fn generate<'ctx>(
     context: &'ctx Context,
     module_name: &str,
@@ -312,8 +441,10 @@ fn generate<'ctx>(
     layouts: &Layouts,
     target_triple: &str,
     profile: CodegenProfile,
+    sanitizers: &[Sanitizer],
 ) -> Result<(Generator<'ctx>, TargetMachine), CodegenError> {
     verify_llvm_version()?;
+    let sanitizer_set = sanitizer_set(sanitizers)?;
     Target::initialize_all(&InitializationConfig::default());
     let module = context.create_module(module_name);
     let triple = TargetTriple::create(target_triple);
@@ -329,6 +460,7 @@ fn generate<'ctx>(
         module_name,
         target_triple,
         profile,
+        &sanitizer_set,
     );
     generator.declare_externs()?;
     generator.declare_globals()?;
@@ -344,17 +476,50 @@ fn generate<'ctx>(
         .module
         .verify()
         .map_err(|error| CodegenError::Verification(error.to_string()))?;
-    if profile == CodegenProfile::Optimized {
-        generator
-            .module
-            .run_passes("default<O2>", &machine, PassBuilderOptions::create())
-            .map_err(|error| CodegenError::Optimization(error.to_string()))?;
-        generator
-            .module
-            .verify()
-            .map_err(|error| CodegenError::Verification(error.to_string()))?;
-    }
+    run_backend_pipeline(&generator.module, &machine, profile, &sanitizer_set)?;
     Ok((generator, machine))
+}
+
+fn sanitizer_set(sanitizers: &[Sanitizer]) -> Result<BTreeSet<Sanitizer>, CodegenError> {
+    let set = sanitizers.iter().copied().collect::<BTreeSet<_>>();
+    if set.contains(&Sanitizer::Address) && set.contains(&Sanitizer::Thread) {
+        return Err(CodegenError::Unsupported(
+            "AddressSanitizer and ThreadSanitizer cannot be enabled together".into(),
+        ));
+    }
+    Ok(set)
+}
+
+fn run_backend_pipeline(
+    module: &Module<'_>,
+    machine: &TargetMachine,
+    profile: CodegenProfile,
+    sanitizers: &BTreeSet<Sanitizer>,
+) -> Result<(), CodegenError> {
+    if profile == CodegenProfile::Optimized {
+        let options = PassBuilderOptions::create();
+        options.set_verify_each(true);
+        module
+            .run_passes("default<O2>", machine, options)
+            .map_err(|error| CodegenError::Optimization(error.to_string()))?;
+    }
+    let mut instrumentation = Vec::new();
+    if sanitizers.contains(&Sanitizer::Address) {
+        instrumentation.push("asan");
+    }
+    if sanitizers.contains(&Sanitizer::Thread) {
+        instrumentation.push("tsan");
+    }
+    if !instrumentation.is_empty() {
+        let options = PassBuilderOptions::create();
+        options.set_verify_each(true);
+        module
+            .run_passes(&instrumentation.join(","), machine, options)
+            .map_err(|error| CodegenError::Optimization(error.to_string()))?;
+    }
+    module
+        .verify()
+        .map_err(|error| CodegenError::Verification(error.to_string()))
 }
 
 fn verify_llvm_version() -> Result<(), CodegenError> {
@@ -403,10 +568,4903 @@ struct Generator<'ctx> {
     constructors: Vec<ConstructorTarget<'ctx>>,
     descriptors: BTreeMap<(DeclarationId, Vec<Type>), PointerValue<'ctx>>,
     witnesses: BTreeMap<(DeclarationId, DeclarationId), PointerValue<'ctx>>,
+    builtin_witnesses: BTreeMap<(DeclarationId, Type), PointerValue<'ctx>>,
     debug_info: DebugInfoState<'ctx>,
     async_wrappers: Vec<AsyncWrapper<'ctx>>,
     abi_wrappers: Vec<AbiWrapper<'ctx>>,
     is_macos: bool,
+    sanitizers: BTreeSet<Sanitizer>,
+}
+
+struct NodeBridgeGenerator<'ctx> {
+    generator: Generator<'ctx>,
+    _profile: CodegenProfile,
+}
+
+struct NodeClassCallbacks<'ctx> {
+    constructor: FunctionValue<'ctx>,
+    methods: Vec<(String, FunctionValue<'ctx>, tn_hir::ReceiverMode)>,
+}
+
+impl<'ctx> NodeBridgeGenerator<'ctx> {
+    fn new(
+        context: &'ctx Context,
+        module: Module<'ctx>,
+        target_data: TargetData,
+        layouts: Layouts,
+        module_name: &str,
+        target_triple: &str,
+        profile: CodegenProfile,
+        sanitizers: &BTreeSet<Sanitizer>,
+    ) -> Self {
+        Self {
+            generator: Generator::new(
+                context,
+                module,
+                target_data,
+                layouts,
+                module_name,
+                target_triple,
+                profile,
+                sanitizers,
+            ),
+            _profile: profile,
+        }
+    }
+
+    fn attach_debug(&self, function: FunctionValue<'ctx>, name: &str) {
+        self.generator.debug_info.attach_function(function, name);
+    }
+
+    fn set_debug_location(&self, builder: &Builder<'ctx>, function: FunctionValue<'ctx>) {
+        if let Some(subprogram) = function.get_subprogram() {
+            let location = self.generator.debug_info.builder.create_debug_location(
+                self.generator.context,
+                1,
+                1,
+                subprogram.as_debug_info_scope(),
+                None,
+            );
+            builder.set_current_debug_location(location);
+        }
+    }
+
+    fn emit(&self, plan: &tn_node_api::BridgePlan) -> Result<(), CodegenError> {
+        if plan.functions.is_empty() && plan.classes.is_empty() {
+            return Err(CodegenError::Unsupported(
+                "Node bridge plan contains no exports".into(),
+            ));
+        }
+        let mut callbacks = Vec::with_capacity(plan.functions.len());
+        for (index, function) in plan.functions.iter().enumerate() {
+            callbacks.push(self.emit_function_callback(index, function)?);
+        }
+        let mut class_callbacks = Vec::with_capacity(plan.classes.len());
+        for (index, class) in plan.classes.iter().enumerate() {
+            class_callbacks.push(self.emit_class(index, class)?);
+        }
+        self.emit_module_initializer(plan, &callbacks, &class_callbacks)?;
+        Ok(())
+    }
+
+    fn pointer_type(&self) -> inkwell::types::PointerType<'ctx> {
+        self.generator.context.ptr_type(AddressSpace::default())
+    }
+
+    fn size_type(&self) -> inkwell::types::IntType<'ctx> {
+        self.generator.pointer_int_type()
+    }
+
+    fn status_type(&self) -> inkwell::types::IntType<'ctx> {
+        self.generator.context.i32_type()
+    }
+
+    fn napi_function(
+        &self,
+        name: &str,
+        result: inkwell::types::BasicTypeEnum<'ctx>,
+        parameters: &[inkwell::types::BasicMetadataTypeEnum<'ctx>],
+    ) -> FunctionValue<'ctx> {
+        self.generator.module.get_function(name).unwrap_or_else(|| {
+            self.generator
+                .module
+                .add_function(name, result.fn_type(parameters, false), None)
+        })
+    }
+
+    fn napi_status_function(
+        &self,
+        name: &str,
+        parameters: &[inkwell::types::BasicMetadataTypeEnum<'ctx>],
+    ) -> FunctionValue<'ctx> {
+        self.napi_function(name, self.status_type().into(), parameters)
+    }
+
+    fn callback_type(&self) -> LlvmFunctionType<'ctx> {
+        self.pointer_type().fn_type(
+            &[self.pointer_type().into(), self.pointer_type().into()],
+            false,
+        )
+    }
+
+    fn finalize_type(&self) -> LlvmFunctionType<'ctx> {
+        self.generator.context.void_type().fn_type(
+            &[
+                self.pointer_type().into(),
+                self.pointer_type().into(),
+                self.pointer_type().into(),
+            ],
+            false,
+        )
+    }
+
+    fn c_string(
+        &self,
+        builder: &Builder<'ctx>,
+        value: &str,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        builder
+            .build_global_string_ptr(value, name)
+            .map(|global| global.as_pointer_value())
+            .map_err(CodegenError::from)
+    }
+
+    fn call_value(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        arguments: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        builder
+            .build_call(function, arguments, name)?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder(format!("{name} returned void")))
+    }
+
+    fn call_status(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        arguments: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        Ok(self
+            .call_value(builder, function, arguments, name)?
+            .into_int_value())
+    }
+
+    fn append_error_block(
+        &self,
+        function: FunctionValue<'ctx>,
+        message: &str,
+    ) -> Result<LlvmBlock<'ctx>, CodegenError> {
+        let block = self
+            .generator
+            .context
+            .append_basic_block(function, "node.error");
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, function);
+        builder.position_at_end(block);
+        let env = function
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::Builder("Node callback environment is missing".into()))?;
+        let message = self.c_string(&builder, message, "node.error.message")?;
+        let null = self.pointer_type().const_null();
+        builder.build_call(
+            self.napi_status_function(
+                "napi_throw_type_error",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[env.into(), null.into(), message.into()],
+            "node.throw",
+        )?;
+        builder.build_return(Some(&null))?;
+        Ok(block)
+    }
+
+    fn continue_if_status_ok(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        status: IntValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let ok = builder.build_int_compare(
+            IntPredicate::EQ,
+            status,
+            self.status_type().const_zero(),
+            &format!("{name}.ok"),
+        )?;
+        let next = self.generator.context.append_basic_block(function, name);
+        builder.build_conditional_branch(ok, next, error)?;
+        builder.position_at_end(next);
+        Ok(())
+    }
+
+    fn continue_if(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        condition: IntValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let next = self.generator.context.append_basic_block(function, name);
+        builder.build_conditional_branch(condition, next, error)?;
+        builder.position_at_end(next);
+        Ok(())
+    }
+
+    fn native_signature(
+        &self,
+        signature: &FunctionType,
+        receiver: Option<&Type>,
+        result: &Type,
+        async_function: bool,
+    ) -> Result<LlvmFunctionType<'ctx>, CodegenError> {
+        let mut parameters = receiver
+            .map(|receiver| {
+                self.generator
+                    .basic_type(receiver)
+                    .map(BasicMetadataTypeEnum::from)
+            })
+            .transpose()?
+            .into_iter()
+            .collect::<Vec<_>>();
+        parameters.extend(
+            signature
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    if !async_function && self.node_requires_indirect(parameter) {
+                        Ok(self.pointer_type().into())
+                    } else {
+                        self.generator
+                            .basic_type(parameter)
+                            .map(BasicMetadataTypeEnum::from)
+                    }
+                })
+                .collect::<Result<Vec<_>, CodegenError>>()?,
+        );
+        if async_function {
+            return Ok(self
+                .generator
+                .basic_type(result)?
+                .fn_type(&parameters, false));
+        }
+        if !signature.effects.is_empty() {
+            return Ok(self
+                .generator
+                .context
+                .i64_type()
+                .array_type(2)
+                .fn_type(&parameters, false));
+        }
+        if *result == Type::Primitive(PrimitiveType::Void) {
+            Ok(self
+                .generator
+                .context
+                .void_type()
+                .fn_type(&parameters, false))
+        } else if self.generator.is_indirect_abi_type(result) {
+            Ok(self.pointer_type().fn_type(&parameters, false))
+        } else {
+            Ok(self
+                .generator
+                .basic_type(result)?
+                .fn_type(&parameters, false))
+        }
+    }
+
+    fn node_requires_indirect(&self, ty: &Type) -> bool {
+        if self.generator.is_indirect_abi_type(ty) {
+            return true;
+        }
+        matches!(
+            ty,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::Nominal(_, _))
+        )
+    }
+
+    fn convert_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match &ty.kind {
+            tn_node_api::NodeTypeKind::Void => Err(CodegenError::Unsupported(
+                "Node arguments cannot have void type".into(),
+            )),
+            tn_node_api::NodeTypeKind::Promise { .. } => Err(CodegenError::Unsupported(
+                "Node Promise values are produced asynchronously".into(),
+            )),
+            tn_node_api::NodeTypeKind::Scalar(primitive) => {
+                self.convert_scalar_argument(builder, function, env, value, primitive, error, index)
+            }
+            tn_node_api::NodeTypeKind::String => {
+                self.convert_string_argument(builder, function, env, value, error, index)
+            }
+            tn_node_api::NodeTypeKind::Bytes => {
+                self.convert_bytes_argument(builder, function, env, value, ty, error, index)
+            }
+            tn_node_api::NodeTypeKind::Optional(inner) => self
+                .convert_optional_argument(builder, function, env, value, ty, inner, error, index),
+            tn_node_api::NodeTypeKind::Array {
+                fixed_length: Some(length),
+                element,
+                ..
+            } => self.convert_fixed_array_argument(
+                builder, function, env, value, ty, element, *length, error, index,
+            ),
+            tn_node_api::NodeTypeKind::Array { element, .. } => self
+                .convert_array_argument(builder, function, env, value, ty, element, error, index),
+            tn_node_api::NodeTypeKind::Class(_) => Err(CodegenError::Unsupported(
+                "Node class handles are not accepted as arguments".into(),
+            )),
+        }
+    }
+
+    fn convert_scalar_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        primitive: &PrimitiveType,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let name = format!("node.scalar.{index}");
+        let pointer = self.pointer_type();
+        let status_args = &[pointer.into(), pointer.into(), pointer.into()];
+        match primitive {
+            PrimitiveType::Bool => {
+                let slot = builder.build_alloca(self.generator.context.i8_type(), &name)?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function("napi_get_value_bool", status_args),
+                    &[env.into(), value.into(), slot.into()],
+                    &format!("{name}.get"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                let loaded = builder
+                    .build_load(
+                        self.generator.context.i8_type(),
+                        slot,
+                        &format!("{name}.value"),
+                    )?
+                    .into_int_value();
+                Ok(builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        loaded,
+                        self.generator.context.i8_type().const_zero(),
+                        &format!("{name}.bool"),
+                    )?
+                    .into())
+            }
+            PrimitiveType::I64 | PrimitiveType::Isize => {
+                let slot = builder.build_alloca(self.generator.context.i64_type(), &name)?;
+                let lossless = builder.build_alloca(
+                    self.generator.context.i8_type(),
+                    &format!("{name}.lossless"),
+                )?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_get_value_bigint_int64",
+                        &[
+                            pointer.into(),
+                            pointer.into(),
+                            pointer.into(),
+                            pointer.into(),
+                        ],
+                    ),
+                    &[env.into(), value.into(), slot.into(), lossless.into()],
+                    &format!("{name}.get"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                let lossless_value = builder
+                    .build_load(
+                        self.generator.context.i8_type(),
+                        lossless,
+                        &format!("{name}.lossless.value"),
+                    )?
+                    .into_int_value();
+                self.continue_if(
+                    builder,
+                    function,
+                    builder.build_int_compare(
+                        IntPredicate::NE,
+                        lossless_value,
+                        self.generator.context.i8_type().const_zero(),
+                        &format!("{name}.lossless.ok"),
+                    )?,
+                    error,
+                    &format!("{name}.lossless.status"),
+                )?;
+                let loaded = builder
+                    .build_load(
+                        self.generator.context.i64_type(),
+                        slot,
+                        &format!("{name}.value"),
+                    )?
+                    .into_int_value();
+                Ok(loaded.into())
+            }
+            PrimitiveType::U64 | PrimitiveType::Usize => {
+                let slot = builder.build_alloca(self.generator.context.i64_type(), &name)?;
+                let lossless = builder.build_alloca(
+                    self.generator.context.i8_type(),
+                    &format!("{name}.lossless"),
+                )?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_get_value_bigint_uint64",
+                        &[
+                            pointer.into(),
+                            pointer.into(),
+                            pointer.into(),
+                            pointer.into(),
+                        ],
+                    ),
+                    &[env.into(), value.into(), slot.into(), lossless.into()],
+                    &format!("{name}.get"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                let lossless_value = builder
+                    .build_load(
+                        self.generator.context.i8_type(),
+                        lossless,
+                        &format!("{name}.lossless.value"),
+                    )?
+                    .into_int_value();
+                self.continue_if(
+                    builder,
+                    function,
+                    builder.build_int_compare(
+                        IntPredicate::NE,
+                        lossless_value,
+                        self.generator.context.i8_type().const_zero(),
+                        &format!("{name}.lossless.ok"),
+                    )?,
+                    error,
+                    &format!("{name}.lossless.status"),
+                )?;
+                Ok(builder.build_load(
+                    self.generator.context.i64_type(),
+                    slot,
+                    &format!("{name}.value"),
+                )?)
+            }
+            PrimitiveType::I128 | PrimitiveType::U128 => {
+                self.convert_i128_argument(builder, function, env, value, primitive, error, index)
+            }
+            PrimitiveType::F32 | PrimitiveType::F64 => {
+                let slot = builder.build_alloca(self.generator.context.f64_type(), &name)?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function("napi_get_value_double", status_args),
+                    &[env.into(), value.into(), slot.into()],
+                    &format!("{name}.get"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                let loaded = builder
+                    .build_load(
+                        self.generator.context.f64_type(),
+                        slot,
+                        &format!("{name}.value"),
+                    )?
+                    .into_float_value();
+                if matches!(primitive, PrimitiveType::F32) {
+                    Ok(builder
+                        .build_float_trunc(
+                            loaded,
+                            self.generator.context.f32_type(),
+                            &format!("{name}.f32"),
+                        )?
+                        .into())
+                } else {
+                    Ok(loaded.into())
+                }
+            }
+            PrimitiveType::Char => {
+                let slot = builder.build_alloca(self.generator.context.i32_type(), &name)?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function("napi_get_value_uint32", status_args),
+                    &[env.into(), value.into(), slot.into()],
+                    &format!("{name}.get"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                let loaded = builder
+                    .build_load(
+                        self.generator.context.i32_type(),
+                        slot,
+                        &format!("{name}.value"),
+                    )?
+                    .into_int_value();
+                let scalar = builder.build_int_compare(
+                    IntPredicate::ULE,
+                    loaded,
+                    self.generator
+                        .context
+                        .i32_type()
+                        .const_int(0x0010_FFFF, false),
+                    "node.char.range",
+                )?;
+                let lower = builder.build_int_compare(
+                    IntPredicate::ULT,
+                    loaded,
+                    self.generator.context.i32_type().const_int(0xD800, false),
+                    "node.char.lower",
+                )?;
+                let upper = builder.build_int_compare(
+                    IntPredicate::UGE,
+                    loaded,
+                    self.generator.context.i32_type().const_int(0xE000, false),
+                    "node.char.upper",
+                )?;
+                self.continue_if(
+                    builder,
+                    function,
+                    builder.build_and(
+                        scalar,
+                        builder.build_or(lower, upper, "node.char.surrogate")?,
+                        "node.char.valid",
+                    )?,
+                    error,
+                    "node.char.status",
+                )?;
+                Ok(loaded.into())
+            }
+            PrimitiveType::I8
+            | PrimitiveType::I16
+            | PrimitiveType::I32
+            | PrimitiveType::U8
+            | PrimitiveType::U16
+            | PrimitiveType::U32 => {
+                let slot = builder.build_alloca(self.generator.context.i32_type(), &name)?;
+                let getter = if matches!(primitive, PrimitiveType::U32) {
+                    "napi_get_value_uint32"
+                } else {
+                    "napi_get_value_int32"
+                };
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(getter, status_args),
+                    &[env.into(), value.into(), slot.into()],
+                    &format!("{name}.get"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                let loaded = builder
+                    .build_load(
+                        self.generator.context.i32_type(),
+                        slot,
+                        &format!("{name}.value"),
+                    )?
+                    .into_int_value();
+                let valid = match primitive {
+                    PrimitiveType::I8 | PrimitiveType::I16 => {
+                        let (minimum, maximum, label) = if matches!(primitive, PrimitiveType::I8) {
+                            (i32::from(i8::MIN), i32::from(i8::MAX), "i8")
+                        } else {
+                            (i32::from(i16::MIN), i32::from(i16::MAX), "i16")
+                        };
+                        let minimum = builder.build_int_compare(
+                            IntPredicate::SGE,
+                            loaded,
+                            self.generator
+                                .context
+                                .i32_type()
+                                .const_int(u64::from(minimum.cast_unsigned()), true),
+                            &format!("node.{label}.min"),
+                        )?;
+                        let maximum = builder.build_int_compare(
+                            IntPredicate::SLE,
+                            loaded,
+                            self.generator
+                                .context
+                                .i32_type()
+                                .const_int(u64::from(maximum.cast_unsigned()), true),
+                            &format!("node.{label}.max"),
+                        )?;
+                        builder.build_and(minimum, maximum, &format!("node.{label}.range"))?
+                    }
+                    PrimitiveType::U8 => builder.build_int_compare(
+                        IntPredicate::ULE,
+                        loaded,
+                        self.generator
+                            .context
+                            .i32_type()
+                            .const_int(u64::from(u8::MAX), false),
+                        "node.u8.max",
+                    )?,
+                    PrimitiveType::U16 => builder.build_int_compare(
+                        IntPredicate::ULE,
+                        loaded,
+                        self.generator
+                            .context
+                            .i32_type()
+                            .const_int(u64::from(u16::MAX), false),
+                        "node.u16.max",
+                    )?,
+                    _ => self.generator.context.bool_type().const_int(1, false),
+                };
+                self.continue_if(builder, function, valid, error, &format!("{name}.range"))?;
+                let native_type = self
+                    .generator
+                    .basic_type(&Type::Primitive(primitive.clone()))?;
+                Ok(match native_type {
+                    BasicTypeEnum::IntType(int_type) if int_type.get_bit_width() < 32 => builder
+                        .build_int_truncate(loaded, int_type, &format!("{name}.narrow"))?
+                        .into(),
+                    _ => loaded.into(),
+                })
+            }
+            PrimitiveType::Void | PrimitiveType::Never => Err(CodegenError::Unsupported(
+                "void/never Node scalar is invalid".into(),
+            )),
+        }
+    }
+
+    fn convert_i128_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        primitive: &PrimitiveType,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let pointer = self.pointer_type();
+        let name = format!("node.i128.{index}");
+        let sign =
+            builder.build_alloca(self.generator.context.i32_type(), &format!("{name}.sign"))?;
+        let count = builder.build_alloca(self.size_type(), &format!("{name}.count"))?;
+        let words = builder.build_alloca(
+            self.generator.context.i64_type().array_type(2),
+            &format!("{name}.words"),
+        )?;
+        builder.build_store(sign, self.generator.context.i32_type().const_zero())?;
+        builder.build_store(count, self.size_type().const_int(2, false))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_value_bigint_words",
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                ],
+            ),
+            &[
+                env.into(),
+                value.into(),
+                sign.into(),
+                count.into(),
+                words.into(),
+            ],
+            &format!("{name}.get"),
+        )?;
+        self.continue_if_status_ok(builder, function, status, error, &format!("{name}.status"))?;
+        let actual_count = builder
+            .build_load(self.size_type(), count, &format!("{name}.count.value"))?
+            .into_int_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_int_compare(
+                IntPredicate::ULE,
+                actual_count,
+                self.size_type().const_int(2, false),
+                &format!("{name}.count.ok"),
+            )?,
+            error,
+            &format!("{name}.count.status"),
+        )?;
+        if matches!(primitive, PrimitiveType::U128) {
+            let sign_value = builder
+                .build_load(
+                    self.generator.context.i32_type(),
+                    sign,
+                    &format!("{name}.sign.value"),
+                )?
+                .into_int_value();
+            self.continue_if(
+                builder,
+                function,
+                builder.build_int_compare(
+                    IntPredicate::EQ,
+                    sign_value,
+                    self.generator.context.i32_type().const_zero(),
+                    &format!("{name}.unsigned"),
+                )?,
+                error,
+                &format!("{name}.unsigned.status"),
+            )?;
+        }
+        let word_type = self.generator.context.i64_type();
+        let low = builder
+            .build_extract_value(
+                builder
+                    .build_load(
+                        word_type.array_type(2),
+                        words,
+                        &format!("{name}.words.value"),
+                    )?
+                    .into_array_value(),
+                0,
+                &format!("{name}.low"),
+            )?
+            .into_int_value();
+        let high = builder
+            .build_extract_value(
+                builder
+                    .build_load(
+                        word_type.array_type(2),
+                        words,
+                        &format!("{name}.words.high.value"),
+                    )?
+                    .into_array_value(),
+                1,
+                &format!("{name}.high"),
+            )?
+            .into_int_value();
+        let wide = self.generator.context.i128_type();
+        let low = builder.build_int_z_extend(low, wide, &format!("{name}.low.wide"))?;
+        let high = builder.build_int_z_extend(high, wide, &format!("{name}.high.wide"))?;
+        let high = builder.build_left_shift(
+            high,
+            wide.const_int(64, false),
+            &format!("{name}.high.shift"),
+        )?;
+        let magnitude = builder.build_or(low, high, &format!("{name}.magnitude"))?;
+        let result = if matches!(primitive, PrimitiveType::I128) {
+            let sign_value = builder
+                .build_load(
+                    self.generator.context.i32_type(),
+                    sign,
+                    &format!("{name}.signed"),
+                )?
+                .into_int_value();
+            let negative = builder.build_int_compare(
+                IntPredicate::NE,
+                sign_value,
+                self.generator.context.i32_type().const_zero(),
+                &format!("{name}.negative"),
+            )?;
+            let negated =
+                builder.build_int_sub(wide.const_zero(), magnitude, &format!("{name}.negated"))?;
+            let selected = builder.build_select(
+                negative,
+                negated,
+                magnitude,
+                &format!("{name}.signed.magnitude"),
+            )?;
+            selected.into_int_value()
+        } else {
+            magnitude
+        };
+        Ok(result.into())
+    }
+
+    fn convert_string_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let pointer = self.pointer_type();
+        let name = format!("node.string.{index}");
+        let length = builder.build_alloca(self.size_type(), &format!("{name}.length"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_value_string_utf8",
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    self.size_type().into(),
+                    pointer.into(),
+                ],
+            ),
+            &[
+                env.into(),
+                value.into(),
+                pointer.const_null().into(),
+                self.size_type().const_zero().into(),
+                length.into(),
+            ],
+            &format!("{name}.length.get"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.length.status"),
+        )?;
+        let length_value = builder
+            .build_load(self.size_type(), length, &format!("{name}.length.value"))?
+            .into_int_value();
+        let capacity = builder.build_int_add(
+            length_value,
+            self.size_type().const_int(1, false),
+            &format!("{name}.capacity"),
+        )?;
+        let raw = self
+            .call_value(
+                builder,
+                self.generator.runtime_alloc(),
+                &[capacity.into()],
+                &format!("{name}.alloc"),
+            )?
+            .into_pointer_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_is_not_null(raw, &format!("{name}.alloc.ok"))?,
+            error,
+            &format!("{name}.alloc.status"),
+        )?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_value_string_utf8",
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    self.size_type().into(),
+                    pointer.into(),
+                ],
+            ),
+            &[
+                env.into(),
+                value.into(),
+                raw.into(),
+                capacity.into(),
+                length.into(),
+            ],
+            &format!("{name}.get"),
+        )?;
+        self.continue_if_status_ok(builder, function, status, error, &format!("{name}.status"))?;
+        let string = self.call_value(
+            builder,
+            self.generator.runtime_string_from_bytes(),
+            &[raw.into(), length_value.into()],
+            &format!("{name}.own"),
+        )?;
+        builder.build_call(
+            self.generator.runtime_free(),
+            &[raw.into()],
+            &format!("{name}.raw.free"),
+        )?;
+        self.continue_if(
+            builder,
+            function,
+            builder.build_is_not_null(string.into_pointer_value(), &format!("{name}.own.ok"))?,
+            error,
+            &format!("{name}.own.status"),
+        )?;
+        Ok(string)
+    }
+
+    fn convert_bytes_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let pointer = self.pointer_type();
+        let name = format!("node.bytes.{index}");
+        let typed_array_type =
+            builder.build_alloca(self.generator.context.i32_type(), &format!("{name}.type"))?;
+        let length = builder.build_alloca(self.size_type(), &format!("{name}.length"))?;
+        let data = builder.build_alloca(pointer, &format!("{name}.data"))?;
+        let array_buffer = builder.build_alloca(pointer, &format!("{name}.buffer"))?;
+        let offset = builder.build_alloca(self.size_type(), &format!("{name}.offset"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_typedarray_info",
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                ],
+            ),
+            &[
+                env.into(),
+                value.into(),
+                typed_array_type.into(),
+                length.into(),
+                data.into(),
+                array_buffer.into(),
+                offset.into(),
+            ],
+            &format!("{name}.get"),
+        )?;
+        self.continue_if_status_ok(builder, function, status, error, &format!("{name}.status"))?;
+        let typed_array_value = builder
+            .build_load(
+                self.generator.context.i32_type(),
+                typed_array_type,
+                &format!("{name}.type.value"),
+            )?
+            .into_int_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                typed_array_value,
+                self.generator.context.i32_type().const_int(1, false),
+                &format!("{name}.uint8"),
+            )?,
+            error,
+            &format!("{name}.type.status"),
+        )?;
+        let length_value = builder
+            .build_load(self.size_type(), length, &format!("{name}.length.value"))?
+            .into_int_value();
+        let owned = self
+            .call_value(
+                builder,
+                self.generator.runtime_alloc(),
+                &[length_value.into()],
+                &format!("{name}.alloc"),
+            )?
+            .into_pointer_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_or(
+                builder.build_int_compare(
+                    IntPredicate::EQ,
+                    length_value,
+                    self.size_type().const_zero(),
+                    &format!("{name}.empty"),
+                )?,
+                builder.build_is_not_null(owned, &format!("{name}.alloc.ok"))?,
+                &format!("{name}.alloc.valid"),
+            )?,
+            error,
+            &format!("{name}.alloc.status"),
+        )?;
+        let copied = self
+            .call_value(
+                builder,
+                self.runtime_bytes_copy(),
+                &[
+                    builder
+                        .build_load(pointer, data, &format!("{name}.data.value"))?
+                        .into_pointer_value()
+                        .into(),
+                    length_value.into(),
+                    owned.into(),
+                ],
+                &format!("{name}.copy"),
+            )?
+            .into_int_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                copied,
+                length_value,
+                &format!("{name}.copy.ok"),
+            )?,
+            error,
+            &format!("{name}.copy.status"),
+        )?;
+        let native_type = self.generator.basic_type(&ty.native)?.into_struct_type();
+        let native = native_type.const_zero();
+        let native = builder
+            .build_insert_value(native, owned, 0, &format!("{name}.pointer"))?
+            .into_struct_value();
+        let native = builder
+            .build_insert_value(native, length_value, 1, &format!("{name}.length.field"))?
+            .into_struct_value();
+        Ok(native.into())
+    }
+
+    fn runtime_bytes_copy(&self) -> FunctionValue<'ctx> {
+        self.generator
+            .module
+            .get_function("tn_bytes_copy")
+            .unwrap_or_else(|| {
+                self.generator.module.add_function(
+                    "tn_bytes_copy",
+                    self.size_type().fn_type(
+                        &[
+                            self.pointer_type().into(),
+                            self.size_type().into(),
+                            self.pointer_type().into(),
+                        ],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn convert_optional_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        inner: &tn_node_api::NodeType,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let pointer = self.pointer_type();
+        let name = format!("node.optional.{index}");
+        let value_type =
+            builder.build_alloca(self.generator.context.i32_type(), &format!("{name}.type"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_typeof",
+                &[pointer.into(), pointer.into(), pointer.into()],
+            ),
+            &[env.into(), value.into(), value_type.into()],
+            &format!("{name}.typeof"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.typeof.status"),
+        )?;
+        let type_value = builder
+            .build_load(
+                self.generator.context.i32_type(),
+                value_type,
+                &format!("{name}.type.value"),
+            )?
+            .into_int_value();
+        let is_undefined = builder.build_int_compare(
+            IntPredicate::EQ,
+            type_value,
+            self.generator.context.i32_type().const_zero(),
+            &format!("{name}.undefined"),
+        )?;
+        let present = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.present"));
+        let absent = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.absent"));
+        let merge = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.merge"));
+        let output = builder.build_alloca(
+            self.generator.basic_type(&ty.native)?,
+            &format!("{name}.output"),
+        )?;
+        builder.build_conditional_branch(is_undefined, absent, present)?;
+        builder.position_at_end(present);
+        let payload = self.convert_argument(builder, function, env, value, inner, error, index)?;
+        let structure = self.generator.basic_type(&ty.native)?.into_struct_type();
+        let present_value = builder
+            .build_insert_value(
+                structure.const_zero(),
+                self.generator.context.bool_type().const_int(1, false),
+                0,
+                &format!("{name}.present.tag"),
+            )?
+            .into_struct_value();
+        let present_value = builder
+            .build_insert_value(present_value, payload, 1, &format!("{name}.present.value"))?
+            .into_struct_value();
+        builder.build_store(output, present_value)?;
+        builder.build_unconditional_branch(merge)?;
+        builder.position_at_end(absent);
+        builder.build_store(output, structure.const_zero())?;
+        builder.build_unconditional_branch(merge)?;
+        builder.position_at_end(merge);
+        Ok(builder
+            .build_load(structure, output, &format!("{name}.value"))?
+            .into())
+    }
+
+    fn require_js_array(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let is_array = builder.build_alloca(
+            self.generator.context.i8_type(),
+            &format!("{name}.is_array"),
+        )?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_is_array",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[env.into(), value.into(), is_array.into()],
+            &format!("{name}.is_array.get"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.is_array.status"),
+        )?;
+        let is_array = builder
+            .build_load(
+                self.generator.context.i8_type(),
+                is_array,
+                &format!("{name}.is_array.value"),
+            )?
+            .into_int_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_int_compare(
+                IntPredicate::NE,
+                is_array,
+                self.generator.context.i8_type().const_zero(),
+                &format!("{name}.is_array.ok"),
+            )?,
+            error,
+            &format!("{name}.is_array.valid"),
+        )?;
+        let length =
+            builder.build_alloca(self.generator.context.i32_type(), &format!("{name}.length"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_array_length",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[env.into(), value.into(), length.into()],
+            &format!("{name}.length.get"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.length.status"),
+        )?;
+        Ok(builder
+            .build_load(
+                self.generator.context.i32_type(),
+                length,
+                &format!("{name}.length.value"),
+            )?
+            .into_int_value())
+    }
+
+    fn convert_fixed_array_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        element: &tn_node_api::NodeType,
+        length: usize,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let name = format!("node.fixed_array.{index}");
+        let js_length = self.require_js_array(builder, function, env, value, error, &name)?;
+        self.continue_if(
+            builder,
+            function,
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                js_length,
+                self.generator
+                    .context
+                    .i32_type()
+                    .const_int(u64::try_from(length).unwrap_or(u64::MAX), false),
+                &format!("{name}.length.ok"),
+            )?,
+            error,
+            &format!("{name}.length.valid"),
+        )?;
+        let array_type = self.generator.basic_type(&ty.native)?.into_array_type();
+        let mut result = array_type.const_zero();
+        for element_index in 0..length {
+            let js_element = builder.build_alloca(
+                self.pointer_type(),
+                &format!("{name}.element.{element_index}"),
+            )?;
+            let status = self.call_status(
+                builder,
+                self.napi_status_function(
+                    "napi_get_element",
+                    &[
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                        self.size_type().into(),
+                        self.pointer_type().into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    value.into(),
+                    self.size_type()
+                        .const_int(u64::try_from(element_index).unwrap_or(u64::MAX), false)
+                        .into(),
+                    js_element.into(),
+                ],
+                &format!("{name}.element.{element_index}.get"),
+            )?;
+            self.continue_if_status_ok(
+                builder,
+                function,
+                status,
+                error,
+                &format!("{name}.element.{element_index}.status"),
+            )?;
+            let js_value = builder
+                .build_load(
+                    self.pointer_type(),
+                    js_element,
+                    &format!("{name}.element.{element_index}.value"),
+                )?
+                .into_pointer_value();
+            let native = self.convert_argument(
+                builder,
+                function,
+                env,
+                js_value,
+                element,
+                error,
+                element_index,
+            )?;
+            result = builder
+                .build_insert_value(
+                    result,
+                    native,
+                    u32::try_from(element_index).unwrap_or(u32::MAX),
+                    &format!("{name}.element.{element_index}.store"),
+                )?
+                .into_array_value();
+        }
+        Ok(result.into())
+    }
+
+    fn convert_array_argument(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        element: &tn_node_api::NodeType,
+        error: LlvmBlock<'ctx>,
+        index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let name = format!("node.array.{index}");
+        let length_i32 = self.require_js_array(builder, function, env, value, error, &name)?;
+        let length = builder.build_int_z_extend(
+            length_i32,
+            self.size_type(),
+            &format!("{name}.length.wide"),
+        )?;
+        let class_type = match &ty.native {
+            Type::Reference { referent, .. } => referent.as_ref().clone(),
+            native => native.clone(),
+        };
+        let object_type = self.generator.class_object_type(&class_type)?;
+        let object_size = object_type
+            .size_of()
+            .ok_or_else(|| CodegenError::Unsupported("Node Array object has no size".into()))?;
+        let object = self
+            .call_value(
+                builder,
+                self.generator.runtime_alloc(),
+                &[object_size.into()],
+                &format!("{name}.object.alloc"),
+            )?
+            .into_pointer_value();
+        self.continue_if(
+            builder,
+            function,
+            builder.build_is_not_null(object, &format!("{name}.object.ok"))?,
+            error,
+            &format!("{name}.object.status"),
+        )?;
+        let element_type = self.generator.basic_type(&element.native)?;
+        let element_size = element_type
+            .size_of()
+            .ok_or_else(|| CodegenError::Unsupported("Node Array element has no size".into()))?;
+        let bytes = builder.build_int_mul(length, element_size, &format!("{name}.bytes"))?;
+        let data = self
+            .call_value(
+                builder,
+                self.generator.runtime_alloc(),
+                &[bytes.into()],
+                &format!("{name}.data.alloc"),
+            )?
+            .into_pointer_value();
+        let initialized = self
+            .call_value(
+                builder,
+                self.generator.runtime_alloc(),
+                &[length.into()],
+                &format!("{name}.initialized.alloc"),
+            )?
+            .into_pointer_value();
+        let descriptor =
+            builder.build_struct_gep(object_type, object, 0, &format!("{name}.descriptor"))?;
+        builder.build_store(descriptor, self.pointer_type().const_null())?;
+        let data_field =
+            builder.build_struct_gep(object_type, object, 1, &format!("{name}.data"))?;
+        builder.build_store(data_field, data)?;
+        let initialized_field =
+            builder.build_struct_gep(object_type, object, 2, &format!("{name}.initialized"))?;
+        builder.build_store(initialized_field, initialized)?;
+        let length_field =
+            builder.build_struct_gep(object_type, object, 3, &format!("{name}.length"))?;
+        builder.build_store(length_field, length)?;
+        let capacity_field =
+            builder.build_struct_gep(object_type, object, 4, &format!("{name}.capacity"))?;
+        builder.build_store(capacity_field, length)?;
+        let element_size_field =
+            builder.build_struct_gep(object_type, object, 5, &format!("{name}.element_size"))?;
+        builder.build_store(element_size_field, element_size)?;
+
+        let loop_block = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.loop"));
+        let body_block = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.body"));
+        let done_block = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.done"));
+        let pre_loop = builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::Builder("Node Array pre-loop block is missing".into()))?;
+        builder.build_unconditional_branch(loop_block)?;
+        builder.position_at_end(loop_block);
+        let phi = builder.build_phi(self.size_type(), &format!("{name}.index"))?;
+        phi.add_incoming(&[(&self.size_type().const_zero(), pre_loop)]);
+        let current = phi.as_basic_value().into_int_value();
+        let condition = builder.build_int_compare(
+            IntPredicate::ULT,
+            current,
+            length,
+            &format!("{name}.condition"),
+        )?;
+        builder.build_conditional_branch(condition, body_block, done_block)?;
+        builder.position_at_end(body_block);
+        let js_element = builder.build_alloca(self.pointer_type(), &format!("{name}.element"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_element",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.size_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[env.into(), value.into(), current.into(), js_element.into()],
+            &format!("{name}.element.get"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.element.status"),
+        )?;
+        let js_value = builder
+            .build_load(
+                self.pointer_type(),
+                js_element,
+                &format!("{name}.element.value"),
+            )?
+            .into_pointer_value();
+        let native =
+            self.convert_argument(builder, function, env, js_value, element, error, index)?;
+        let element_address = unsafe {
+            builder.build_gep(
+                element_type,
+                data,
+                &[current],
+                &format!("{name}.element.address"),
+            )?
+        };
+        builder.build_store(element_address, native)?;
+        let initialized_address = unsafe {
+            builder.build_gep(
+                self.generator.context.i8_type(),
+                initialized,
+                &[current],
+                &format!("{name}.initialized.address"),
+            )?
+        };
+        builder.build_store(
+            initialized_address,
+            self.generator.context.i8_type().const_int(1, false),
+        )?;
+        let next = builder.build_int_add(
+            current,
+            self.size_type().const_int(1, false),
+            &format!("{name}.next"),
+        )?;
+        let body_end = builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::Builder("Node Array body block is missing".into()))?;
+        builder.build_unconditional_branch(loop_block)?;
+        phi.add_incoming(&[(&next, body_end)]);
+        builder.position_at_end(done_block);
+        Ok(object.into())
+    }
+
+    fn emit_function_callback(
+        &self,
+        index: usize,
+        function: &tn_node_api::BridgeFunction,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let callback = self.generator.module.add_function(
+            &format!("tn_node_callback_{index}"),
+            self.callback_type(),
+            None,
+        );
+        self.attach_debug(callback, &format!("tn_node_callback_{index}"));
+        let entry = self.generator.context.append_basic_block(callback, "entry");
+        let error =
+            self.append_error_block(callback, "TypeNative Node argument conversion failed")?;
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, callback);
+        builder.position_at_end(entry);
+        let env = callback
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::Builder("Node callback environment is missing".into()))?
+            .into_pointer_value();
+        let info = callback
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::Builder("Node callback info is missing".into()))?;
+        let argc = builder.build_alloca(self.size_type(), "node.argc")?;
+        builder.build_store(
+            argc,
+            self.size_type().const_int(
+                u64::try_from(function.parameters.len()).unwrap_or(u64::MAX),
+                false,
+            ),
+        )?;
+        let argv = if function.parameters.is_empty() {
+            self.pointer_type().const_null()
+        } else {
+            builder.build_array_alloca(
+                self.pointer_type(),
+                self.size_type().const_int(
+                    u64::try_from(function.parameters.len()).unwrap_or(u64::MAX),
+                    false,
+                ),
+                "node.argv",
+            )?
+        };
+        let status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_get_cb_info",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                info.into(),
+                argc.into(),
+                argv.into(),
+                self.pointer_type().const_null().into(),
+                self.pointer_type().const_null().into(),
+            ],
+            "node.get_cb_info",
+        )?;
+        self.continue_if_status_ok(&builder, callback, status, error, "node.cb_info")?;
+        let actual_argc = builder
+            .build_load(self.size_type(), argc, "node.argc.value")?
+            .into_int_value();
+        let count_ok = builder.build_int_compare(
+            IntPredicate::EQ,
+            actual_argc,
+            self.size_type().const_int(
+                u64::try_from(function.parameters.len()).unwrap_or(u64::MAX),
+                false,
+            ),
+            "node.argc.valid",
+        )?;
+        let count_next = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.argc.ok");
+        builder.build_conditional_branch(count_ok, count_next, error)?;
+        builder.position_at_end(count_next);
+
+        let mut native_arguments = Vec::with_capacity(function.parameters.len());
+        for (index, parameter) in function.parameters.iter().enumerate() {
+            let argument = unsafe {
+                builder.build_gep(
+                    self.pointer_type(),
+                    argv,
+                    &[self
+                        .size_type()
+                        .const_int(u64::try_from(index).unwrap_or(u64::MAX), false)],
+                    &format!("node.argv.{index}"),
+                )?
+            };
+            let js_value = builder
+                .build_load(self.pointer_type(), argument, &format!("node.arg.{index}"))?
+                .into_pointer_value();
+            let native =
+                self.convert_argument(&builder, callback, env, js_value, parameter, error, index)?;
+            if !function.signature.is_async && self.node_requires_indirect(&parameter.native) {
+                let pointer = builder.build_alloca(
+                    self.generator.basic_type(&parameter.native)?,
+                    &format!("node.arg.indirect.{index}"),
+                )?;
+                builder.build_store(pointer, native)?;
+                native_arguments.push(pointer.into());
+            } else {
+                native_arguments.push(native.into());
+            }
+        }
+        let native_signature = self.native_signature(
+            &function.signature,
+            None,
+            &function.result.native,
+            function.signature.is_async,
+        )?;
+        let symbol = self.emitted_symbol(function.callable, &function.signature.effects);
+        let native_function = self
+            .generator
+            .module
+            .get_function(&symbol)
+            .unwrap_or_else(|| {
+                self.generator
+                    .module
+                    .add_function(&symbol, native_signature, None)
+            });
+        if function.signature.is_async {
+            let native_result = self.call_value(
+                &builder,
+                native_function,
+                &native_arguments,
+                "node.async.native.call",
+            )?;
+            let native_promise = native_result.into_pointer_value();
+            self.continue_if(
+                &builder,
+                callback,
+                builder.build_is_not_null(native_promise, "node.async.promise.ok")?,
+                error,
+                "node.async.promise.valid",
+            )?;
+            let promise = self.emit_async_function_bridge(
+                index,
+                callback,
+                &builder,
+                env,
+                function,
+                native_promise,
+            )?;
+            builder.build_return(Some(&promise))?;
+            return Ok(callback);
+        }
+        let mut native_result_pointer = None;
+        let native_result = if function.signature.effects.is_empty()
+            && function.result.kind == tn_node_api::NodeTypeKind::Void
+        {
+            builder.build_call(native_function, &native_arguments, "node.native.call")?;
+            None
+        } else {
+            let result = self.call_value(
+                &builder,
+                native_function,
+                &native_arguments,
+                "node.native.call",
+            )?;
+            if function.signature.effects.is_empty()
+                && self.node_requires_indirect(&function.result.native)
+            {
+                let pointer = result.into_pointer_value();
+                let loaded = builder.build_load(
+                    self.generator.basic_type(&function.result.native)?,
+                    pointer,
+                    "node.native.indirect.result",
+                )?;
+                native_result_pointer = Some(pointer);
+                Some(loaded)
+            } else {
+                Some(result)
+            }
+        };
+        let result =
+            self.convert_result(&builder, callback, env, function, native_result, error)?;
+        if function.signature.effects.is_empty()
+            && let Some(native_result) = native_result
+        {
+            self.drop_node_value(
+                &builder,
+                callback,
+                &function.result,
+                native_result,
+                "node.native.result.drop",
+            )?;
+        }
+        if let Some(pointer) = native_result_pointer {
+            builder.build_call(
+                self.generator.runtime_free(),
+                &[pointer.into()],
+                "node.native.indirect.free",
+            )?;
+        }
+        builder.build_return(Some(&result))?;
+        Ok(callback)
+    }
+
+    fn async_context_type(&self) -> StructType<'ctx> {
+        self.generator.context.struct_type(
+            &[
+                self.pointer_type().into(),
+                self.pointer_type().into(),
+                self.pointer_type().into(),
+                self.pointer_type().into(),
+                self.status_type().into(),
+            ],
+            false,
+        )
+    }
+
+    fn async_execute_type(&self) -> LlvmFunctionType<'ctx> {
+        self.generator.context.void_type().fn_type(
+            &[self.pointer_type().into(), self.pointer_type().into()],
+            false,
+        )
+    }
+
+    fn async_complete_type(&self) -> LlvmFunctionType<'ctx> {
+        self.generator.context.void_type().fn_type(
+            &[
+                self.pointer_type().into(),
+                self.status_type().into(),
+                self.pointer_type().into(),
+            ],
+            false,
+        )
+    }
+
+    fn emit_async_function_bridge(
+        &self,
+        index: usize,
+        callback: FunctionValue<'ctx>,
+        builder: &Builder<'ctx>,
+        env: PointerValue<'ctx>,
+        function: &tn_node_api::BridgeFunction,
+        native_promise: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let context_type = self.async_context_type();
+        let execute = self.generator.module.add_function(
+            &format!("tn_node_async_execute_{index}"),
+            self.async_execute_type(),
+            None,
+        );
+        let complete = self.generator.module.add_function(
+            &format!("tn_node_async_complete_{index}"),
+            self.async_complete_type(),
+            None,
+        );
+        self.attach_debug(execute, &format!("tn_node_async_execute_{index}"));
+        self.attach_debug(complete, &format!("tn_node_async_complete_{index}"));
+        self.emit_async_execute(execute, context_type)?;
+
+        self.emit_async_complete(complete, context_type, function)?;
+
+        let promise_slot = builder.build_alloca(self.pointer_type(), "node.async.promise")?;
+        let deferred_slot = builder.build_alloca(self.pointer_type(), "node.async.deferred")?;
+        let create_status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_create_promise",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[env.into(), deferred_slot.into(), promise_slot.into()],
+            "node.async.promise.create",
+        )?;
+        let promise_ok = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.promise.created");
+        let promise_failure = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.promise.failure");
+        builder.build_conditional_branch(
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                create_status,
+                self.status_type().const_zero(),
+                "node.async.promise.status",
+            )?,
+            promise_ok,
+            promise_failure,
+        )?;
+        builder.position_at_end(promise_failure);
+        self.emit_async_start_failure(
+            &builder,
+            env,
+            native_promise,
+            None,
+            "TypeNative async promise creation failed",
+        )?;
+
+        builder.position_at_end(promise_ok);
+        let context_size = context_type
+            .size_of()
+            .ok_or_else(|| CodegenError::Unsupported("Node async context has no size".into()))?;
+        let context = self
+            .call_value(
+                &builder,
+                self.generator.runtime_alloc(),
+                &[context_size.into()],
+                "node.async.context.alloc",
+            )?
+            .into_pointer_value();
+        let context_ok = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.context.created");
+        let context_failure = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.context.failure");
+        builder.build_conditional_branch(
+            builder.build_is_not_null(context, "node.async.context.status")?,
+            context_ok,
+            context_failure,
+        )?;
+        builder.position_at_end(context_failure);
+        self.emit_async_start_failure(
+            &builder,
+            env,
+            native_promise,
+            None,
+            "TypeNative async context allocation failed",
+        )?;
+
+        builder.position_at_end(context_ok);
+        let env_field = builder.build_struct_gep(context_type, context, 0, "node.async.env")?;
+        builder.build_store(env_field, env)?;
+        let deferred = builder
+            .build_load(
+                self.pointer_type(),
+                deferred_slot,
+                "node.async.deferred.value",
+            )?
+            .into_pointer_value();
+        let deferred_field =
+            builder.build_struct_gep(context_type, context, 1, "node.async.deferred.field")?;
+        builder.build_store(deferred_field, deferred)?;
+        let work_field = builder.build_struct_gep(context_type, context, 2, "node.async.work")?;
+        let native_field =
+            builder.build_struct_gep(context_type, context, 3, "node.async.native")?;
+        builder.build_store(native_field, native_promise)?;
+        let status_field =
+            builder.build_struct_gep(context_type, context, 4, "node.async.wait.status")?;
+        builder.build_store(
+            status_field,
+            self.status_type().const_int((-1_i64).cast_unsigned(), true),
+        )?;
+
+        let resource_name = self.c_string(&builder, "TypeNative async", "node.async.resource")?;
+        let resource_slot =
+            builder.build_alloca(self.pointer_type(), "node.async.resource.value")?;
+        let resource_status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_create_string_utf8",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.size_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                resource_name.into(),
+                self.size_type().const_int(16, false).into(),
+                resource_slot.into(),
+            ],
+            "node.async.resource.create",
+        )?;
+        let resource_ok = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.resource.created");
+        let resource_failure = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.resource.failure");
+        builder.build_conditional_branch(
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                resource_status,
+                self.status_type().const_zero(),
+                "node.async.resource.status",
+            )?,
+            resource_ok,
+            resource_failure,
+        )?;
+        builder.position_at_end(resource_failure);
+        self.emit_async_start_failure(
+            &builder,
+            env,
+            native_promise,
+            Some(context),
+            "TypeNative async resource creation failed",
+        )?;
+
+        builder.position_at_end(resource_ok);
+        let work_slot = builder.build_alloca(self.pointer_type(), "node.async.work.slot")?;
+        let create_work_status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_create_async_work",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                self.pointer_type().const_null().into(),
+                builder
+                    .build_load(
+                        self.pointer_type(),
+                        resource_slot,
+                        "node.async.resource.value",
+                    )?
+                    .into(),
+                execute.as_global_value().as_pointer_value().into(),
+                complete.as_global_value().as_pointer_value().into(),
+                context.into(),
+                work_slot.into(),
+            ],
+            "node.async.work.create",
+        )?;
+        let work_ok = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.work.created");
+        let work_failure = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.work.failure");
+        builder.build_conditional_branch(
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                create_work_status,
+                self.status_type().const_zero(),
+                "node.async.work.status",
+            )?,
+            work_ok,
+            work_failure,
+        )?;
+        builder.position_at_end(work_failure);
+        self.emit_async_start_failure(
+            &builder,
+            env,
+            native_promise,
+            Some(context),
+            "TypeNative async work creation failed",
+        )?;
+
+        builder.position_at_end(work_ok);
+        let work = builder
+            .build_load(self.pointer_type(), work_slot, "node.async.work.value")?
+            .into_pointer_value();
+        builder.build_store(work_field, work)?;
+        let queue_status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_queue_async_work",
+                &[self.pointer_type().into(), self.pointer_type().into()],
+            ),
+            &[env.into(), work.into()],
+            "node.async.work.queue",
+        )?;
+        let queue_ok = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.work.queued");
+        let queue_failure = self
+            .generator
+            .context
+            .append_basic_block(callback, "node.async.work.queue.failure");
+        builder.build_conditional_branch(
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                queue_status,
+                self.status_type().const_zero(),
+                "node.async.work.queue.status",
+            )?,
+            queue_ok,
+            queue_failure,
+        )?;
+        builder.position_at_end(queue_failure);
+        builder.build_call(
+            self.napi_status_function(
+                "napi_delete_async_work",
+                &[self.pointer_type().into(), self.pointer_type().into()],
+            ),
+            &[env.into(), work.into()],
+            "node.async.work.delete",
+        )?;
+        self.emit_async_start_failure(
+            &builder,
+            env,
+            native_promise,
+            Some(context),
+            "TypeNative async work queue failed",
+        )?;
+
+        builder.position_at_end(queue_ok);
+        Ok(builder
+            .build_load(
+                self.pointer_type(),
+                promise_slot,
+                "node.async.promise.value",
+            )?
+            .into_pointer_value())
+    }
+
+    fn emit_async_start_failure(
+        &self,
+        builder: &Builder<'ctx>,
+        env: PointerValue<'ctx>,
+        native_promise: PointerValue<'ctx>,
+        context: Option<PointerValue<'ctx>>,
+        message: &str,
+    ) -> Result<(), CodegenError> {
+        if let Some(context) = context {
+            builder.build_call(
+                self.generator.runtime_free(),
+                &[context.into()],
+                "node.async.start.context.free",
+            )?;
+        }
+        builder.build_call(
+            self.generator.runtime_async_destroy(),
+            &[native_promise.into()],
+            "node.async.start.promise.destroy",
+        )?;
+        let message = self.c_string(builder, message, "node.async.start.error")?;
+        builder.build_call(
+            self.napi_status_function(
+                "napi_throw_error",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                self.pointer_type().const_null().into(),
+                message.into(),
+            ],
+            "node.async.start.throw",
+        )?;
+        builder.build_return(Some(&self.pointer_type().const_null()))?;
+        Ok(())
+    }
+
+    fn emit_async_execute(
+        &self,
+        function: FunctionValue<'ctx>,
+        context_type: StructType<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let entry = self.generator.context.append_basic_block(function, "entry");
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, function);
+        builder.position_at_end(entry);
+        let context = function
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::Builder("Node async context is missing".into()))?
+            .into_pointer_value();
+        let native_field = builder.build_struct_gep(context_type, context, 3, "async.native")?;
+        let native = builder
+            .build_load(self.pointer_type(), native_field, "async.native.value")?
+            .into_pointer_value();
+        let status = self.call_value(
+            &builder,
+            self.generator.runtime_async_wait(),
+            &[native.into()],
+            "async.wait",
+        )?;
+        let status = status.into_int_value();
+        let status_field = builder.build_struct_gep(context_type, context, 4, "async.status")?;
+        builder.build_store(status_field, status)?;
+        builder.build_return(None)?;
+        Ok(())
+    }
+
+    fn emit_async_complete(
+        &self,
+        function: FunctionValue<'ctx>,
+        context_type: StructType<'ctx>,
+        export: &tn_node_api::BridgeFunction,
+    ) -> Result<(), CodegenError> {
+        let entry = self.generator.context.append_basic_block(function, "entry");
+        let ready = self
+            .generator
+            .context
+            .append_basic_block(function, "node.async.ready");
+        let rejected = self
+            .generator
+            .context
+            .append_basic_block(function, "node.async.rejected");
+        let cleanup = self
+            .generator
+            .context
+            .append_basic_block(function, "node.async.cleanup");
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, function);
+        builder.position_at_end(entry);
+        let env = function
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::Builder("Node async environment is missing".into()))?
+            .into_pointer_value();
+        let napi_status = function
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::Builder("Node async completion status is missing".into()))?
+            .into_int_value();
+        let context = function
+            .get_nth_param(2)
+            .ok_or_else(|| {
+                CodegenError::Builder("Node async completion context is missing".into())
+            })?
+            .into_pointer_value();
+        let wait_status = builder
+            .build_load(
+                self.status_type(),
+                builder.build_struct_gep(context_type, context, 4, "async.status")?,
+                "async.status.value",
+            )?
+            .into_int_value();
+        let status_ok = builder.build_and(
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                napi_status,
+                self.status_type().const_zero(),
+                "async.napi.status.ok",
+            )?,
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                wait_status,
+                self.status_type().const_zero(),
+                "async.wait.status.ok",
+            )?,
+            "async.status.ok",
+        )?;
+        builder.build_conditional_branch(status_ok, ready, rejected)?;
+
+        builder.position_at_end(rejected);
+        self.emit_async_rejection(
+            &builder,
+            env,
+            context_type,
+            context,
+            "TypeNative async work failed",
+        )?;
+        builder.build_unconditional_branch(cleanup)?;
+
+        builder.position_at_end(ready);
+        let deferred = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(context_type, context, 1, "async.deferred")?,
+                "async.deferred.value",
+            )?
+            .into_pointer_value();
+        let native = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(context_type, context, 3, "async.native")?,
+                "async.native.value",
+            )?
+            .into_pointer_value();
+        let conversion_error = self
+            .generator
+            .context
+            .append_basic_block(function, "node.async.conversion.error");
+        let result = match &export.result.kind {
+            tn_node_api::NodeTypeKind::Promise { result, errors } => {
+                if errors.is_empty() {
+                    let result_pointer = self
+                        .call_value(
+                            &builder,
+                            self.generator.runtime_async_result(),
+                            &[native.into()],
+                            "async.result",
+                        )?
+                        .into_pointer_value();
+                    self.continue_if(
+                        &builder,
+                        function,
+                        builder.build_is_not_null(result_pointer, "async.result.valid")?,
+                        conversion_error,
+                        "async.result.status",
+                    )?;
+                    let value = builder.build_load(
+                        self.generator.basic_type(&result.native)?,
+                        result_pointer,
+                        "async.result.value",
+                    )?;
+                    let output = builder.build_alloca(self.pointer_type(), "async.js.result")?;
+                    self.convert_result_value(
+                        &builder,
+                        function,
+                        env,
+                        result,
+                        value,
+                        output,
+                        conversion_error,
+                        "async.result.convert",
+                    )?;
+                    Some(
+                        builder
+                            .build_load(self.pointer_type(), output, "async.js.result.value")?
+                            .into_pointer_value(),
+                    )
+                } else {
+                    let result_pointer = self
+                        .call_value(
+                            &builder,
+                            self.generator.runtime_async_raw_result(),
+                            &[native.into()],
+                            "async.raw.result",
+                        )?
+                        .into_pointer_value();
+                    self.continue_if(
+                        &builder,
+                        function,
+                        builder.build_is_not_null(result_pointer, "async.raw.result.valid")?,
+                        conversion_error,
+                        "async.raw.result.status",
+                    )?;
+                    let completion = self.generator.completion_type(&result.native)?;
+                    let completion = builder
+                        .build_load(completion, result_pointer, "async.completion")?
+                        .into_struct_value();
+                    let failed = builder
+                        .build_extract_value(completion, 0, "async.failed")?
+                        .into_int_value();
+                    let success = self
+                        .generator
+                        .context
+                        .append_basic_block(function, "async.success");
+                    let failure = self
+                        .generator
+                        .context
+                        .append_basic_block(function, "async.failure");
+                    builder.build_conditional_branch(
+                        builder.build_int_compare(
+                            IntPredicate::EQ,
+                            failed,
+                            self.generator.context.i8_type().const_zero(),
+                            "async.failed.test",
+                        )?,
+                        success,
+                        failure,
+                    )?;
+                    builder.position_at_end(failure);
+                    let error_index = if result.native == Type::Primitive(PrimitiveType::Void) {
+                        1
+                    } else {
+                        2
+                    };
+                    let error_pointer = builder
+                        .build_extract_value(completion, error_index, "async.error.pointer")?
+                        .into_pointer_value();
+                    let error_conversion_failure = self
+                        .generator
+                        .context
+                        .append_basic_block(function, "async.error.conversion.failure");
+                    let error = self.emit_node_error_object(
+                        &builder,
+                        function,
+                        env,
+                        error_pointer,
+                        errors,
+                        error_conversion_failure,
+                        "async.error",
+                    )?;
+                    self.emit_async_rejection_object(&builder, env, context_type, context, error)?;
+                    self.release_node_error(
+                        &builder,
+                        function,
+                        error_pointer,
+                        errors,
+                        "async.error.release",
+                    )?;
+                    builder.build_unconditional_branch(cleanup)?;
+
+                    builder.position_at_end(error_conversion_failure);
+                    self.emit_async_rejection(
+                        &builder,
+                        env,
+                        context_type,
+                        context,
+                        "TypeNative asynchronous error conversion failed",
+                    )?;
+                    self.release_node_error(
+                        &builder,
+                        function,
+                        error_pointer,
+                        errors,
+                        "async.error.conversion.release",
+                    )?;
+                    builder.build_unconditional_branch(cleanup)?;
+
+                    builder.position_at_end(success);
+                    let output = builder.build_alloca(self.pointer_type(), "async.js.result")?;
+                    if result.native == Type::Primitive(PrimitiveType::Void) {
+                        self.convert_result_value(
+                            &builder,
+                            function,
+                            env,
+                            result,
+                            self.generator.context.i8_type().const_zero().into(),
+                            output,
+                            conversion_error,
+                            "async.result.convert",
+                        )?;
+                    } else {
+                        let value = builder.build_extract_value(completion, 1, "async.value")?;
+                        self.convert_result_value(
+                            &builder,
+                            function,
+                            env,
+                            result,
+                            value,
+                            output,
+                            conversion_error,
+                            "async.result.convert",
+                        )?;
+                    }
+                    Some(
+                        builder
+                            .build_load(self.pointer_type(), output, "async.js.result.value")?
+                            .into_pointer_value(),
+                    )
+                }
+            }
+            _ => {
+                return Err(CodegenError::Unsupported(
+                    "async Node export result is not a Promise".into(),
+                ));
+            }
+        };
+        if let Some(result) = result {
+            builder.build_call(
+                self.napi_status_function(
+                    "napi_resolve_deferred",
+                    &[
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                    ],
+                ),
+                &[env.into(), deferred.into(), result.into()],
+                "async.resolve",
+            )?;
+        }
+        builder.build_unconditional_branch(cleanup)?;
+
+        builder.position_at_end(conversion_error);
+        self.emit_async_rejection(
+            &builder,
+            env,
+            context_type,
+            context,
+            "TypeNative asynchronous result conversion failed",
+        )?;
+        builder.build_unconditional_branch(cleanup)?;
+
+        builder.position_at_end(cleanup);
+        let work = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(context_type, context, 2, "async.work")?,
+                "async.work.value",
+            )?
+            .into_pointer_value();
+        builder.build_call(
+            self.napi_status_function(
+                "napi_delete_async_work",
+                &[self.pointer_type().into(), self.pointer_type().into()],
+            ),
+            &[env.into(), work.into()],
+            "async.work.delete",
+        )?;
+        let cleanup_native = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(context_type, context, 3, "async.cleanup.native")?,
+                "async.cleanup.native.value",
+            )?
+            .into_pointer_value();
+        builder.build_call(
+            self.generator.runtime_async_destroy(),
+            &[cleanup_native.into()],
+            "async.promise.destroy",
+        )?;
+        builder.build_call(
+            self.generator.runtime_free(),
+            &[context.into()],
+            "async.context.free",
+        )?;
+        builder.build_return(None)?;
+        Ok(())
+    }
+
+    fn emit_async_rejection(
+        &self,
+        builder: &Builder<'ctx>,
+        env: PointerValue<'ctx>,
+        context_type: StructType<'ctx>,
+        context: PointerValue<'ctx>,
+        message: &str,
+    ) -> Result<(), CodegenError> {
+        let message_value = self.c_string(builder, message, "async.reject.message")?;
+        let message_slot = builder.build_alloca(self.pointer_type(), "async.reject.message")?;
+        self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_create_string_utf8",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.size_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                message_value.into(),
+                self.size_type()
+                    .const_int(u64::try_from(message.len()).unwrap_or(u64::MAX), false)
+                    .into(),
+                message_slot.into(),
+            ],
+            "async.reject.message.create",
+        )?;
+        let error = builder.build_alloca(self.pointer_type(), "async.reject.error")?;
+        builder.build_call(
+            self.napi_status_function(
+                "napi_create_error",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                self.pointer_type().const_null().into(),
+                builder
+                    .build_load(
+                        self.pointer_type(),
+                        message_slot,
+                        "async.reject.message.value",
+                    )?
+                    .into(),
+                error.into(),
+            ],
+            "async.reject.error.create",
+        )?;
+        let error = builder
+            .build_load(self.pointer_type(), error, "async.reject.error.value")?
+            .into_pointer_value();
+        self.emit_async_rejection_object(builder, env, context_type, context, error)?;
+        Ok(())
+    }
+
+    fn emit_async_rejection_object(
+        &self,
+        builder: &Builder<'ctx>,
+        env: PointerValue<'ctx>,
+        context_type: StructType<'ctx>,
+        context: PointerValue<'ctx>,
+        error: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let deferred = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(context_type, context, 1, "async.reject.deferred")?,
+                "async.reject.deferred.value",
+            )?
+            .into_pointer_value();
+        builder.build_call(
+            self.napi_status_function(
+                "napi_reject_deferred",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[env.into(), deferred.into(), error.into()],
+            "async.reject",
+        )?;
+        Ok(())
+    }
+
+    fn emitted_symbol(&self, callable: Callable, effects: &[DeclarationId]) -> String {
+        self.emitted_instance_symbol(&Instance {
+            callable,
+            type_arguments: Vec::new(),
+            effects: effects.to_vec(),
+        })
+    }
+
+    fn emitted_instance_symbol(&self, instance: &Instance) -> String {
+        self.generator
+            .layouts
+            .export_instances
+            .get(instance)
+            .cloned()
+            .or_else(|| {
+                if instance.type_arguments.is_empty() {
+                    self.generator
+                        .layouts
+                        .exports
+                        .get(&instance.callable)
+                        .cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| symbol_for_instance(instance))
+    }
+
+    fn emit_class(
+        &self,
+        index: usize,
+        class: &tn_node_api::BridgeClass,
+    ) -> Result<NodeClassCallbacks<'ctx>, CodegenError> {
+        let finalizer = self.generator.module.add_function(
+            &format!("tn_node_class_finalizer_{index}"),
+            self.finalize_type(),
+            None,
+        );
+        self.attach_debug(finalizer, &format!("tn_node_class_finalizer_{index}"));
+        self.emit_class_finalizer(finalizer, class)?;
+        let constructor = self.generator.module.add_function(
+            &format!("tn_node_class_constructor_{index}"),
+            self.callback_type(),
+            None,
+        );
+        self.attach_debug(constructor, &format!("tn_node_class_constructor_{index}"));
+        self.emit_class_constructor(constructor, class, finalizer)?;
+        let mut methods = Vec::new();
+        for (method_index, method) in class.methods.iter().enumerate() {
+            if method.name == "drop" {
+                continue;
+            }
+            let callback = self.emit_class_method(index, method_index, class, method)?;
+            methods.push((method.name.clone(), callback, method.receiver));
+        }
+        Ok(NodeClassCallbacks {
+            constructor,
+            methods,
+        })
+    }
+
+    fn emit_class_finalizer(
+        &self,
+        function: FunctionValue<'ctx>,
+        class: &tn_node_api::BridgeClass,
+    ) -> Result<(), CodegenError> {
+        let entry = self.generator.context.append_basic_block(function, "entry");
+        let has_data = self
+            .generator
+            .context
+            .append_basic_block(function, "has_data");
+        let done = self.generator.context.append_basic_block(function, "done");
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, function);
+        builder.position_at_end(entry);
+        let data = function
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::Builder("Node finalizer data is missing".into()))?
+            .into_pointer_value();
+        let present = builder.build_is_not_null(data, "node.finalizer.data")?;
+        builder.build_conditional_branch(present, has_data, done)?;
+        builder.position_at_end(has_data);
+        if let Some(drop) = class.drop {
+            let symbol = self.emitted_symbol(drop, &[]);
+            let drop_type = self
+                .generator
+                .context
+                .void_type()
+                .fn_type(&[self.pointer_type().into()], false);
+            let function_value = self
+                .generator
+                .module
+                .get_function(&symbol)
+                .unwrap_or_else(|| self.generator.module.add_function(&symbol, drop_type, None));
+            builder.build_call(function_value, &[data.into()], "node.finalizer.drop")?;
+        }
+        builder.build_call(
+            self.generator.runtime_free(),
+            &[data.into()],
+            "node.finalizer.free",
+        )?;
+        builder.build_unconditional_branch(done)?;
+        builder.position_at_end(done);
+        builder.build_return(None)?;
+        Ok(())
+    }
+
+    fn emit_class_constructor(
+        &self,
+        function: FunctionValue<'ctx>,
+        class: &tn_node_api::BridgeClass,
+        finalizer: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let method = class.constructor.as_ref();
+        let parameters = method.map_or(&[][..], |method| method.parameters.as_slice());
+        let mut signature = method.map_or_else(
+            || FunctionType {
+                parameters: Vec::new(),
+                result: Box::new(Type::Nominal(class.declaration, Vec::new())),
+                effects: Vec::new(),
+                generics: Vec::new(),
+                is_async: false,
+                is_unsafe: false,
+            },
+            |method| method.signature.clone(),
+        );
+        signature.result = Box::new(Type::Nominal(class.declaration, Vec::new()));
+        let entry = self.generator.context.append_basic_block(function, "entry");
+        let error = self.append_error_block(function, "TypeNative Node constructor failed")?;
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, function);
+        builder.position_at_end(entry);
+        let env = function
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::Builder("Node constructor environment is missing".into()))?
+            .into_pointer_value();
+        let info = function.get_nth_param(1).ok_or_else(|| {
+            CodegenError::Builder("Node constructor callback info is missing".into())
+        })?;
+        let argc = builder.build_alloca(self.size_type(), "node.constructor.argc")?;
+        builder.build_store(
+            argc,
+            self.size_type()
+                .const_int(u64::try_from(parameters.len()).unwrap_or(u64::MAX), false),
+        )?;
+        let argv = if parameters.is_empty() {
+            self.pointer_type().const_null()
+        } else {
+            builder.build_array_alloca(
+                self.pointer_type(),
+                self.size_type()
+                    .const_int(u64::try_from(parameters.len()).unwrap_or(u64::MAX), false),
+                "node.constructor.argv",
+            )?
+        };
+        let this_arg = builder.build_alloca(self.pointer_type(), "node.constructor.this")?;
+        let status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_get_cb_info",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                info.into(),
+                argc.into(),
+                argv.into(),
+                this_arg.into(),
+                self.pointer_type().const_null().into(),
+            ],
+            "node.constructor.cb_info",
+        )?;
+        self.continue_if_status_ok(
+            &builder,
+            function,
+            status,
+            error,
+            "node.constructor.cb_info.status",
+        )?;
+        let actual_argc = builder
+            .build_load(self.size_type(), argc, "node.constructor.argc.value")?
+            .into_int_value();
+        self.continue_if(
+            &builder,
+            function,
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                actual_argc,
+                self.size_type()
+                    .const_int(u64::try_from(parameters.len()).unwrap_or(u64::MAX), false),
+                "node.constructor.argc.ok",
+            )?,
+            error,
+            "node.constructor.argc.valid",
+        )?;
+        let mut native_arguments = Vec::with_capacity(parameters.len());
+        for (index, parameter) in parameters.iter().enumerate() {
+            let argument = unsafe {
+                builder.build_gep(
+                    self.pointer_type(),
+                    argv,
+                    &[self
+                        .size_type()
+                        .const_int(u64::try_from(index).unwrap_or(u64::MAX), false)],
+                    &format!("node.constructor.argv.{index}"),
+                )?
+            };
+            let js_value = builder
+                .build_load(
+                    self.pointer_type(),
+                    argument,
+                    &format!("node.constructor.arg.{index}"),
+                )?
+                .into_pointer_value();
+            let native =
+                self.convert_argument(&builder, function, env, js_value, parameter, error, index)?;
+            if self.node_requires_indirect(&parameter.native) {
+                let pointer = builder.build_alloca(
+                    self.generator.basic_type(&parameter.native)?,
+                    &format!("node.constructor.indirect.{index}"),
+                )?;
+                builder.build_store(pointer, native)?;
+                native_arguments.push(pointer.into());
+            } else {
+                native_arguments.push(native.into());
+            }
+        }
+        let signature_type = self.native_signature(&signature, None, &signature.result, false)?;
+        let symbol = method.map_or_else(
+            || format!("tn_ctor_{}_0_0", class.declaration.0),
+            |method| symbol_for_constructor(class.declaration, method.callable.member, &signature),
+        );
+        let native_function = self
+            .generator
+            .module
+            .get_function(&symbol)
+            .unwrap_or_else(|| {
+                self.generator
+                    .module
+                    .add_function(&symbol, signature_type, None)
+            });
+        let native = self.call_value(
+            &builder,
+            native_function,
+            &native_arguments,
+            "node.constructor.call",
+        )?;
+        let native = if signature.effects.is_empty() {
+            native.into_pointer_value()
+        } else {
+            let packed = native.into_array_value();
+            let failed = builder
+                .build_extract_value(packed, 0, "node.constructor.failed")?
+                .into_int_value();
+            let payload = builder
+                .build_extract_value(packed, 1, "node.constructor.payload")?
+                .into_int_value();
+            let success = self
+                .generator
+                .context
+                .append_basic_block(function, "node.constructor.success");
+            let failure = self
+                .generator
+                .context
+                .append_basic_block(function, "node.constructor.failure");
+            builder.build_conditional_branch(
+                builder.build_int_compare(
+                    IntPredicate::EQ,
+                    failed,
+                    self.generator.context.i64_type().const_zero(),
+                    "node.constructor.ok",
+                )?,
+                success,
+                failure,
+            )?;
+            builder.position_at_end(failure);
+            let error_pointer =
+                builder.build_int_to_ptr(payload, self.pointer_type(), "node.constructor.error")?;
+            builder.build_call(
+                self.generator.runtime_free(),
+                &[error_pointer.into()],
+                "node.constructor.error.free",
+            )?;
+            builder.build_unconditional_branch(error)?;
+            builder.position_at_end(success);
+            builder.build_int_to_ptr(payload, self.pointer_type(), "node.constructor.value")?
+        };
+        let this_value = builder
+            .build_load(self.pointer_type(), this_arg, "node.constructor.this.value")?
+            .into_pointer_value();
+        let status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_wrap",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                this_value.into(),
+                native.into(),
+                finalizer.as_global_value().as_pointer_value().into(),
+                self.pointer_type().const_null().into(),
+                self.pointer_type().const_null().into(),
+            ],
+            "node.constructor.wrap",
+        )?;
+        self.continue_if_status_ok(
+            &builder,
+            function,
+            status,
+            error,
+            "node.constructor.wrap.status",
+        )?;
+        builder.build_return(Some(&this_value))?;
+        Ok(())
+    }
+
+    fn emit_class_method(
+        &self,
+        class_index: usize,
+        method_index: usize,
+        class: &tn_node_api::BridgeClass,
+        method: &tn_node_api::BridgeMethod,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let callback = self.generator.module.add_function(
+            &format!("tn_node_class_method_{class_index}_{method_index}"),
+            self.callback_type(),
+            None,
+        );
+        self.attach_debug(
+            callback,
+            &format!("tn_node_class_method_{class_index}_{method_index}"),
+        );
+        if method.signature.is_async {
+            return Err(CodegenError::Unsupported(format!(
+                "async Node class method `{}` is not yet lowered",
+                method.name
+            )));
+        }
+        let entry = self.generator.context.append_basic_block(callback, "entry");
+        let error = self.append_error_block(callback, "TypeNative Node method failed")?;
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, callback);
+        builder.position_at_end(entry);
+        let env = callback
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::Builder("Node method environment is missing".into()))?
+            .into_pointer_value();
+        let info = callback
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::Builder("Node method callback info is missing".into()))?;
+        let argc = builder.build_alloca(self.size_type(), "node.method.argc")?;
+        builder.build_store(
+            argc,
+            self.size_type().const_int(
+                u64::try_from(method.parameters.len()).unwrap_or(u64::MAX),
+                false,
+            ),
+        )?;
+        let argv = if method.parameters.is_empty() {
+            self.pointer_type().const_null()
+        } else {
+            builder.build_array_alloca(
+                self.pointer_type(),
+                self.size_type().const_int(
+                    u64::try_from(method.parameters.len()).unwrap_or(u64::MAX),
+                    false,
+                ),
+                "node.method.argv",
+            )?
+        };
+        let this_arg = builder.build_alloca(self.pointer_type(), "node.method.this")?;
+        let status = self.call_status(
+            &builder,
+            self.napi_status_function(
+                "napi_get_cb_info",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                info.into(),
+                argc.into(),
+                argv.into(),
+                this_arg.into(),
+                self.pointer_type().const_null().into(),
+            ],
+            "node.method.cb_info",
+        )?;
+        self.continue_if_status_ok(
+            &builder,
+            callback,
+            status,
+            error,
+            "node.method.cb_info.status",
+        )?;
+        let actual_argc = builder
+            .build_load(self.size_type(), argc, "node.method.argc.value")?
+            .into_int_value();
+        self.continue_if(
+            &builder,
+            callback,
+            builder.build_int_compare(
+                IntPredicate::EQ,
+                actual_argc,
+                self.size_type().const_int(
+                    u64::try_from(method.parameters.len()).unwrap_or(u64::MAX),
+                    false,
+                ),
+                "node.method.argc.ok",
+            )?,
+            error,
+            "node.method.argc.valid",
+        )?;
+        let mut native_arguments = Vec::with_capacity(method.parameters.len() + 1);
+        if method.receiver != tn_hir::ReceiverMode::Static {
+            let receiver = builder.build_alloca(self.pointer_type(), "node.method.receiver")?;
+            let status = self.call_status(
+                &builder,
+                self.napi_status_function(
+                    "napi_unwrap",
+                    &[
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    builder
+                        .build_load(self.pointer_type(), this_arg, "node.method.this.value")?
+                        .into(),
+                    receiver.into(),
+                ],
+                "node.method.unwrap",
+            )?;
+            self.continue_if_status_ok(
+                &builder,
+                callback,
+                status,
+                error,
+                "node.method.unwrap.status",
+            )?;
+            let receiver = builder
+                .build_load(self.pointer_type(), receiver, "node.method.receiver.value")?
+                .into_pointer_value();
+            self.continue_if(
+                &builder,
+                callback,
+                builder.build_is_not_null(receiver, "node.method.receiver.valid")?,
+                error,
+                "node.method.receiver.status",
+            )?;
+            native_arguments.push(receiver.into());
+        }
+        for (index, parameter) in method.parameters.iter().enumerate() {
+            let argument = unsafe {
+                builder.build_gep(
+                    self.pointer_type(),
+                    argv,
+                    &[self
+                        .size_type()
+                        .const_int(u64::try_from(index).unwrap_or(u64::MAX), false)],
+                    &format!("node.method.argv.{index}"),
+                )?
+            };
+            let js_value = builder
+                .build_load(
+                    self.pointer_type(),
+                    argument,
+                    &format!("node.method.arg.{index}"),
+                )?
+                .into_pointer_value();
+            let native =
+                self.convert_argument(&builder, callback, env, js_value, parameter, error, index)?;
+            if self.node_requires_indirect(&parameter.native) {
+                let pointer = builder.build_alloca(
+                    self.generator.basic_type(&parameter.native)?,
+                    &format!("node.method.indirect.{index}"),
+                )?;
+                builder.build_store(pointer, native)?;
+                native_arguments.push(pointer.into());
+            } else {
+                native_arguments.push(native.into());
+            }
+        }
+        let receiver_type = if method.receiver == tn_hir::ReceiverMode::Static {
+            None
+        } else {
+            Some(Type::Nominal(class.declaration, Vec::new()))
+        };
+        let native_signature = self.native_signature(
+            &method.signature,
+            receiver_type.as_ref(),
+            &method.result.native,
+            false,
+        )?;
+        let symbol = self.emitted_symbol(method.callable, &method.signature.effects);
+        let native_function = self
+            .generator
+            .module
+            .get_function(&symbol)
+            .unwrap_or_else(|| {
+                self.generator
+                    .module
+                    .add_function(&symbol, native_signature, None)
+            });
+        let mut native_result_pointer = None;
+        let native_result = if method.signature.effects.is_empty()
+            && method.result.kind == tn_node_api::NodeTypeKind::Void
+        {
+            builder.build_call(native_function, &native_arguments, "node.method.call")?;
+            None
+        } else {
+            let result = self.call_value(
+                &builder,
+                native_function,
+                &native_arguments,
+                "node.method.call",
+            )?;
+            if method.signature.effects.is_empty()
+                && self.node_requires_indirect(&method.result.native)
+            {
+                let pointer = result.into_pointer_value();
+                let loaded = builder.build_load(
+                    self.generator.basic_type(&method.result.native)?,
+                    pointer,
+                    "node.method.indirect.result",
+                )?;
+                native_result_pointer = Some(pointer);
+                Some(loaded)
+            } else {
+                Some(result)
+            }
+        };
+        let bridge_function = tn_node_api::BridgeFunction {
+            export_name: method.name.clone(),
+            callable: method.callable,
+            signature: method.signature.clone(),
+            parameters: method.parameters.clone(),
+            result: method.result.clone(),
+            errors: method.errors.clone(),
+        };
+        let result = self.convert_result(
+            &builder,
+            callback,
+            env,
+            &bridge_function,
+            native_result,
+            error,
+        )?;
+        if let Some(pointer) = native_result_pointer {
+            builder.build_call(
+                self.generator.runtime_free(),
+                &[pointer.into()],
+                "node.method.indirect.free",
+            )?;
+        }
+        builder.build_return(Some(&result))?;
+        Ok(callback)
+    }
+
+    fn emit_module_initializer(
+        &self,
+        plan: &tn_node_api::BridgePlan,
+        callbacks: &[FunctionValue<'ctx>],
+        classes: &[NodeClassCallbacks<'ctx>],
+    ) -> Result<(), CodegenError> {
+        let pointer = self.pointer_type();
+        let function = self.generator.module.add_function(
+            "napi_register_module_v1",
+            pointer.fn_type(&[pointer.into(), pointer.into()], false),
+            None,
+        );
+        self.attach_debug(function, "napi_register_module_v1");
+        let entry = self.generator.context.append_basic_block(function, "entry");
+        let builder = self.generator.context.create_builder();
+        self.set_debug_location(&builder, function);
+        builder.position_at_end(entry);
+        let env = function
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::Builder("Node module environment is missing".into()))?
+            .into_pointer_value();
+        let exports = function
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::Builder("Node module exports parameter is missing".into())
+            })?
+            .into_pointer_value();
+        for (index, export) in plan.functions.iter().enumerate() {
+            let name = self.c_string(
+                &builder,
+                &export.export_name,
+                &format!("node.export.{index}"),
+            )?;
+            let created = builder.build_alloca(pointer, &format!("node.export.value.{index}"))?;
+            let status = self.call_status(
+                &builder,
+                self.napi_status_function(
+                    "napi_create_function",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        self.size_type().into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    name.into(),
+                    self.size_type()
+                        .const_int(
+                            u64::try_from(export.export_name.len()).unwrap_or(u64::MAX),
+                            false,
+                        )
+                        .into(),
+                    callbacks[index].as_global_value().as_pointer_value().into(),
+                    pointer.const_null().into(),
+                    created.into(),
+                ],
+                &format!("node.export.create.{index}"),
+            )?;
+            let ok = builder.build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.status_type().const_zero(),
+                &format!("node.export.status.{index}"),
+            )?;
+            let next = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.export.next.{index}"));
+            let failure = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.export.failure.{index}"));
+            builder.build_conditional_branch(ok, next, failure)?;
+            builder.position_at_end(failure);
+            builder.build_return(Some(&pointer.const_null()))?;
+            builder.position_at_end(next);
+            let status = self.call_status(
+                &builder,
+                self.napi_status_function(
+                    "napi_set_named_property",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    exports.into(),
+                    name.into(),
+                    builder
+                        .build_load(pointer, created, &format!("node.export.load.{index}"))?
+                        .into(),
+                ],
+                &format!("node.export.set.{index}"),
+            )?;
+            let ok = builder.build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.status_type().const_zero(),
+                &format!("node.export.set.status.{index}"),
+            )?;
+            let next = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.export.set.next.{index}"));
+            let failure = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.export.set.failure.{index}"));
+            builder.build_conditional_branch(ok, next, failure)?;
+            builder.position_at_end(failure);
+            builder.build_return(Some(&pointer.const_null()))?;
+            builder.position_at_end(next);
+        }
+        for (index, class) in plan.classes.iter().enumerate() {
+            let callback = classes[index]
+                .constructor
+                .as_global_value()
+                .as_pointer_value();
+            let name =
+                self.c_string(&builder, &class.export_name, &format!("node.class.{index}"))?;
+            let class_value =
+                builder.build_alloca(pointer, &format!("node.class.value.{index}"))?;
+            let status = self.call_status(
+                &builder,
+                self.napi_status_function(
+                    "napi_define_class",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        self.size_type().into(),
+                        pointer.into(),
+                        pointer.into(),
+                        self.size_type().into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    name.into(),
+                    self.size_type()
+                        .const_int(
+                            u64::try_from(class.export_name.len()).unwrap_or(u64::MAX),
+                            false,
+                        )
+                        .into(),
+                    callback.into(),
+                    pointer.const_null().into(),
+                    self.size_type().const_zero().into(),
+                    pointer.const_null().into(),
+                    class_value.into(),
+                ],
+                &format!("node.class.define.{index}"),
+            )?;
+            let ok = builder.build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.status_type().const_zero(),
+                &format!("node.class.status.{index}"),
+            )?;
+            let next = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.class.next.{index}"));
+            let failure = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.class.failure.{index}"));
+            builder.build_conditional_branch(ok, next, failure)?;
+            builder.position_at_end(failure);
+            builder.build_return(Some(&pointer.const_null()))?;
+            builder.position_at_end(next);
+            let status = self.call_status(
+                &builder,
+                self.napi_status_function(
+                    "napi_set_named_property",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    exports.into(),
+                    name.into(),
+                    builder
+                        .build_load(pointer, class_value, &format!("node.class.load.{index}"))?
+                        .into(),
+                ],
+                &format!("node.class.set.{index}"),
+            )?;
+            let ok = builder.build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.status_type().const_zero(),
+                &format!("node.class.set.status.{index}"),
+            )?;
+            let next = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.class.set.next.{index}"));
+            let failure = self
+                .generator
+                .context
+                .append_basic_block(function, &format!("node.class.set.failure.{index}"));
+            builder.build_conditional_branch(ok, next, failure)?;
+            builder.position_at_end(failure);
+            builder.build_return(Some(&pointer.const_null()))?;
+            builder.position_at_end(next);
+            let class_object = builder
+                .build_load(pointer, class_value, &format!("node.class.object.{index}"))?
+                .into_pointer_value();
+            self.emit_class_methods_in_initializer(
+                &builder,
+                function,
+                env,
+                index,
+                class_object,
+                &classes[index].methods,
+            )?;
+        }
+        let exports = function.get_nth_param(1).ok_or_else(|| {
+            CodegenError::Builder("Node module exports parameter is missing".into())
+        })?;
+        builder.build_return(Some(&exports))?;
+        Ok(())
+    }
+
+    fn emit_class_methods_in_initializer(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        class_index: usize,
+        class_object: PointerValue<'ctx>,
+        methods: &[(String, FunctionValue<'ctx>, tn_hir::ReceiverMode)],
+    ) -> Result<(), CodegenError> {
+        if methods.is_empty() {
+            return Ok(());
+        }
+        let pointer = self.pointer_type();
+        let prototype_name = self.c_string(
+            builder,
+            "prototype",
+            &format!("node.class.prototype.name.{class_index}"),
+        )?;
+        let prototype =
+            builder.build_alloca(pointer, &format!("node.class.prototype.{class_index}"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_get_named_property",
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                ],
+            ),
+            &[
+                env.into(),
+                class_object.into(),
+                prototype_name.into(),
+                prototype.into(),
+            ],
+            &format!("node.class.prototype.get.{class_index}"),
+        )?;
+        let ok = builder.build_int_compare(
+            IntPredicate::EQ,
+            status,
+            self.status_type().const_zero(),
+            &format!("node.class.prototype.status.{class_index}"),
+        )?;
+        let next = self.generator.context.append_basic_block(
+            function,
+            &format!("node.class.prototype.next.{class_index}"),
+        );
+        let failure = self.generator.context.append_basic_block(
+            function,
+            &format!("node.class.prototype.failure.{class_index}"),
+        );
+        builder.build_conditional_branch(ok, next, failure)?;
+        builder.position_at_end(failure);
+        builder.build_return(Some(&pointer.const_null()))?;
+        builder.position_at_end(next);
+        let prototype_object = builder
+            .build_load(
+                pointer,
+                prototype,
+                &format!("node.class.prototype.value.{class_index}"),
+            )?
+            .into_pointer_value();
+        for (method_index, (method_name, method_callback, receiver)) in methods.iter().enumerate() {
+            let method_name_value = self.c_string(
+                builder,
+                method_name,
+                &format!("node.class.method.name.{class_index}.{method_index}"),
+            )?;
+            let method_value = builder.build_alloca(
+                pointer,
+                &format!("node.class.method.value.{class_index}.{method_index}"),
+            )?;
+            let status = self.call_status(
+                builder,
+                self.napi_status_function(
+                    "napi_create_function",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        self.size_type().into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    method_name_value.into(),
+                    self.size_type()
+                        .const_int(u64::try_from(method_name.len()).unwrap_or(u64::MAX), false)
+                        .into(),
+                    method_callback.as_global_value().as_pointer_value().into(),
+                    pointer.const_null().into(),
+                    method_value.into(),
+                ],
+                &format!("node.class.method.create.{class_index}.{method_index}"),
+            )?;
+            let ok = builder.build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.status_type().const_zero(),
+                &format!("node.class.method.status.{class_index}.{method_index}"),
+            )?;
+            let next = self.generator.context.append_basic_block(
+                function,
+                &format!("node.class.method.next.{class_index}.{method_index}"),
+            );
+            let failure = self.generator.context.append_basic_block(
+                function,
+                &format!("node.class.method.failure.{class_index}.{method_index}"),
+            );
+            builder.build_conditional_branch(ok, next, failure)?;
+            builder.position_at_end(failure);
+            builder.build_return(Some(&pointer.const_null()))?;
+            builder.position_at_end(next);
+            let target = if *receiver == tn_hir::ReceiverMode::Static {
+                class_object
+            } else {
+                prototype_object
+            };
+            let status = self.call_status(
+                builder,
+                self.napi_status_function(
+                    "napi_set_named_property",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    target.into(),
+                    method_name_value.into(),
+                    builder
+                        .build_load(
+                            pointer,
+                            method_value,
+                            &format!("node.class.method.load.{class_index}.{method_index}"),
+                        )?
+                        .into(),
+                ],
+                &format!("node.class.method.set.{class_index}.{method_index}"),
+            )?;
+            let ok = builder.build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.status_type().const_zero(),
+                &format!("node.class.method.set.status.{class_index}.{method_index}"),
+            )?;
+            let next = self.generator.context.append_basic_block(
+                function,
+                &format!("node.class.method.set.next.{class_index}.{method_index}"),
+            );
+            let failure = self.generator.context.append_basic_block(
+                function,
+                &format!("node.class.method.set.failure.{class_index}.{method_index}"),
+            );
+            builder.build_conditional_branch(ok, next, failure)?;
+            builder.position_at_end(failure);
+            builder.build_return(Some(&pointer.const_null()))?;
+            builder.position_at_end(next);
+        }
+        Ok(())
+    }
+
+    fn convert_result(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        export: &tn_node_api::BridgeFunction,
+        native_result: Option<BasicValueEnum<'ctx>>,
+        error: LlvmBlock<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let result = builder.build_alloca(self.pointer_type(), "node.result")?;
+        if export.signature.effects.is_empty() {
+            if export.result.kind == tn_node_api::NodeTypeKind::Void {
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_get_undefined",
+                        &[self.pointer_type().into(), self.pointer_type().into()],
+                    ),
+                    &[env.into(), result.into()],
+                    "node.result.undefined",
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    "node.result.undefined.status",
+                )?;
+            } else {
+                let value = native_result
+                    .ok_or_else(|| CodegenError::Builder("Node native result is missing".into()))?;
+                self.convert_result_value(
+                    builder,
+                    function,
+                    env,
+                    &export.result,
+                    value,
+                    result,
+                    error,
+                    "node.result",
+                )?;
+            }
+        } else {
+            let packed = native_result
+                .ok_or_else(|| {
+                    CodegenError::Builder("fallible Node native result is missing".into())
+                })?
+                .into_array_value();
+            let failed = builder
+                .build_extract_value(packed, 0, "node.result.failed")?
+                .into_int_value();
+            let payload = builder
+                .build_extract_value(packed, 1, "node.result.payload")?
+                .into_int_value();
+            let success = self
+                .generator
+                .context
+                .append_basic_block(function, "node.result.success");
+            let failure = self
+                .generator
+                .context
+                .append_basic_block(function, "node.result.failure");
+            let is_success = builder.build_int_compare(
+                IntPredicate::EQ,
+                failed,
+                self.generator.context.i64_type().const_zero(),
+                "node.result.success.test",
+            )?;
+            builder.build_conditional_branch(is_success, success, failure)?;
+            builder.position_at_end(failure);
+            let error_pointer =
+                builder.build_int_to_ptr(payload, self.pointer_type(), "node.result.error")?;
+            let error_value = self.emit_node_error_object(
+                builder,
+                function,
+                env,
+                error_pointer,
+                &export.errors,
+                error,
+                "node.result.error",
+            )?;
+            builder.build_call(
+                self.napi_status_function(
+                    "napi_throw",
+                    &[self.pointer_type().into(), self.pointer_type().into()],
+                ),
+                &[env.into(), error_value.into()],
+                "node.result.error.throw",
+            )?;
+            self.release_node_error(
+                builder,
+                function,
+                error_pointer,
+                &export.errors,
+                "node.result.error",
+            )?;
+            builder.build_return(Some(&self.pointer_type().const_null()))?;
+            builder.position_at_end(success);
+            if export.result.kind == tn_node_api::NodeTypeKind::Void {
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_get_undefined",
+                        &[self.pointer_type().into(), self.pointer_type().into()],
+                    ),
+                    &[env.into(), result.into()],
+                    "node.result.success.undefined",
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    "node.result.success.undefined.status",
+                )?;
+            } else if self.generator.is_indirect_abi_type(&export.result.native) {
+                let native_pointer = builder.build_int_to_ptr(
+                    payload,
+                    self.pointer_type(),
+                    "node.result.value.pointer",
+                )?;
+                let native = builder.build_load(
+                    self.generator.basic_type(&export.result.native)?,
+                    native_pointer,
+                    "node.result.value",
+                )?;
+                self.convert_result_value(
+                    builder,
+                    function,
+                    env,
+                    &export.result,
+                    native,
+                    result,
+                    error,
+                    "node.result.value",
+                )?;
+                builder.build_call(
+                    self.generator.runtime_free(),
+                    &[native_pointer.into()],
+                    "node.result.value.free",
+                )?;
+            } else {
+                let native_type = self.generator.basic_type(&export.result.native)?;
+                let native = builder.build_int_cast(
+                    payload,
+                    native_type.into_int_type(),
+                    "node.result.scalar",
+                )?;
+                self.convert_result_value(
+                    builder,
+                    function,
+                    env,
+                    &export.result,
+                    native.into(),
+                    result,
+                    error,
+                    "node.result.scalar",
+                )?;
+            }
+        }
+        Ok(builder
+            .build_load(self.pointer_type(), result, "node.result.value")?
+            .into_pointer_value())
+    }
+
+    fn drop_node_value(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        value: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        match &ty.kind {
+            tn_node_api::NodeTypeKind::Optional(inner) => {
+                let structure = value.into_struct_value();
+                let tag = builder
+                    .build_extract_value(structure, 0, &format!("{name}.tag"))?
+                    .into_int_value();
+                let payload =
+                    builder.build_extract_value(structure, 1, &format!("{name}.payload"))?;
+                let present = self
+                    .generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.present"));
+                let absent = self
+                    .generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.absent"));
+                let merge = self
+                    .generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.merge"));
+                builder.build_conditional_branch(tag, present, absent)?;
+                builder.position_at_end(present);
+                self.drop_node_value(
+                    builder,
+                    function,
+                    inner,
+                    payload,
+                    &format!("{name}.present"),
+                )?;
+                builder.build_unconditional_branch(merge)?;
+                builder.position_at_end(absent);
+                builder.build_unconditional_branch(merge)?;
+                builder.position_at_end(merge);
+            }
+            tn_node_api::NodeTypeKind::Array { borrowed: true, .. } => {}
+            tn_node_api::NodeTypeKind::Array {
+                element,
+                fixed_length: Some(length),
+                ..
+            } => {
+                let array = value.into_array_value();
+                for index in 0..*length {
+                    let element_value = builder.build_extract_value(
+                        array,
+                        u32::try_from(index).unwrap_or(u32::MAX),
+                        &format!("{name}.element.{index}"),
+                    )?;
+                    self.drop_node_value(
+                        builder,
+                        function,
+                        element,
+                        element_value,
+                        &format!("{name}.element.{index}"),
+                    )?;
+                }
+            }
+            tn_node_api::NodeTypeKind::Array {
+                borrowed: false, ..
+            } => {
+                let object = value.into_pointer_value();
+                let Type::Nominal(declaration, arguments) = &ty.native else {
+                    return Err(CodegenError::Unsupported(
+                        "owned Node Array result has no nominal class layout".into(),
+                    ));
+                };
+                let callable = self
+                    .generator
+                    .layouts
+                    .drops
+                    .get(declaration)
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "owned Node Array result {declaration:?} has no typed drop"
+                        ))
+                    })?;
+                let instance = Instance {
+                    callable,
+                    type_arguments: arguments.clone(),
+                    effects: Vec::new(),
+                };
+                let symbol = self.emitted_instance_symbol(&instance);
+                let drop_type = self
+                    .generator
+                    .context
+                    .void_type()
+                    .fn_type(&[self.pointer_type().into()], false);
+                let drop_function =
+                    self.generator
+                        .module
+                        .get_function(&symbol)
+                        .unwrap_or_else(|| {
+                            self.generator.module.add_function(&symbol, drop_type, None)
+                        });
+                builder.build_call(drop_function, &[object.into()], &format!("{name}.drop"))?;
+                builder.build_call(
+                    self.generator.runtime_free(),
+                    &[object.into()],
+                    &format!("{name}.free"),
+                )?;
+            }
+            tn_node_api::NodeTypeKind::String
+            | tn_node_api::NodeTypeKind::Bytes
+            | tn_node_api::NodeTypeKind::Void
+            | tn_node_api::NodeTypeKind::Scalar(_)
+            | tn_node_api::NodeTypeKind::Promise { .. }
+            | tn_node_api::NodeTypeKind::Class(_) => {}
+        }
+        Ok(())
+    }
+
+    fn node_error_union_type(&self) -> StructType<'ctx> {
+        self.generator.context.struct_type(
+            &[
+                self.generator.context.i64_type().into(),
+                self.pointer_type().into(),
+            ],
+            false,
+        )
+    }
+
+    fn create_node_error(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        output: PointerValue<'ctx>,
+        name: &str,
+        failure: LlvmBlock<'ctx>,
+        label: &str,
+    ) -> Result<(), CodegenError> {
+        let message = self.c_string(builder, name, &format!("{label}.message"))?;
+        let message_slot =
+            builder.build_alloca(self.pointer_type(), &format!("{label}.message.slot"))?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_create_string_utf8",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.size_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                message.into(),
+                self.size_type()
+                    .const_int(u64::try_from(name.len()).unwrap_or(u64::MAX), false)
+                    .into(),
+                message_slot.into(),
+            ],
+            &format!("{label}.message.create"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            failure,
+            &format!("{label}.message.status"),
+        )?;
+        let message_value = builder
+            .build_load(
+                self.pointer_type(),
+                message_slot,
+                &format!("{label}.message.value"),
+            )?
+            .into_pointer_value();
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_create_error",
+                &[
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                    self.pointer_type().into(),
+                ],
+            ),
+            &[
+                env.into(),
+                self.pointer_type().const_null().into(),
+                message_value.into(),
+                output.into(),
+            ],
+            &format!("{label}.create"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            failure,
+            &format!("{label}.create.status"),
+        )?;
+        for property_name in ["name", "typeNative"] {
+            let property =
+                self.c_string(builder, property_name, &format!("{label}.{property_name}"))?;
+            let status = self.call_status(
+                builder,
+                self.napi_status_function(
+                    "napi_set_named_property",
+                    &[
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                        self.pointer_type().into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    builder
+                        .build_load(self.pointer_type(), output, &format!("{label}.object"))?
+                        .into(),
+                    property.into(),
+                    message_value.into(),
+                ],
+                &format!("{label}.{property_name}.set"),
+            )?;
+            self.continue_if_status_ok(
+                builder,
+                function,
+                status,
+                failure,
+                &format!("{label}.{property_name}.status"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn emit_node_error_object(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        error_pointer: PointerValue<'ctx>,
+        errors: &[tn_node_api::BridgeError],
+        failure: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let envelope_type = self.node_error_union_type();
+        let tag = builder
+            .build_load(
+                self.generator.context.i64_type(),
+                builder.build_struct_gep(
+                    envelope_type,
+                    error_pointer,
+                    0,
+                    &format!("{name}.tag"),
+                )?,
+                &format!("{name}.tag.value"),
+            )?
+            .into_int_value();
+        let payload = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(
+                    envelope_type,
+                    error_pointer,
+                    1,
+                    &format!("{name}.payload"),
+                )?,
+                &format!("{name}.payload.value"),
+            )?
+            .into_pointer_value();
+        let output = builder.build_alloca(self.pointer_type(), &format!("{name}.output"))?;
+        let merge = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.merge"));
+        let default = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.default"));
+        let blocks = errors
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                self.generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.error.{index}"))
+            })
+            .collect::<Vec<_>>();
+        let cases = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                (
+                    self.generator
+                        .context
+                        .i64_type()
+                        .const_int(u64::try_from(index).unwrap_or(u64::MAX), false),
+                    *block,
+                )
+            })
+            .collect::<Vec<_>>();
+        builder.build_switch(tag, default, &cases)?;
+        for (error, block) in errors.iter().zip(blocks) {
+            builder.position_at_end(block);
+            self.create_node_error(
+                builder,
+                function,
+                env,
+                output,
+                &error.name,
+                failure,
+                &format!("{name}.{}", error.name),
+            )?;
+            let payload_type = if self.generator.is_class_type(&error.native) {
+                self.generator.class_object_type(&error.native)?
+            } else {
+                self.generator.basic_type(&error.native)?.into_struct_type()
+            };
+            for field in &error.fields {
+                let field_address = builder.build_struct_gep(
+                    payload_type,
+                    payload,
+                    field.index,
+                    &format!("{name}.{}.{}", error.name, field.name),
+                )?;
+                let field_value = builder.build_load(
+                    self.generator.basic_type(&field.ty.native)?,
+                    field_address,
+                    &format!("{name}.{}.{}.value", error.name, field.name),
+                )?;
+                let field_output = builder.build_alloca(
+                    self.pointer_type(),
+                    &format!("{name}.{}.{}.output", error.name, field.name),
+                )?;
+                self.convert_result_value(
+                    builder,
+                    function,
+                    env,
+                    &field.ty,
+                    field_value,
+                    field_output,
+                    failure,
+                    &format!("{name}.{}.{}.convert", error.name, field.name),
+                )?;
+                let property = self.c_string(
+                    builder,
+                    &field.name,
+                    &format!("{name}.{}.{}.property", error.name, field.name),
+                )?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_set_named_property",
+                        &[
+                            self.pointer_type().into(),
+                            self.pointer_type().into(),
+                            self.pointer_type().into(),
+                            self.pointer_type().into(),
+                        ],
+                    ),
+                    &[
+                        env.into(),
+                        builder
+                            .build_load(
+                                self.pointer_type(),
+                                output,
+                                &format!("{name}.{}.object", error.name),
+                            )?
+                            .into(),
+                        property.into(),
+                        builder
+                            .build_load(
+                                self.pointer_type(),
+                                field_output,
+                                &format!("{name}.{}.{}.js", error.name, field.name),
+                            )?
+                            .into(),
+                    ],
+                    &format!("{name}.{}.{}.set", error.name, field.name),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    failure,
+                    &format!("{name}.{}.{}.set.status", error.name, field.name),
+                )?;
+            }
+            builder.build_unconditional_branch(merge)?;
+        }
+        builder.position_at_end(default);
+        self.create_node_error(
+            builder,
+            function,
+            env,
+            output,
+            "TypeNativeError",
+            failure,
+            &format!("{name}.default"),
+        )?;
+        builder.build_unconditional_branch(merge)?;
+        builder.position_at_end(merge);
+        Ok(builder
+            .build_load(self.pointer_type(), output, &format!("{name}.value"))?
+            .into_pointer_value())
+    }
+
+    fn release_node_error(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        error_pointer: PointerValue<'ctx>,
+        errors: &[tn_node_api::BridgeError],
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let envelope_type = self.node_error_union_type();
+        let tag = builder
+            .build_load(
+                self.generator.context.i64_type(),
+                builder.build_struct_gep(
+                    envelope_type,
+                    error_pointer,
+                    0,
+                    &format!("{name}.tag"),
+                )?,
+                &format!("{name}.tag.value"),
+            )?
+            .into_int_value();
+        let payload = builder
+            .build_load(
+                self.pointer_type(),
+                builder.build_struct_gep(
+                    envelope_type,
+                    error_pointer,
+                    1,
+                    &format!("{name}.payload"),
+                )?,
+                &format!("{name}.payload.value"),
+            )?
+            .into_pointer_value();
+        let merge = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.merge"));
+        let default = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.default"));
+        let blocks = errors
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                self.generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.error.{index}"))
+            })
+            .collect::<Vec<_>>();
+        let cases = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                (
+                    self.generator
+                        .context
+                        .i64_type()
+                        .const_int(u64::try_from(index).unwrap_or(u64::MAX), false),
+                    *block,
+                )
+            })
+            .collect::<Vec<_>>();
+        builder.build_switch(tag, default, &cases)?;
+        for (error, block) in errors.iter().zip(blocks) {
+            builder.position_at_end(block);
+            if let Some(callable) = self.generator.layouts.drops.get(&error.declaration) {
+                let instance = Instance {
+                    callable: *callable,
+                    type_arguments: Vec::new(),
+                    effects: Vec::new(),
+                };
+                let symbol = self.emitted_instance_symbol(&instance);
+                let drop_type = self
+                    .generator
+                    .context
+                    .void_type()
+                    .fn_type(&[self.pointer_type().into()], false);
+                let drop_function =
+                    self.generator
+                        .module
+                        .get_function(&symbol)
+                        .unwrap_or_else(|| {
+                            self.generator.module.add_function(&symbol, drop_type, None)
+                        });
+                builder.build_call(drop_function, &[payload.into()], &format!("{name}.drop"))?;
+            }
+            builder.build_call(
+                self.generator.runtime_free(),
+                &[payload.into()],
+                &format!("{name}.payload.free"),
+            )?;
+            builder.build_unconditional_branch(merge)?;
+        }
+        builder.position_at_end(default);
+        builder.build_call(
+            self.generator.runtime_free(),
+            &[payload.into()],
+            &format!("{name}.default.payload.free"),
+        )?;
+        builder.build_unconditional_branch(merge)?;
+        builder.position_at_end(merge);
+        builder.build_call(
+            self.generator.runtime_free(),
+            &[error_pointer.into()],
+            &format!("{name}.envelope.free"),
+        )?;
+        Ok(())
+    }
+
+    fn convert_result_value(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        value: BasicValueEnum<'ctx>,
+        output: PointerValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        match &ty.kind {
+            tn_node_api::NodeTypeKind::Void => {
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_get_undefined",
+                        &[self.pointer_type().into(), self.pointer_type().into()],
+                    ),
+                    &[env.into(), output.into()],
+                    &format!("{name}.undefined"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.undefined.status"),
+                )?;
+            }
+            tn_node_api::NodeTypeKind::Promise { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "Node Promise result requires the async bridge".into(),
+                ));
+            }
+            tn_node_api::NodeTypeKind::Scalar(primitive) => {
+                self.convert_scalar_result(
+                    builder, function, env, primitive, value, output, error, name,
+                )?;
+            }
+            tn_node_api::NodeTypeKind::String => {
+                let native = value.into_pointer_value();
+                let length = self
+                    .call_value(
+                        builder,
+                        self.generator.runtime_string_length(),
+                        &[native.into()],
+                        &format!("{name}.length"),
+                    )?
+                    .into_int_value();
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_create_string_utf8",
+                        &[
+                            self.pointer_type().into(),
+                            self.pointer_type().into(),
+                            self.size_type().into(),
+                            self.pointer_type().into(),
+                        ],
+                    ),
+                    &[env.into(), native.into(), length.into(), output.into()],
+                    &format!("{name}.create"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+            }
+            tn_node_api::NodeTypeKind::Bytes => {
+                let structure = value.into_struct_value();
+                let pointer = builder
+                    .build_extract_value(structure, 0, &format!("{name}.pointer"))?
+                    .into_pointer_value();
+                let length = builder
+                    .build_extract_value(structure, 1, &format!("{name}.length"))?
+                    .into_int_value();
+                let buffer =
+                    builder.build_alloca(self.pointer_type(), &format!("{name}.buffer"))?;
+                let data = builder.build_alloca(self.pointer_type(), &format!("{name}.data"))?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_create_arraybuffer",
+                        &[
+                            self.pointer_type().into(),
+                            self.size_type().into(),
+                            self.pointer_type().into(),
+                            self.pointer_type().into(),
+                        ],
+                    ),
+                    &[env.into(), length.into(), data.into(), buffer.into()],
+                    &format!("{name}.arraybuffer"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.arraybuffer.status"),
+                )?;
+                let copied = self
+                    .call_value(
+                        builder,
+                        self.runtime_bytes_copy(),
+                        &[
+                            pointer.into(),
+                            length.into(),
+                            builder
+                                .build_load(
+                                    self.pointer_type(),
+                                    data,
+                                    &format!("{name}.data.value"),
+                                )?
+                                .into(),
+                        ],
+                        &format!("{name}.copy"),
+                    )?
+                    .into_int_value();
+                self.continue_if(
+                    builder,
+                    function,
+                    builder.build_int_compare(
+                        IntPredicate::EQ,
+                        copied,
+                        length,
+                        &format!("{name}.copy.ok"),
+                    )?,
+                    error,
+                    &format!("{name}.copy.status"),
+                )?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_create_typedarray",
+                        &[
+                            self.pointer_type().into(),
+                            self.generator.context.i32_type().into(),
+                            self.size_type().into(),
+                            self.pointer_type().into(),
+                            self.size_type().into(),
+                            self.pointer_type().into(),
+                        ],
+                    ),
+                    &[
+                        env.into(),
+                        self.generator.context.i32_type().const_int(1, false).into(),
+                        length.into(),
+                        builder
+                            .build_load(
+                                self.pointer_type(),
+                                buffer,
+                                &format!("{name}.buffer.value"),
+                            )?
+                            .into(),
+                        self.size_type().const_zero().into(),
+                        output.into(),
+                    ],
+                    &format!("{name}.typedarray"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.typedarray.status"),
+                )?;
+            }
+            tn_node_api::NodeTypeKind::Optional(inner) => {
+                let structure = value.into_struct_value();
+                let tag = builder
+                    .build_extract_value(structure, 0, &format!("{name}.tag"))?
+                    .into_int_value();
+                let payload =
+                    builder.build_extract_value(structure, 1, &format!("{name}.payload"))?;
+                let present = self
+                    .generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.present"));
+                let absent = self
+                    .generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.absent"));
+                let merge = self
+                    .generator
+                    .context
+                    .append_basic_block(function, &format!("{name}.merge"));
+                builder.build_conditional_branch(tag, present, absent)?;
+                builder.position_at_end(present);
+                self.convert_result_value(
+                    builder,
+                    function,
+                    env,
+                    inner,
+                    payload,
+                    output,
+                    error,
+                    &format!("{name}.present"),
+                )?;
+                builder.build_unconditional_branch(merge)?;
+                builder.position_at_end(absent);
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_get_undefined",
+                        &[self.pointer_type().into(), self.pointer_type().into()],
+                    ),
+                    &[env.into(), output.into()],
+                    &format!("{name}.absent"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.absent.status"),
+                )?;
+                builder.build_unconditional_branch(merge)?;
+                builder.position_at_end(merge);
+            }
+            tn_node_api::NodeTypeKind::Array {
+                element,
+                fixed_length: Some(length),
+                ..
+            } => {
+                self.convert_fixed_array_result(
+                    builder, function, env, element, *length, value, output, error, name,
+                )?;
+            }
+            tn_node_api::NodeTypeKind::Array { element, .. } => {
+                self.convert_dynamic_array_result(
+                    builder, function, env, ty, element, value, output, error, name,
+                )?;
+            }
+            tn_node_api::NodeTypeKind::Class(_) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "Node class result `{name}` requires a class wrapper"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn convert_scalar_result(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        primitive: &PrimitiveType,
+        value: BasicValueEnum<'ctx>,
+        output: PointerValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let pointer = self.pointer_type();
+        let (creator, argument) = match primitive {
+            PrimitiveType::Bool => {
+                let value = value.into_int_value();
+                let value = builder.build_int_z_extend(
+                    value,
+                    self.generator.context.i8_type(),
+                    &format!("{name}.bool"),
+                )?;
+                ("napi_create_bool", value.into())
+            }
+            PrimitiveType::I8
+            | PrimitiveType::I16
+            | PrimitiveType::I32
+            | PrimitiveType::U8
+            | PrimitiveType::U16
+            | PrimitiveType::U32
+            | PrimitiveType::Char => {
+                let value = value.into_int_value();
+                let value = if value.get_type().get_bit_width() < 32 {
+                    if matches!(primitive, PrimitiveType::I8 | PrimitiveType::I16) {
+                        builder.build_int_s_extend(
+                            value,
+                            self.generator.context.i32_type(),
+                            &format!("{name}.wide"),
+                        )?
+                    } else {
+                        builder.build_int_z_extend(
+                            value,
+                            self.generator.context.i32_type(),
+                            &format!("{name}.wide"),
+                        )?
+                    }
+                } else {
+                    value
+                };
+                let creator = if matches!(primitive, PrimitiveType::U32 | PrimitiveType::Char) {
+                    "napi_create_uint32"
+                } else {
+                    "napi_create_int32"
+                };
+                (creator, value.into())
+            }
+            PrimitiveType::I64 | PrimitiveType::Isize => {
+                ("napi_create_bigint_int64", value.into_int_value().into())
+            }
+            PrimitiveType::U64 | PrimitiveType::Usize => {
+                ("napi_create_bigint_uint64", value.into_int_value().into())
+            }
+            PrimitiveType::F32 | PrimitiveType::F64 => {
+                let value = value.into_float_value();
+                let value = if matches!(primitive, PrimitiveType::F32) {
+                    builder.build_float_ext(
+                        value,
+                        self.generator.context.f64_type(),
+                        &format!("{name}.wide"),
+                    )?
+                } else {
+                    value
+                };
+                ("napi_create_double", value.into())
+            }
+            PrimitiveType::I128 | PrimitiveType::U128 => {
+                let value = value.into_int_value();
+                let bits = builder
+                    .build_bit_cast(
+                        value,
+                        self.generator.context.i128_type(),
+                        &format!("{name}.bits"),
+                    )?
+                    .into_int_value();
+                let low = builder.build_int_truncate(
+                    bits,
+                    self.generator.context.i64_type(),
+                    &format!("{name}.low"),
+                )?;
+                let shifted = builder.build_right_shift(
+                    bits,
+                    self.generator.context.i128_type().const_int(64, false),
+                    false,
+                    &format!("{name}.high.bits"),
+                )?;
+                let high = builder.build_int_truncate(
+                    shifted,
+                    self.generator.context.i64_type(),
+                    &format!("{name}.high"),
+                )?;
+                let words = builder.build_array_alloca(
+                    self.generator.context.i64_type(),
+                    self.generator.context.i32_type().const_int(2, false),
+                    &format!("{name}.words"),
+                )?;
+                let low_address = unsafe {
+                    builder.build_gep(
+                        self.generator.context.i64_type(),
+                        words,
+                        &[self.size_type().const_zero()],
+                        &format!("{name}.low.address"),
+                    )?
+                };
+                let high_address = unsafe {
+                    builder.build_gep(
+                        self.generator.context.i64_type(),
+                        words,
+                        &[self.size_type().const_int(1, false)],
+                        &format!("{name}.high.address"),
+                    )?
+                };
+                builder.build_store(low_address, low)?;
+                builder.build_store(high_address, high)?;
+                let sign = if matches!(primitive, PrimitiveType::I128) {
+                    builder.build_int_compare(
+                        IntPredicate::SLT,
+                        value,
+                        self.generator.context.i128_type().const_zero(),
+                        &format!("{name}.sign"),
+                    )?
+                } else {
+                    self.generator.context.bool_type().const_zero()
+                };
+                let sign = builder.build_int_z_extend(
+                    sign,
+                    self.generator.context.i32_type(),
+                    &format!("{name}.sign.wide"),
+                )?;
+                let status = self.call_status(
+                    builder,
+                    self.napi_status_function(
+                        "napi_create_bigint_words",
+                        &[
+                            pointer.into(),
+                            self.generator.context.i32_type().into(),
+                            self.size_type().into(),
+                            pointer.into(),
+                            pointer.into(),
+                        ],
+                    ),
+                    &[
+                        env.into(),
+                        sign.into(),
+                        self.size_type().const_int(2, false).into(),
+                        words.into(),
+                        output.into(),
+                    ],
+                    &format!("{name}.create"),
+                )?;
+                self.continue_if_status_ok(
+                    builder,
+                    function,
+                    status,
+                    error,
+                    &format!("{name}.status"),
+                )?;
+                return Ok(());
+            }
+            PrimitiveType::Void | PrimitiveType::Never => {
+                return Err(CodegenError::Unsupported("void/never result".into()));
+            }
+        };
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                creator,
+                &[
+                    pointer.into(),
+                    match creator {
+                        "napi_create_bool" => self.generator.context.i8_type().into(),
+                        "napi_create_int32" | "napi_create_uint32" => {
+                            self.generator.context.i32_type().into()
+                        }
+                        "napi_create_bigint_int64" | "napi_create_bigint_uint64" => {
+                            self.generator.context.i64_type().into()
+                        }
+                        "napi_create_double" => self.generator.context.f64_type().into(),
+                        _ => {
+                            return Err(CodegenError::Unsupported(
+                                "unknown Node scalar creator".into(),
+                            ));
+                        }
+                    },
+                    pointer.into(),
+                ],
+            ),
+            &[env.into(), argument, output.into()],
+            &format!("{name}.create"),
+        )?;
+        self.continue_if_status_ok(builder, function, status, error, &format!("{name}.status"))?;
+        Ok(())
+    }
+
+    fn convert_fixed_array_result(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        element: &tn_node_api::NodeType,
+        length: usize,
+        value: BasicValueEnum<'ctx>,
+        output: PointerValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let pointer = self.pointer_type();
+        let status = self.call_status(
+            builder,
+            self.napi_status_function("napi_create_array", &[pointer.into(), pointer.into()]),
+            &[env.into(), output.into()],
+            &format!("{name}.create"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.create.status"),
+        )?;
+        let array = value.into_array_value();
+        for index in 0..length {
+            let element_value = builder.build_extract_value(
+                array,
+                u32::try_from(index).unwrap_or(u32::MAX),
+                &format!("{name}.element.{index}"),
+            )?;
+            let js_element =
+                builder.build_alloca(pointer, &format!("{name}.js_element.{index}"))?;
+            self.convert_result_value(
+                builder,
+                function,
+                env,
+                element,
+                element_value,
+                js_element,
+                error,
+                &format!("{name}.convert.{index}"),
+            )?;
+            let status = self.call_status(
+                builder,
+                self.napi_status_function(
+                    "napi_set_element",
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        self.size_type().into(),
+                        pointer.into(),
+                    ],
+                ),
+                &[
+                    env.into(),
+                    builder
+                        .build_load(pointer, output, &format!("{name}.array.{index}"))?
+                        .into(),
+                    self.size_type()
+                        .const_int(u64::try_from(index).unwrap_or(u64::MAX), false)
+                        .into(),
+                    builder
+                        .build_load(pointer, js_element, &format!("{name}.js.{index}"))?
+                        .into(),
+                ],
+                &format!("{name}.set.{index}"),
+            )?;
+            self.continue_if_status_ok(
+                builder,
+                function,
+                status,
+                error,
+                &format!("{name}.set.{index}.status"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn convert_dynamic_array_result(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        env: PointerValue<'ctx>,
+        ty: &tn_node_api::NodeType,
+        element: &tn_node_api::NodeType,
+        value: BasicValueEnum<'ctx>,
+        output: PointerValue<'ctx>,
+        error: LlvmBlock<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let pointer = self.pointer_type();
+        let status = self.call_status(
+            builder,
+            self.napi_status_function("napi_create_array", &[pointer.into(), pointer.into()]),
+            &[env.into(), output.into()],
+            &format!("{name}.create"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.create.status"),
+        )?;
+        let object = value.into_pointer_value();
+        let array_type = match &ty.native {
+            Type::Nominal(declaration, arguments) => Type::Nominal(*declaration, arguments.clone()),
+            _ => {
+                return Err(CodegenError::Unsupported(
+                    "Node dynamic Array result has no class layout".into(),
+                ));
+            }
+        };
+        let object_type = self.generator.class_object_type(&array_type)?;
+        let length = builder
+            .build_load(
+                self.size_type(),
+                builder.build_struct_gep(
+                    object_type,
+                    object,
+                    3,
+                    &format!("{name}.length.address"),
+                )?,
+                &format!("{name}.length"),
+            )?
+            .into_int_value();
+        let data = builder
+            .build_load(
+                pointer,
+                builder.build_struct_gep(
+                    object_type,
+                    object,
+                    1,
+                    &format!("{name}.data.address"),
+                )?,
+                &format!("{name}.data"),
+            )?
+            .into_pointer_value();
+        let element_type = self.generator.basic_type(&element.native)?;
+        let loop_block = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.loop"));
+        let body_block = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.body"));
+        let done_block = self
+            .generator
+            .context
+            .append_basic_block(function, &format!("{name}.done"));
+        let pre_loop = builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::Builder("Node result pre-loop block is missing".into()))?;
+        builder.build_unconditional_branch(loop_block)?;
+        builder.position_at_end(loop_block);
+        let phi = builder.build_phi(self.size_type(), &format!("{name}.index"))?;
+        phi.add_incoming(&[(&self.size_type().const_zero(), pre_loop)]);
+        let current = phi.as_basic_value().into_int_value();
+        let condition = builder.build_int_compare(
+            IntPredicate::ULT,
+            current,
+            length,
+            &format!("{name}.condition"),
+        )?;
+        builder.build_conditional_branch(condition, body_block, done_block)?;
+        builder.position_at_end(body_block);
+        let native_address = unsafe {
+            builder.build_gep(
+                element_type,
+                data,
+                &[current],
+                &format!("{name}.element.address"),
+            )?
+        };
+        let native =
+            builder.build_load(element_type, native_address, &format!("{name}.element"))?;
+        let js_element = builder.build_alloca(pointer, &format!("{name}.js_element"))?;
+        self.convert_result_value(
+            builder,
+            function,
+            env,
+            element,
+            native,
+            js_element,
+            error,
+            &format!("{name}.convert"),
+        )?;
+        let status = self.call_status(
+            builder,
+            self.napi_status_function(
+                "napi_set_element",
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    self.size_type().into(),
+                    pointer.into(),
+                ],
+            ),
+            &[
+                env.into(),
+                builder
+                    .build_load(pointer, output, &format!("{name}.array"))?
+                    .into(),
+                current.into(),
+                builder
+                    .build_load(pointer, js_element, &format!("{name}.js"))?
+                    .into(),
+            ],
+            &format!("{name}.set"),
+        )?;
+        self.continue_if_status_ok(
+            builder,
+            function,
+            status,
+            error,
+            &format!("{name}.set.status"),
+        )?;
+        let next = builder.build_int_add(
+            current,
+            self.size_type().const_int(1, false),
+            &format!("{name}.next"),
+        )?;
+        let body_end = builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::Builder("Node result body block is missing".into()))?;
+        builder.build_unconditional_branch(loop_block)?;
+        phi.add_incoming(&[(&next, body_end)]);
+        builder.position_at_end(done_block);
+        Ok(())
+    }
 }
 
 fn collect_class_specializations(
@@ -567,6 +5625,14 @@ struct AbiWrapper<'ctx> {
 }
 
 impl<'ctx> Generator<'ctx> {
+    fn add_inline_hint(&self, function: FunctionValue<'ctx>) {
+        let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("inlinehint");
+        function.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(kind, 0),
+        );
+    }
+
     fn new(
         context: &'ctx Context,
         module: Module<'ctx>,
@@ -575,6 +5641,7 @@ impl<'ctx> Generator<'ctx> {
         module_name: &str,
         target_triple: &str,
         profile: CodegenProfile,
+        sanitizers: &BTreeSet<Sanitizer>,
     ) -> Self {
         let debug_info = DebugInfoState::new(&module, module_name, profile);
         Self {
@@ -589,21 +5656,26 @@ impl<'ctx> Generator<'ctx> {
             constructors: Vec::new(),
             descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
+            builtin_witnesses: BTreeMap::new(),
             debug_info,
             async_wrappers: Vec::new(),
             abi_wrappers: Vec::new(),
             is_macos: target_triple.contains("apple-darwin"),
+            sanitizers: sanitizers.clone(),
         }
     }
 
     #[allow(clippy::too_many_lines)]
     fn declare_bodies(&mut self, units: &[MonomorphizedBody]) -> Result<(), CodegenError> {
         for unit in units {
+            let explicitly_exported = self.layouts.export_instances.contains_key(&unit.instance)
+                || self.layouts.exports.contains_key(&unit.instance.callable);
             let exported_name = self
                 .layouts
-                .exports
-                .get(&unit.instance.callable)
+                .export_instances
+                .get(&unit.instance)
                 .cloned()
+                .or_else(|| self.layouts.exports.get(&unit.instance.callable).cloned())
                 .unwrap_or_else(|| symbol_for_instance(&unit.instance));
             let body_signature = body_signature(&unit.body);
             let body_type = self.body_function_type(&unit.body)?;
@@ -626,9 +5698,10 @@ impl<'ctx> Generator<'ctx> {
                 exported_name.clone()
             };
             let body_function = self.module.add_function(&body_name, body_type, None);
-            if !self.layouts.exports.is_empty()
-                && !self.layouts.exports.contains_key(&unit.instance.callable)
-            {
+            if self.layouts.inlines.contains(&unit.instance.callable) {
+                self.add_inline_hint(body_function);
+            }
+            if !explicitly_exported {
                 body_function.set_linkage(Linkage::Internal);
             }
             self.debug_info.attach_function(body_function, &body_name);
@@ -650,9 +5723,10 @@ impl<'ctx> Generator<'ctx> {
                     &signature.effects,
                 )?;
                 let wrapper = self.module.add_function(&exported_name, wrapper_type, None);
-                if !self.layouts.exports.is_empty()
-                    && !self.layouts.exports.contains_key(&unit.instance.callable)
-                {
+                if self.layouts.inlines.contains(&unit.instance.callable) {
+                    self.add_inline_hint(wrapper);
+                }
+                if !explicitly_exported {
                     wrapper.set_linkage(Linkage::Internal);
                 }
                 self.debug_info.attach_function(wrapper, &exported_name);
@@ -749,6 +5823,9 @@ impl<'ctx> Generator<'ctx> {
                     &signature.effects,
                 )?;
                 let wrapper = self.module.add_function(&exported_name, wrapper_type, None);
+                if self.layouts.inlines.contains(&unit.instance.callable) {
+                    self.add_inline_hint(wrapper);
+                }
                 self.debug_info.attach_function(wrapper, &exported_name);
                 self.functions.insert(unit.instance.clone(), wrapper);
                 self.signatures
@@ -760,13 +5837,17 @@ impl<'ctx> Generator<'ctx> {
                     kind: AbiWrapperKind::EffectLift,
                 });
             } else {
-                self.signatures
-                    .insert(unit.instance.clone(), body_signature.clone());
-                self.functions.insert(unit.instance.clone(), body_function);
+                let signature = body_signature.clone();
+                let function = body_function;
+                self.functions.insert(unit.instance.clone(), function);
+                self.signatures.insert(unit.instance.clone(), signature);
             }
             if let Some(kind) = abi_kind {
                 let abi_type = self.abi_wrapper_type(kind, &body_signature)?;
                 let wrapper = self.module.add_function(&exported_name, abi_type, None);
+                if self.layouts.inlines.contains(&unit.instance.callable) {
+                    self.add_inline_hint(wrapper);
+                }
                 self.debug_info.attach_function(wrapper, &exported_name);
                 self.abi_wrappers.push(AbiWrapper {
                     wrapper,
@@ -791,30 +5872,32 @@ impl<'ctx> Generator<'ctx> {
             {
                 continue;
             }
+            let signature = self.normalize_function_type(&external.function);
             let function_type = self.llvm_function_type(
-                &external.function.parameters,
-                &external.function.result,
-                &external.function.effects,
+                &signature.parameters,
+                &signature.result,
+                &signature.effects,
             )?;
-            let function = if let Some((function, signature)) = declared.get(&external.name) {
-                if signature != &external.function {
-                    return Err(CodegenError::Unsupported(format!(
-                        "extern symbol `{}` has incompatible declarations",
-                        external.name
-                    )));
-                }
-                *function
-            } else {
-                let function = self
-                    .module
-                    .add_function(&external.name, function_type, None);
-                declared.insert(external.name.clone(), (function, external.function.clone()));
-                function
-            };
+            let function =
+                if let Some((function, existing_signature)) = declared.get(&external.name) {
+                    if existing_signature != &signature {
+                        return Err(CodegenError::Unsupported(format!(
+                            "extern symbol `{}` has incompatible declarations",
+                            external.name
+                        )));
+                    }
+                    *function
+                } else {
+                    let function = self
+                        .module
+                        .add_function(&external.name, function_type, None);
+                    declared.insert(external.name.clone(), (function, signature.clone()));
+                    function
+                };
             self.functions
                 .insert(Instance::concrete(*callable), function);
             self.signatures
-                .insert(Instance::concrete(*callable), external.function.clone());
+                .insert(Instance::concrete(*callable), signature);
         }
         Ok(())
     }
@@ -1050,6 +6133,9 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn declare_witnesses(&mut self) -> Result<(), CodegenError> {
+        self.declare_builtin_ord_witnesses()?;
+        self.declare_builtin_hash_witnesses()?;
+        self.declare_builtin_equal_witnesses()?;
         let entries = self
             .layouts
             .witnesses
@@ -1086,6 +6172,441 @@ impl<'ctx> Generator<'ctx> {
             global.set_initializer(&pointer.const_array(&values));
             self.witnesses
                 .insert((interface, target), global.as_pointer_value());
+        }
+        Ok(())
+    }
+
+    fn declare_builtin_ord_witnesses(&mut self) -> Result<(), CodegenError> {
+        let interfaces = self
+            .layouts
+            .interface_names
+            .iter()
+            .filter_map(|(declaration, name)| (name == "Ord").then_some(*declaration))
+            .collect::<Vec<_>>();
+        let types = [
+            Type::Primitive(PrimitiveType::Bool),
+            Type::Primitive(PrimitiveType::I8),
+            Type::Primitive(PrimitiveType::I16),
+            Type::Primitive(PrimitiveType::I32),
+            Type::Primitive(PrimitiveType::I64),
+            Type::Primitive(PrimitiveType::I128),
+            Type::Primitive(PrimitiveType::Isize),
+            Type::Primitive(PrimitiveType::U8),
+            Type::Primitive(PrimitiveType::U16),
+            Type::Primitive(PrimitiveType::U32),
+            Type::Primitive(PrimitiveType::U64),
+            Type::Primitive(PrimitiveType::U128),
+            Type::Primitive(PrimitiveType::Usize),
+            Type::Primitive(PrimitiveType::F32),
+            Type::Primitive(PrimitiveType::F64),
+            Type::Primitive(PrimitiveType::Char),
+            Type::String,
+            Type::Str,
+        ];
+        for interface in interfaces {
+            for ty in &types {
+                let function_name =
+                    format!("tn_builtin_ord_{}_{}", interface.0, builtin_type_name(ty));
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                let function = self.module.add_function(
+                    &function_name,
+                    self.context
+                        .i32_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    None,
+                );
+                function.set_linkage(Linkage::Private);
+                let entry = self.context.append_basic_block(function, "entry");
+                let builder = self.context.create_builder();
+                builder.position_at_end(entry);
+                let receiver = function
+                    .get_nth_param(0)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("builtin Ord receiver is missing".into())
+                    })?
+                    .into_pointer_value();
+                let argument = function
+                    .get_nth_param(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("builtin Ord argument is missing".into())
+                    })?
+                    .into_pointer_value();
+                let (less, greater) = if matches!(ty, Type::String | Type::Str) {
+                    let comparison = builder
+                        .build_call(
+                            self.runtime_string_compare_slots(),
+                            &[receiver.into(), argument.into()],
+                            "builtin.string.compare",
+                        )?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::Builder("string comparison returned no value".into())
+                        })?
+                        .into_int_value();
+                    (
+                        builder.build_int_compare(
+                            IntPredicate::SLT,
+                            comparison,
+                            comparison.get_type().const_zero(),
+                            "builtin.string.less",
+                        )?,
+                        builder.build_int_compare(
+                            IntPredicate::SGT,
+                            comparison,
+                            comparison.get_type().const_zero(),
+                            "builtin.string.greater",
+                        )?,
+                    )
+                } else {
+                    let value_type = self.basic_type(ty)?;
+                    let left = builder.build_load(value_type, receiver, "builtin.ord.left")?;
+                    let right = builder.build_load(value_type, argument, "builtin.ord.right")?;
+                    match (left, right) {
+                        (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
+                            let (less, greater) = if builtin_type_is_signed(ty) {
+                                (IntPredicate::SLT, IntPredicate::SGT)
+                            } else {
+                                (IntPredicate::ULT, IntPredicate::UGT)
+                            };
+                            (
+                                builder.build_int_compare(less, left, right, "builtin.ord.less")?,
+                                builder.build_int_compare(
+                                    greater,
+                                    left,
+                                    right,
+                                    "builtin.ord.greater",
+                                )?,
+                            )
+                        }
+                        (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => (
+                            builder.build_float_compare(
+                                FloatPredicate::OLT,
+                                left,
+                                right,
+                                "builtin.ord.less",
+                            )?,
+                            builder.build_float_compare(
+                                FloatPredicate::OGT,
+                                left,
+                                right,
+                                "builtin.ord.greater",
+                            )?,
+                        ),
+                        _ => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "builtin Ord does not support {ty:?}"
+                            )));
+                        }
+                    }
+                };
+                let ordering_type = self.context.i32_type();
+                let equal = ordering_type.const_int(1, false);
+                let less_value = ordering_type.const_zero();
+                let greater_value = ordering_type.const_int(2, false);
+                let result = builder
+                    .build_select(less, less_value, equal, "builtin.ord.less.value")?
+                    .into_int_value();
+                let result = builder
+                    .build_select(greater, greater_value, result, "builtin.ord.greater.value")?
+                    .into_int_value();
+                builder.build_return(Some(&result))?;
+
+                let table_name = format!(
+                    "tn_builtin_witness_{}_{}",
+                    interface.0,
+                    builtin_type_name(ty)
+                );
+                let table = self
+                    .module
+                    .add_global(pointer.array_type(1), None, &table_name);
+                table.set_linkage(Linkage::Private);
+                let function_pointer = function.as_global_value().as_pointer_value();
+                table.set_initializer(&pointer.const_array(&[function_pointer]));
+                self.builtin_witnesses
+                    .insert((interface, ty.clone()), table.as_pointer_value());
+            }
+        }
+        Ok(())
+    }
+
+    fn declare_builtin_hash_witnesses(&mut self) -> Result<(), CodegenError> {
+        let interfaces = self
+            .layouts
+            .interface_names
+            .iter()
+            .filter_map(|(declaration, name)| (name == "Hash").then_some(*declaration))
+            .collect::<Vec<_>>();
+        let types = [
+            Type::Primitive(PrimitiveType::Bool),
+            Type::Primitive(PrimitiveType::I8),
+            Type::Primitive(PrimitiveType::I16),
+            Type::Primitive(PrimitiveType::I32),
+            Type::Primitive(PrimitiveType::I64),
+            Type::Primitive(PrimitiveType::I128),
+            Type::Primitive(PrimitiveType::Isize),
+            Type::Primitive(PrimitiveType::U8),
+            Type::Primitive(PrimitiveType::U16),
+            Type::Primitive(PrimitiveType::U32),
+            Type::Primitive(PrimitiveType::U64),
+            Type::Primitive(PrimitiveType::U128),
+            Type::Primitive(PrimitiveType::Usize),
+            Type::Primitive(PrimitiveType::F32),
+            Type::Primitive(PrimitiveType::F64),
+            Type::Primitive(PrimitiveType::Char),
+            Type::String,
+            Type::Str,
+        ];
+        for interface in interfaces {
+            for ty in &types {
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                let function_name =
+                    format!("tn_builtin_hash_{}_{}", interface.0, builtin_type_name(ty));
+                let function = self.module.add_function(
+                    &function_name,
+                    self.context.i64_type().fn_type(&[pointer.into()], false),
+                    None,
+                );
+                function.set_linkage(Linkage::Private);
+                let entry = self.context.append_basic_block(function, "entry");
+                let builder = self.context.create_builder();
+                builder.position_at_end(entry);
+                let receiver = function
+                    .get_nth_param(0)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("builtin Hash receiver is missing".into())
+                    })?
+                    .into_pointer_value();
+                let hash = if matches!(ty, Type::String | Type::Str) {
+                    builder
+                        .build_call(
+                            self.runtime_string_hash_slots(),
+                            &[receiver.into()],
+                            "builtin.string.hash",
+                        )?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::Builder("string hash returned no value".into())
+                        })?
+                        .into_int_value()
+                } else {
+                    let value =
+                        builder.build_load(self.basic_type(ty)?, receiver, "builtin.hash.value")?;
+                    match value {
+                        BasicValueEnum::IntValue(value) => {
+                            let width = value.get_type().get_bit_width();
+                            if width < 64 {
+                                if builtin_type_is_signed(ty) {
+                                    builder.build_int_s_extend(
+                                        value,
+                                        self.context.i64_type(),
+                                        "builtin.hash.sign_extend",
+                                    )?
+                                } else {
+                                    builder.build_int_z_extend(
+                                        value,
+                                        self.context.i64_type(),
+                                        "builtin.hash.zero_extend",
+                                    )?
+                                }
+                            } else if width == 64 {
+                                value
+                            } else {
+                                let low = builder.build_int_truncate(
+                                    value,
+                                    self.context.i64_type(),
+                                    "builtin.hash.low",
+                                )?;
+                                let shifted = builder.build_right_shift(
+                                    value,
+                                    self.context.i128_type().const_int(64, false),
+                                    false,
+                                    "builtin.hash.high_shift",
+                                )?;
+                                let high = builder.build_int_truncate(
+                                    shifted,
+                                    self.context.i64_type(),
+                                    "builtin.hash.high",
+                                )?;
+                                builder.build_xor(low, high, "builtin.hash.combine")?
+                            }
+                        }
+                        BasicValueEnum::FloatValue(value) => {
+                            if value.get_type() == self.context.f32_type() {
+                                let bits = builder
+                                    .build_bit_cast(
+                                        value,
+                                        self.context.i32_type(),
+                                        "builtin.hash.f32_bits",
+                                    )?
+                                    .into_int_value();
+                                builder.build_int_z_extend(
+                                    bits,
+                                    self.context.i64_type(),
+                                    "builtin.hash.f32_extend",
+                                )?
+                            } else {
+                                builder
+                                    .build_bit_cast(
+                                        value,
+                                        self.context.i64_type(),
+                                        "builtin.hash.f64_bits",
+                                    )?
+                                    .into_int_value()
+                            }
+                        }
+                        _ => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "builtin Hash does not support {ty:?}"
+                            )));
+                        }
+                    }
+                };
+                builder.build_return(Some(&hash))?;
+
+                let table_name = format!(
+                    "tn_builtin_witness_{}_{}",
+                    interface.0,
+                    builtin_type_name(ty)
+                );
+                let table = self
+                    .module
+                    .add_global(pointer.array_type(1), None, &table_name);
+                table.set_linkage(Linkage::Private);
+                table.set_initializer(
+                    &pointer.const_array(&[function.as_global_value().as_pointer_value()]),
+                );
+                self.builtin_witnesses
+                    .insert((interface, ty.clone()), table.as_pointer_value());
+            }
+        }
+        Ok(())
+    }
+
+    fn declare_builtin_equal_witnesses(&mut self) -> Result<(), CodegenError> {
+        let interfaces = self
+            .layouts
+            .interface_names
+            .iter()
+            .filter_map(|(declaration, name)| (name == "Equal").then_some(*declaration))
+            .collect::<Vec<_>>();
+        let types = [
+            Type::Primitive(PrimitiveType::Bool),
+            Type::Primitive(PrimitiveType::I8),
+            Type::Primitive(PrimitiveType::I16),
+            Type::Primitive(PrimitiveType::I32),
+            Type::Primitive(PrimitiveType::I64),
+            Type::Primitive(PrimitiveType::I128),
+            Type::Primitive(PrimitiveType::Isize),
+            Type::Primitive(PrimitiveType::U8),
+            Type::Primitive(PrimitiveType::U16),
+            Type::Primitive(PrimitiveType::U32),
+            Type::Primitive(PrimitiveType::U64),
+            Type::Primitive(PrimitiveType::U128),
+            Type::Primitive(PrimitiveType::Usize),
+            Type::Primitive(PrimitiveType::F32),
+            Type::Primitive(PrimitiveType::F64),
+            Type::Primitive(PrimitiveType::Char),
+            Type::String,
+            Type::Str,
+        ];
+        for interface in interfaces {
+            for ty in &types {
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                let function_name =
+                    format!("tn_builtin_equal_{}_{}", interface.0, builtin_type_name(ty));
+                let function = self.module.add_function(
+                    &function_name,
+                    self.context
+                        .bool_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    None,
+                );
+                function.set_linkage(Linkage::Private);
+                let entry = self.context.append_basic_block(function, "entry");
+                let builder = self.context.create_builder();
+                builder.position_at_end(entry);
+                let receiver = function
+                    .get_nth_param(0)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("builtin Equal receiver is missing".into())
+                    })?
+                    .into_pointer_value();
+                let argument = function
+                    .get_nth_param(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("builtin Equal argument is missing".into())
+                    })?
+                    .into_pointer_value();
+                let equal = if matches!(ty, Type::String | Type::Str) {
+                    let result = builder
+                        .build_call(
+                            self.runtime_string_equals_slots(),
+                            &[receiver.into(), argument.into()],
+                            "builtin.string.equals",
+                        )?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::Builder("string equality returned no value".into())
+                        })?
+                        .into_int_value();
+                    builder.build_int_compare(
+                        IntPredicate::NE,
+                        result,
+                        result.get_type().const_zero(),
+                        "builtin.string.equals.test",
+                    )?
+                } else {
+                    let left =
+                        builder.build_load(self.basic_type(ty)?, receiver, "builtin.equal.left")?;
+                    let right = builder.build_load(
+                        self.basic_type(ty)?,
+                        argument,
+                        "builtin.equal.right",
+                    )?;
+                    match (left, right) {
+                        (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
+                            builder.build_int_compare(
+                                IntPredicate::EQ,
+                                left,
+                                right,
+                                "builtin.equal.int",
+                            )?
+                        }
+                        (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
+                            builder.build_float_compare(
+                                FloatPredicate::OEQ,
+                                left,
+                                right,
+                                "builtin.equal.float",
+                            )?
+                        }
+                        _ => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "builtin Equal does not support {ty:?}"
+                            )));
+                        }
+                    }
+                };
+                builder.build_return(Some(&equal))?;
+
+                let table_name = format!(
+                    "tn_builtin_witness_{}_{}",
+                    interface.0,
+                    builtin_type_name(ty)
+                );
+                let table = self
+                    .module
+                    .add_global(pointer.array_type(1), None, &table_name);
+                table.set_linkage(Linkage::Private);
+                table.set_initializer(
+                    &pointer.const_array(&[function.as_global_value().as_pointer_value()]),
+                );
+                self.builtin_witnesses
+                    .insert((interface, ty.clone()), table.as_pointer_value());
+            }
         }
         Ok(())
     }
@@ -1214,10 +6735,12 @@ impl<'ctx> Generator<'ctx> {
                                 .ptr_type(AddressSpace::default())
                                 .as_basic_type_enum()
                                 .into(),
+                            self.pointer_int_type().into(),
                             self.context
                                 .ptr_type(AddressSpace::default())
                                 .as_basic_type_enum()
                                 .into(),
+                            self.pointer_int_type().into(),
                         ],
                         false,
                     ),
@@ -1238,13 +6761,58 @@ impl<'ctx> Generator<'ctx> {
                                 .ptr_type(AddressSpace::default())
                                 .as_basic_type_enum()
                                 .into(),
+                            self.pointer_int_type().into(),
                             self.context
                                 .ptr_type(AddressSpace::default())
                                 .as_basic_type_enum()
                                 .into(),
+                            self.pointer_int_type().into(),
                         ],
                         false,
                     ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_string_compare_slots(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_string_compare_slots")
+            .unwrap_or_else(|| {
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                self.module.add_function(
+                    "tn_string_compare_slots",
+                    self.context
+                        .i32_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_string_hash_slots(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_string_hash_slots")
+            .unwrap_or_else(|| {
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                self.module.add_function(
+                    "tn_string_hash_slots",
+                    self.context.i64_type().fn_type(&[pointer.into()], false),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_string_equals_slots(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_string_equals_slots")
+            .unwrap_or_else(|| {
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                self.module.add_function(
+                    "tn_string_equals_slots",
+                    self.context
+                        .i32_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
                     None,
                 )
             })
@@ -1271,29 +6839,69 @@ impl<'ctx> Generator<'ctx> {
             })
     }
 
-    fn runtime_strlen(&self) -> FunctionValue<'ctx> {
-        self.module.get_function("strlen").unwrap_or_else(|| {
-            self.module.add_function(
-                "strlen",
-                self.pointer_int_type().fn_type(
-                    &[self
-                        .context
-                        .ptr_type(AddressSpace::default())
-                        .as_basic_type_enum()
-                        .into()],
-                    false,
-                ),
-                None,
-            )
-        })
-    }
-
-    fn runtime_ref_retain(&self) -> FunctionValue<'ctx> {
+    fn runtime_string_length(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("tn_ref_retain")
+            .get_function("tn_string_length")
             .unwrap_or_else(|| {
                 self.module.add_function(
-                    "tn_ref_retain",
+                    "tn_string_length",
+                    self.pointer_int_type().fn_type(
+                        &[self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum()
+                            .into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_string_free(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_string_free")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_string_free",
+                    self.context.void_type().fn_type(
+                        &[self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum()
+                            .into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_arc_retain(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_arc_retain")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_arc_retain",
+                    self.context.ptr_type(AddressSpace::default()).fn_type(
+                        &[self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum()
+                            .into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_arc_upgrade(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_arc_upgrade")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_arc_upgrade",
                     self.context.ptr_type(AddressSpace::default()).fn_type(
                         &[self
                             .context
@@ -1362,6 +6970,25 @@ impl<'ctx> Generator<'ctx> {
             .unwrap_or_else(|| {
                 self.module.add_function(
                     "tn_runtime_async_raw_result",
+                    self.context.ptr_type(AddressSpace::default()).fn_type(
+                        &[self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum()
+                            .into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_async_result(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_runtime_async_result")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_runtime_async_result",
                     self.context.ptr_type(AddressSpace::default()).fn_type(
                         &[self
                             .context
@@ -1921,6 +7548,60 @@ impl<'ctx> Generator<'ctx> {
             let failed = builder
                 .build_extract_value(call, 0, "abi.failed")?
                 .into_int_value();
+            if wrapper.kind == AbiWrapperKind::FallibleValue {
+                let failed_test = builder.build_int_compare(
+                    IntPredicate::NE,
+                    failed,
+                    failed.get_type().const_zero(),
+                    "abi.failed.test",
+                )?;
+                let failed_block = self
+                    .context
+                    .append_basic_block(wrapper.wrapper, "abi.failed");
+                let success_block = self
+                    .context
+                    .append_basic_block(wrapper.wrapper, "abi.success");
+                builder.build_conditional_branch(failed_test, failed_block, success_block)?;
+
+                builder.position_at_end(failed_block);
+                let error = builder
+                    .build_extract_value(call, 2, "abi.error")?
+                    .into_pointer_value();
+                let error =
+                    builder.build_ptr_to_int(error, self.context.i64_type(), "abi.error.wide")?;
+                let failed_wide = builder.build_int_z_extend(
+                    failed,
+                    self.context.i64_type(),
+                    "abi.failed.wide",
+                )?;
+                let failed_value = self.context.i64_type().array_type(2).const_zero();
+                let failed_value = builder
+                    .build_insert_value(failed_value, failed_wide, 0, "abi.failed.field")?
+                    .into_array_value();
+                let failed_value = builder
+                    .build_insert_value(failed_value, error, 1, "abi.error.field")?
+                    .into_array_value();
+                builder.build_return(Some(&failed_value))?;
+
+                builder.position_at_end(success_block);
+                let value = builder.build_extract_value(call, 1, "abi.value")?;
+                let payload =
+                    self.abi_payload_to_i64(&builder, value, &wrapper.signature.result)?;
+                let success_value = self.context.i64_type().array_type(2).const_zero();
+                let success_value = builder
+                    .build_insert_value(
+                        success_value,
+                        self.context.i64_type().const_zero(),
+                        0,
+                        "abi.success.field",
+                    )?
+                    .into_array_value();
+                let success_value = builder
+                    .build_insert_value(success_value, payload, 1, "abi.value.field")?
+                    .into_array_value();
+                builder.build_return(Some(&success_value))?;
+                continue;
+            }
             let failed =
                 builder.build_int_z_extend(failed, self.context.i64_type(), "abi.failed.wide")?;
             let payload = match wrapper.kind {
@@ -1932,8 +7613,7 @@ impl<'ctx> Generator<'ctx> {
                     "abi.error.wide",
                 )?,
                 AbiWrapperKind::FallibleValue => {
-                    let value = builder.build_extract_value(call, 1, "abi.value")?;
-                    self.abi_payload_to_i64(&builder, value, &wrapper.signature.result)?
+                    unreachable!("fallible value wrapper handled above")
                 }
                 AbiWrapperKind::FallibleIndirect => {
                     unreachable!("fallible indirect ABI wrapper handled above")
@@ -2060,6 +7740,10 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn basic_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+        let resolved = self.resolve_alias(ty);
+        if resolved != *ty {
+            return self.basic_type(&resolved);
+        }
         let pointer = || self.context.ptr_type(AddressSpace::default()).into();
         Ok(match ty {
             Type::Primitive(primitive) => match primitive {
@@ -2173,7 +7857,7 @@ impl<'ctx> Generator<'ctx> {
             NominalKind::Enum {
                 variants, c_repr, ..
             } => {
-                if *c_repr {
+                if *c_repr || variants.iter().all(Vec::is_empty) {
                     return Ok(self.context.i32_type().into());
                 }
                 let mut fields = vec![self.context.i64_type().into()];
@@ -2182,6 +7866,112 @@ impl<'ctx> Generator<'ctx> {
                 }
                 Ok(self.context.struct_type(&fields, false).into())
             }
+        }
+    }
+
+    fn resolve_alias(&self, ty: &Type) -> Type {
+        let mut current = ty.clone();
+        let mut visited = BTreeSet::new();
+        loop {
+            let Type::Nominal(declaration, arguments) = &current else {
+                return current;
+            };
+            if !arguments.is_empty() || !visited.insert(*declaration) {
+                return current;
+            }
+            let Some(alias) = self.layouts.aliases.get(declaration) else {
+                return current;
+            };
+            current = alias.clone();
+        }
+    }
+
+    fn normalize_alias_deep(&self, ty: &Type) -> Type {
+        let ty = self.resolve_alias(ty);
+        match ty {
+            Type::Nominal(declaration, arguments) => Type::Nominal(
+                declaration,
+                arguments
+                    .iter()
+                    .map(|argument| self.normalize_alias_deep(argument))
+                    .collect(),
+            ),
+            Type::DynamicInterface(declaration, arguments) => Type::DynamicInterface(
+                declaration,
+                arguments
+                    .iter()
+                    .map(|argument| self.normalize_alias_deep(argument))
+                    .collect(),
+            ),
+            Type::Promise { result, effects } => Type::Promise {
+                result: Box::new(self.normalize_alias_deep(&result)),
+                effects,
+            },
+            Type::Optional(inner) => Type::Optional(Box::new(self.normalize_alias_deep(&inner))),
+            Type::Array(inner, length) => {
+                Type::Array(Box::new(self.normalize_alias_deep(&inner)), length)
+            }
+            Type::Slice(inner) => Type::Slice(Box::new(self.normalize_alias_deep(&inner))),
+            Type::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.normalize_alias_deep(element))
+                    .collect(),
+            ),
+            Type::Reference {
+                mutable,
+                lifetime,
+                referent,
+            } => Type::Reference {
+                mutable,
+                lifetime,
+                referent: Box::new(self.normalize_alias_deep(&referent)),
+            },
+            Type::RawPointer { mutable, pointee } => Type::RawPointer {
+                mutable,
+                pointee: Box::new(self.normalize_alias_deep(&pointee)),
+            },
+            Type::Function(function) => Type::Function(FunctionType {
+                parameters: function
+                    .parameters
+                    .iter()
+                    .map(|parameter| self.normalize_alias_deep(parameter))
+                    .collect(),
+                result: Box::new(self.normalize_alias_deep(&function.result)),
+                effects: function.effects,
+                generics: function.generics,
+                is_async: function.is_async,
+                is_unsafe: function.is_unsafe,
+            }),
+            Type::Template(elements) => Type::Template(
+                elements
+                    .iter()
+                    .map(|element| self.normalize_alias_deep(element))
+                    .collect(),
+            ),
+            Type::Primitive(_)
+            | Type::String
+            | Type::Str
+            | Type::Generic(_)
+            | Type::Lifetime(_)
+            | Type::ErrorUnion(_)
+            | Type::Error
+            | Type::Unknown => ty,
+        }
+    }
+
+    fn normalize_function_type(&self, function: &FunctionType) -> FunctionType {
+        FunctionType {
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| self.normalize_alias_deep(parameter))
+                .collect(),
+            result: Box::new(self.normalize_alias_deep(&function.result)),
+            effects: function.effects.clone(),
+            generics: function.generics.clone(),
+            is_async: function.is_async,
+            is_unsafe: function.is_unsafe,
         }
     }
 
@@ -2527,6 +8317,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .get(declaration)
                         .is_some_and(|layout| {
                             matches!(layout.kind, NominalKind::Enum { c_repr: true, .. })
+                                || matches!(
+                                    layout.kind,
+                                    NominalKind::Enum { ref variants, .. }
+                                        if variants.iter().all(Vec::is_empty)
+                                )
                         })
                 {
                     let tag = self.builder.build_store(
@@ -2726,7 +8521,14 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 }
                 let value = self.lower_operand(operand)?;
                 let target = self.generator.basic_type(ty)?;
-                self.lower_cast(value, target)
+                self.lower_cast(value, target).map_err(|error| {
+                    CodegenError::Unsupported(format!(
+                        "{error}; residual cast source {:?}, target {:?}, kind {:?}",
+                        self.operand_type(operand).unwrap_or(Type::Error),
+                        ty,
+                        kind,
+                    ))
+                })
             }
             Rvalue::DirectMethod {
                 implementation,
@@ -2812,6 +8614,29 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "type.test",
                     )?
                     .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if matches!(
+                operation.as_str(),
+                "atomic_i32_load"
+                    | "atomic_i32_store"
+                    | "atomic_i32_fetch_add"
+                    | "atomic_i32_compare_exchange"
+                    | "atomic_u64_load"
+                    | "atomic_u64_store"
+                    | "atomic_u64_fetch_add"
+                    | "atomic_u64_compare_exchange"
+                    | "atomic_usize_load"
+                    | "atomic_usize_store"
+                    | "atomic_usize_fetch_add"
+                    | "atomic_usize_compare_exchange"
+                    | "atomic_fence"
+            ) =>
+            {
+                self.lower_atomic_operation(operation, operands, ty)
             }
             Rvalue::RawOperation {
                 operation,
@@ -3215,6 +9040,115 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             Rvalue::RawOperation {
                 operation,
                 operands,
+                ..
+            } if operation == "drop_element" => {
+                let pointer = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("drop_element operation lacks a pointer".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let index = operands
+                    .get(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("drop_element operation lacks an index".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let initialized = operands
+                    .get(2)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "drop_element operation lacks an initialized bitmap".into(),
+                        )
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let Type::RawPointer { pointee, .. } =
+                    self.operand_type(operands.first().ok_or_else(|| {
+                        CodegenError::Unsupported("drop_element operation lacks a pointer".into())
+                    })?)?
+                else {
+                    return Err(CodegenError::Unsupported(
+                        "drop_element pointer is not a raw pointer".into(),
+                    ));
+                };
+                let element_type = pointee.as_ref().clone();
+                let element_pointer = unsafe {
+                    self.builder.build_gep(
+                        self.generator.basic_type(&element_type)?,
+                        pointer,
+                        &[index],
+                        "drop.element.address",
+                    )?
+                };
+                let initialized_address = unsafe {
+                    self.builder.build_gep(
+                        self.generator.context.i8_type(),
+                        initialized,
+                        &[index],
+                        "drop.element.initialized.address",
+                    )?
+                };
+                let initialized_value = self
+                    .builder
+                    .build_load(
+                        self.generator.context.i8_type(),
+                        initialized_address,
+                        "drop.element.initialized.value",
+                    )?
+                    .into_int_value();
+                let occupied = self.builder.build_int_compare(
+                    IntPredicate::NE,
+                    initialized_value,
+                    initialized_value.get_type().const_zero(),
+                    "drop.element.occupied",
+                )?;
+                let drop_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "drop.element.drop");
+                let skip_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "drop.element.skip");
+                let done_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "drop.element.done");
+                self.builder
+                    .build_conditional_branch(occupied, drop_block, skip_block)?;
+                self.builder.position_at_end(drop_block);
+                self.lower_drop_value_at_pointer(element_pointer, &element_type)?;
+                self.builder.build_store(
+                    initialized_address,
+                    self.generator.context.i8_type().const_zero(),
+                )?;
+                self.builder.build_unconditional_branch(done_block)?;
+                let dropped_predecessor = self.builder.get_insert_block().ok_or_else(|| {
+                    CodegenError::Builder("drop element block disappeared".into())
+                })?;
+                self.builder.position_at_end(skip_block);
+                self.builder.build_unconditional_branch(done_block)?;
+                let skipped_predecessor = self.builder.get_insert_block().ok_or_else(|| {
+                    CodegenError::Builder("drop element block disappeared".into())
+                })?;
+                self.builder.position_at_end(done_block);
+                let dropped = self.generator.context.bool_type().const_all_ones();
+                let skipped = self.generator.context.bool_type().const_zero();
+                let phi = self
+                    .builder
+                    .build_phi(self.generator.context.bool_type(), "drop.element.result")?;
+                phi.add_incoming(&[
+                    (&dropped as &dyn BasicValue, dropped_predecessor),
+                    (&skipped as &dyn BasicValue, skipped_predecessor),
+                ]);
+                Ok(phi.as_basic_value())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
                 ty,
             } if operation == "dereference" => {
                 let operand = operands.first().ok_or_else(|| {
@@ -3331,6 +9265,39 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ..
+            } if operation == "borrow_element_mut" => {
+                let pointer_operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("borrow_element_mut operation lacks a pointer".into())
+                })?;
+                let pointer = self.lower_operand(pointer_operand)?.into_pointer_value();
+                let Type::RawPointer { pointee, .. } = self.operand_type(pointer_operand)? else {
+                    return Err(CodegenError::Unsupported(
+                        "borrow_element_mut operation requires a raw pointer".into(),
+                    ));
+                };
+                let index = operands
+                    .get(1)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "borrow_element_mut operation lacks an index".into(),
+                        )
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let element = self.generator.basic_type(&pointee)?;
+                // SAFETY: collection methods check the logical index before invoking this
+                // intrinsic, and their storage invariant guarantees `capacity` consecutive
+                // elements at `pointer`.
+                Ok(unsafe {
+                    self.builder
+                        .build_gep(element, pointer, &[index], "borrowed.element.mut")?
+                        .into()
+                })
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
             } if matches!(operation.as_str(), "borrow_mut" | "borrow_shared") => {
                 let operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported(format!("{operation} operation lacks an operand"))
@@ -3357,6 +9324,45 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .and_then(|operand| self.lower_operand(operand))?;
                 self.builder.build_store(pointer, value)?;
                 Ok(self.generator.context.bool_type().const_all_ones().into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
+            } if operation == "drop_value" => {
+                let pointer = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("drop_value operation lacks a pointer".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_pointer_value();
+                let Type::RawPointer { pointee, .. } =
+                    self.operand_type(operands.first().ok_or_else(|| {
+                        CodegenError::Unsupported("drop_value operation lacks a pointer".into())
+                    })?)?
+                else {
+                    return Err(CodegenError::Unsupported(
+                        "drop_value pointer is not a raw pointer".into(),
+                    ));
+                };
+                self.lower_drop_value_at_pointer(pointer, pointee.as_ref())?;
+                Ok(self.generator.context.bool_type().const_all_ones().into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if matches!(operation.as_str(), "u64_to_usize" | "usize_to_u64") => {
+                let value = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("u64_to_usize operation lacks a value".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let target = self.generator.basic_type(ty)?;
+                Ok(self.lower_cast(value.into(), target)?)
             }
             Rvalue::RawOperation {
                 operation,
@@ -3511,6 +9517,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operands,
                 ty,
             } if operation == "string_from_static" => {
+                if operands.len() != 2 {
+                    return Err(CodegenError::Unsupported(
+                        "string_from_static requires a pointer and byte length".into(),
+                    ));
+                }
                 let text = operands
                     .first()
                     .ok_or_else(|| {
@@ -3520,17 +9531,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     })
                     .and_then(|operand| self.lower_operand(operand))?
                     .into_pointer_value();
-                let length = self
-                    .builder
-                    .build_call(
-                        self.generator.runtime_strlen(),
-                        &[text.into()],
-                        "string.length",
-                    )?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| CodegenError::Builder("strlen returned void".into()))?
-                    .into_int_value();
+                let length = self.lower_operand(&operands[1])?;
                 let value = self
                     .builder
                     .build_call(
@@ -3545,6 +9546,20 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     })?;
                 let _ = ty;
                 Ok(value)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "string_from_raw" => {
+                if *ty != Type::String || operands.len() != 2 {
+                    return Err(CodegenError::Unsupported(
+                        "string_from_raw requires a string result, pointer, and length".into(),
+                    ));
+                }
+                let pointer = self.lower_operand(&operands[0])?;
+                let _length = self.lower_operand(&operands[1])?;
+                Ok(pointer)
             }
             Rvalue::RawOperation {
                 operation,
@@ -3578,6 +9593,170 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .build_insert_value(value, length, 1, "slice.length")?
                     .into_struct_value()
                     .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ..
+            } if operation == "slice_length" => {
+                let operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("slice_length operation lacks a slice".into())
+                })?;
+                let operand_type = self.operand_type(operand)?;
+                match operand_type {
+                    Type::Reference { referent, .. }
+                        if matches!(referent.as_ref(), Type::Slice(_)) => {}
+                    Type::Slice(_) => {}
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "slice_length requires a slice, found {other:?}"
+                        )));
+                    }
+                }
+                let slice = self.lower_operand(operand)?.into_struct_value();
+                Ok(self.builder.build_extract_value(slice, 1, "slice.length")?)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "weak_upgrade" => {
+                let source_operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("weak_upgrade operation lacks a receiver".into())
+                })?;
+                let source_type = self.operand_type(source_operand)?;
+                let source = self.lower_operand(source_operand)?.into_pointer_value();
+                let source_type = match source_type {
+                    Type::Reference { referent, .. } => referent.as_ref().clone(),
+                    _ => {
+                        return Err(CodegenError::Unsupported(
+                            "weak_upgrade receiver must be a reference".into(),
+                        ));
+                    }
+                };
+                let source_layout = self.generator.basic_type(&source_type)?.into_struct_type();
+                let source_pointer = self.builder.build_struct_gep(
+                    source_layout,
+                    source,
+                    0,
+                    "weak.source.pointer.address",
+                )?;
+                let source_pointer = self
+                    .builder
+                    .build_load(
+                        self.generator.context.ptr_type(AddressSpace::default()),
+                        source_pointer,
+                        "weak.source.pointer",
+                    )?
+                    .into_pointer_value();
+                let upgraded = self
+                    .builder
+                    .build_call(
+                        self.generator.runtime_arc_upgrade(),
+                        &[source_pointer.into()],
+                        "weak.upgrade",
+                    )?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::Builder("weak upgrade returned void".into()))?
+                    .into_pointer_value();
+                let Type::Optional(inner) = ty else {
+                    return Err(CodegenError::Unsupported(
+                        "weak_upgrade result must be optional".into(),
+                    ));
+                };
+                let object_layout = self.generator.class_object_type(inner)?;
+                let object_size = object_layout.size_of().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "arc class object has no statically known size".into(),
+                    )
+                })?;
+                let result_layout = self.generator.basic_type(ty)?.into_struct_type();
+                let result = self
+                    .builder
+                    .build_alloca(result_layout, "weak.upgrade.result")?;
+                self.builder
+                    .build_store(result, result_layout.const_zero())?;
+                let present = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "weak.upgrade.present");
+                let merge = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "weak.upgrade.merge");
+                let is_null = self
+                    .builder
+                    .build_is_null(upgraded, "weak.upgrade.is_null")?;
+                self.builder
+                    .build_conditional_branch(is_null, merge, present)?;
+                self.builder.position_at_end(present);
+                let object = self
+                    .builder
+                    .build_call(
+                        self.generator.runtime_alloc(),
+                        &[object_size.into()],
+                        "weak.upgrade.object",
+                    )?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::Builder("allocator returned void".into()))?
+                    .into_pointer_value();
+                let descriptor = self
+                    .generator
+                    .descriptor_for_type(inner)
+                    .unwrap_or_else(|| {
+                        self.generator
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                    });
+                let descriptor_address = self.builder.build_struct_gep(
+                    object_layout,
+                    object,
+                    0,
+                    "weak.upgrade.descriptor.address",
+                )?;
+                self.builder.build_store(descriptor_address, descriptor)?;
+                let pointer_address = self.builder.build_struct_gep(
+                    object_layout,
+                    object,
+                    1,
+                    "weak.upgrade.pointer.address",
+                )?;
+                self.builder.build_store(pointer_address, upgraded)?;
+                let alive_address = self.builder.build_struct_gep(
+                    object_layout,
+                    object,
+                    2,
+                    "weak.upgrade.alive.address",
+                )?;
+                self.builder.build_store(
+                    alive_address,
+                    self.generator.context.bool_type().const_int(1, false),
+                )?;
+                let tag_address = self.builder.build_struct_gep(
+                    result_layout,
+                    result,
+                    0,
+                    "weak.upgrade.tag.address",
+                )?;
+                self.builder.build_store(
+                    tag_address,
+                    self.generator.context.bool_type().const_int(1, false),
+                )?;
+                let payload_address = self.builder.build_struct_gep(
+                    result_layout,
+                    result,
+                    1,
+                    "weak.upgrade.payload.address",
+                )?;
+                self.builder.build_store(payload_address, object)?;
+                self.builder.build_unconditional_branch(merge)?;
+                self.builder.position_at_end(merge);
+                Ok(self
+                    .builder
+                    .build_load(result_layout, result, "weak.upgrade.value")?)
             }
             Rvalue::RawOperation {
                 operation,
@@ -3648,7 +9827,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 let retained = self
                     .builder
                     .build_call(
-                        self.generator.runtime_ref_retain(),
+                        self.generator.runtime_arc_retain(),
                         &[source_pointer.into()],
                         "arc.retain",
                     )?
@@ -3656,6 +9835,12 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .basic()
                     .ok_or_else(|| CodegenError::Builder("arc retain returned void".into()))?
                     .into_pointer_value();
+                let retained_is_null = self.builder.build_is_null(retained, "arc.retain.null")?;
+                self.guard(
+                    self.builder
+                        .build_not(retained_is_null, "arc.retain.valid")?,
+                    "Arc strong-count overflow",
+                )?;
                 let pointer_address = self.builder.build_struct_gep(
                     object_layout,
                     object,
@@ -3739,10 +9924,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     ));
                 }
                 if let NominalKind::Enum {
-                    c_repr: true,
+                    variants,
+                    c_repr,
                     discriminants,
-                    ..
                 } = &layout.kind
+                    && (*c_repr || variants.iter().all(Vec::is_empty))
                 {
                     let variant = variant.ok_or_else(|| {
                         CodegenError::Unsupported(
@@ -3811,25 +9997,32 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         right: &Operand,
         ty: &Type,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let left = self.lower_operand(left)?;
-        let right = self.lower_operand(right)?;
-        if let Some(result) = self.lower_string_binary(operator, left, right, ty)? {
+        let left_value = self.lower_operand(left)?;
+        let right_value = self.lower_operand(right)?;
+        if let Some(result) =
+            self.lower_string_binary(operator, left, left_value, right, right_value, ty)?
+        {
             return Ok(result);
         }
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual)
             && matches!(ty, Type::Optional(_))
         {
-            return self.lower_optional_equality(operator, left, right);
+            return self.lower_optional_equality(operator, left_value, right_value);
         }
 
-        if left.is_pointer_value() || right.is_pointer_value() {
-            return self.lower_pointer_binary(operator, left, right, ty);
+        if left_value.is_pointer_value() || right_value.is_pointer_value() {
+            return self.lower_pointer_binary(operator, left_value, right_value, ty);
         }
 
-        if left.is_float_value() {
-            return self.lower_float_binary(operator, left, right);
+        if left_value.is_float_value() {
+            return self.lower_float_binary(operator, left_value, right_value);
         }
-        self.lower_integer_binary(operator, left.into_int_value(), right.into_int_value(), ty)
+        self.lower_integer_binary(
+            operator,
+            left_value.into_int_value(),
+            right_value.into_int_value(),
+            ty,
+        )
     }
 
     fn lower_integer_binary(
@@ -3966,7 +10159,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn lower_string_binary(
         &self,
         operator: BinaryOperator,
+        left_operand: &Operand,
         left: BasicValueEnum<'ctx>,
+        right_operand: &Operand,
         right: BasicValueEnum<'ctx>,
         ty: &Type,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
@@ -3974,14 +10169,14 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             return Ok(None);
         }
         match operator {
-            BinaryOperator::Equal | BinaryOperator::NotEqual => {
-                self.lower_string_equality(operator, left, right).map(Some)
-            }
+            BinaryOperator::Equal | BinaryOperator::NotEqual => self
+                .lower_string_equality(operator, left_operand, left, right_operand, right)
+                .map(Some),
             BinaryOperator::Less
             | BinaryOperator::LessEqual
             | BinaryOperator::Greater
             | BinaryOperator::GreaterEqual => self
-                .lower_string_comparison(operator, left, right)
+                .lower_string_comparison(operator, left_operand, left, right_operand, right)
                 .map(Some),
             _ => Ok(None),
         }
@@ -3990,16 +10185,22 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn lower_string_equality(
         &self,
         operator: BinaryOperator,
+        left_operand: &Operand,
         left: BasicValueEnum<'ctx>,
+        right_operand: &Operand,
         right: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let left_length = self.string_length(left_operand, left)?;
+        let right_length = self.string_length(right_operand, right)?;
         let equal = self
             .builder
             .build_call(
                 self.generator.runtime_string_equals(),
                 &[
                     left.into_pointer_value().into(),
+                    left_length.into(),
                     right.into_pointer_value().into(),
+                    right_length.into(),
                 ],
                 "string.equals",
             )?
@@ -4023,16 +10224,22 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn lower_string_comparison(
         &self,
         operator: BinaryOperator,
+        left_operand: &Operand,
         left: BasicValueEnum<'ctx>,
+        right_operand: &Operand,
         right: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let left_length = self.string_length(left_operand, left)?;
+        let right_length = self.string_length(right_operand, right)?;
         let ordering = self
             .builder
             .build_call(
                 self.generator.runtime_string_compare(),
                 &[
                     left.into_pointer_value().into(),
+                    left_length.into(),
                     right.into_pointer_value().into(),
+                    right_length.into(),
                 ],
                 "string.compare",
             )?
@@ -4060,6 +10267,30 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 "string.order",
             )?
             .into())
+    }
+
+    fn string_length(
+        &self,
+        operand: &Operand,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        if let Operand::Constant(Constant::String(text)) = operand {
+            return Ok(self
+                .generator
+                .pointer_int_type()
+                .const_int(u64::try_from(text.len()).unwrap_or(u64::MAX), false));
+        }
+        Ok(self
+            .builder
+            .build_call(
+                self.generator.runtime_string_length(),
+                &[value.into_pointer_value().into()],
+                "string.length",
+            )?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
+            .into_int_value())
     }
 
     fn lower_optional_equality(
@@ -4235,6 +10466,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             .append_basic_block(self.function, "check.panic");
         self.builder.build_conditional_branch(valid, ok, panic)?;
         self.builder.position_at_end(panic);
+        self.emit_undefined_sanitizer_trap(message)?;
         let abort = self.runtime_abort();
         let code = stable_panic_code(message);
         self.builder.build_call(
@@ -4249,6 +10481,32 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         )?;
         self.builder.build_unreachable()?;
         self.builder.position_at_end(ok);
+        Ok(())
+    }
+
+    fn emit_undefined_sanitizer_trap(&self, message: &str) -> Result<(), CodegenError> {
+        if !self.generator.sanitizers.contains(&Sanitizer::Undefined) {
+            return Ok(());
+        }
+        let intrinsic = Intrinsic::find("llvm.ubsantrap").ok_or_else(|| {
+            CodegenError::Unsupported("LLVM UBSan trap intrinsic unavailable".into())
+        })?;
+        let declaration = intrinsic
+            .get_declaration(&self.generator.module, &[])
+            .ok_or_else(|| {
+                CodegenError::Unsupported("LLVM UBSan trap declaration unavailable".into())
+            })?;
+        let failure_kind = u64::from(stable_panic_code(message) % 256);
+        self.builder.build_call(
+            declaration,
+            &[self
+                .generator
+                .context
+                .i8_type()
+                .const_int(failure_kind, false)
+                .into()],
+            "ubsantrap",
+        )?;
         Ok(())
     }
 
@@ -4323,12 +10581,25 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 "error.payload",
             )?
             .into_pointer_value();
-        if self.is_pointer_representation(target) {
-            return Ok(payload.into());
+        let value = if self.is_pointer_representation(target) {
+            payload.into()
+        } else {
+            self.builder
+                .build_load(self.generator.basic_type(target)?, payload, "error.value")?
+        };
+        if !self.is_pointer_representation(target) {
+            self.builder.build_call(
+                self.generator.runtime_free(),
+                &[payload.into()],
+                "error.payload.free",
+            )?;
         }
-        Ok(self
-            .builder
-            .build_load(self.generator.basic_type(target)?, payload, "error.value")?)
+        self.builder.build_call(
+            self.generator.runtime_free(),
+            &[envelope.into()],
+            "error.envelope.free",
+        )?;
+        Ok(value)
     }
 
     fn is_pointer_representation(&self, ty: &Type) -> bool {
@@ -4683,7 +10954,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     )?
                     .into_pointer_value();
                 self.builder.build_call(
-                    self.generator.runtime_free(),
+                    self.generator.runtime_string_free(),
                     &[value.into()],
                     "drop.string",
                 )?;
@@ -4910,9 +11181,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     }
                 }
             }
+            Type::ErrorUnion(effects) => self.lower_error_union_drop(pointer, effects)?,
             Type::Template(_)
             | Type::DynamicInterface(_, _)
-            | Type::ErrorUnion(_)
             | Type::Primitive(_)
             | Type::Str
             | Type::Slice(_)
@@ -4924,6 +11195,96 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             | Type::Error
             | Type::Unknown => {}
         }
+        Ok(())
+    }
+
+    fn lower_error_union_drop(
+        &self,
+        pointer: PointerValue<'ctx>,
+        effects: &[DeclarationId],
+    ) -> Result<(), CodegenError> {
+        let envelope = self
+            .builder
+            .build_load(
+                self.generator.context.ptr_type(AddressSpace::default()),
+                pointer,
+                "drop.error.envelope",
+            )?
+            .into_pointer_value();
+        let envelope_type = self.error_union_type();
+        let tag_address =
+            self.builder
+                .build_struct_gep(envelope_type, envelope, 0, "drop.error.tag.address")?;
+        let tag = self
+            .builder
+            .build_load(
+                self.generator.context.i64_type(),
+                tag_address,
+                "drop.error.tag",
+            )?
+            .into_int_value();
+        let merge_block = self
+            .generator
+            .context
+            .append_basic_block(self.function, "drop.error.merge");
+        let mut cases = Vec::with_capacity(effects.len());
+        let mut effect_blocks = Vec::with_capacity(effects.len());
+        for index in 0..effects.len() {
+            let block = self
+                .generator
+                .context
+                .append_basic_block(self.function, "drop.error.effect");
+            cases.push((
+                self.generator
+                    .context
+                    .i64_type()
+                    .const_int(u64::try_from(index).unwrap_or(u64::MAX), false),
+                block,
+            ));
+            effect_blocks.push(block);
+        }
+        self.builder.build_switch(tag, merge_block, &cases)?;
+
+        for (effect, block) in effects.iter().zip(effect_blocks) {
+            self.builder.position_at_end(block);
+            let payload_address = self.builder.build_struct_gep(
+                envelope_type,
+                envelope,
+                1,
+                "drop.error.payload.address",
+            )?;
+            let payload = self
+                .builder
+                .build_load(
+                    self.generator.context.ptr_type(AddressSpace::default()),
+                    payload_address,
+                    "drop.error.payload",
+                )?
+                .into_pointer_value();
+            let payload_type = Type::Nominal(*effect, Vec::new());
+            if self.is_pointer_representation(&payload_type) {
+                let payload_value = self.builder.build_alloca(
+                    self.generator.context.ptr_type(AddressSpace::default()),
+                    "drop.error.pointer.value",
+                )?;
+                self.builder.build_store(payload_value, payload)?;
+                self.lower_drop_value_at_pointer(payload_value, &payload_type)?;
+            } else {
+                self.lower_drop_value_at_pointer(payload, &payload_type)?;
+                self.builder.build_call(
+                    self.generator.runtime_free(),
+                    &[payload.into()],
+                    "drop.error.payload.free",
+                )?;
+            }
+            self.builder.build_unconditional_branch(merge_block)?;
+        }
+        self.builder.position_at_end(merge_block);
+        self.builder.build_call(
+            self.generator.runtime_free(),
+            &[envelope.into()],
+            "drop.error.envelope.free",
+        )?;
         Ok(())
     }
 
@@ -5378,6 +11739,442 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         Ok(envelope)
     }
 
+    fn lower_atomic_operation(
+        &self,
+        operation: &str,
+        operands: &[Operand],
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let pointer = |operand: &Operand| {
+            self.lower_operand(operand)
+                .map(BasicValueEnum::into_pointer_value)
+        };
+        match operation {
+            "atomic_i32_load" | "atomic_u64_load" | "atomic_usize_load"
+                if operands.len() == 2 && self.is_dynamic_atomic_order(&operands[1]) =>
+            {
+                return self.lower_dynamic_atomic_operation(operation, operands, ty, 1);
+            }
+            "atomic_i32_store"
+            | "atomic_u64_store"
+            | "atomic_usize_store"
+            | "atomic_i32_fetch_add"
+            | "atomic_u64_fetch_add"
+            | "atomic_usize_fetch_add"
+                if operands.len() == 3 && self.is_dynamic_atomic_order(&operands[2]) =>
+            {
+                return self.lower_dynamic_atomic_operation(operation, operands, ty, 2);
+            }
+            "atomic_fence" if operands.len() == 1 && self.is_dynamic_atomic_order(&operands[0]) => {
+                return self.lower_dynamic_atomic_operation(operation, operands, ty, 0);
+            }
+            "atomic_i32_compare_exchange"
+            | "atomic_u64_compare_exchange"
+            | "atomic_usize_compare_exchange"
+                if operands.len() == 5
+                    && (self.is_dynamic_atomic_order(&operands[3])
+                        || self.is_dynamic_atomic_order(&operands[4])) =>
+            {
+                return self.lower_dynamic_atomic_compare_exchange(operation, operands, ty);
+            }
+            _ => {}
+        }
+        match operation {
+            "atomic_i32_load" | "atomic_u64_load" | "atomic_usize_load" => {
+                if operands.len() != 2 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{operation} expects pointer and memory order"
+                    )));
+                }
+                let integer_type = self.generator.basic_type(ty)?.into_int_type();
+                let load =
+                    self.builder
+                        .build_load(integer_type, pointer(&operands[0])?, "atomic.load")?;
+                let order = self.atomic_ordering(&operands[1])?;
+                if !Self::valid_atomic_order(operation, order) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{order:?} ordering is invalid for {operation}"
+                    )));
+                }
+                load.as_instruction_value()
+                    .ok_or_else(|| {
+                        CodegenError::Builder("atomic load is not an instruction".into())
+                    })?
+                    .set_atomic_ordering(order)
+                    .map_err(|error| CodegenError::Builder(error.to_string()))?;
+                Ok(load)
+            }
+            "atomic_i32_store" | "atomic_u64_store" | "atomic_usize_store" => {
+                if operands.len() != 3 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{operation} expects pointer, value, and memory order"
+                    )));
+                }
+                let value = self.lower_operand(&operands[1])?.into_int_value();
+                let order = self.atomic_ordering(&operands[2])?;
+                if !Self::valid_atomic_order(operation, order) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{order:?} ordering is invalid for {operation}"
+                    )));
+                }
+                self.builder
+                    .build_store(pointer(&operands[0])?, value)?
+                    .set_atomic_ordering(order)
+                    .map_err(|error| CodegenError::Builder(error.to_string()))?;
+                Ok(value.into())
+            }
+            "atomic_i32_fetch_add" | "atomic_u64_fetch_add" | "atomic_usize_fetch_add" => {
+                if operands.len() != 3 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{operation} expects pointer, delta, and memory order"
+                    )));
+                }
+                Ok(self
+                    .builder
+                    .build_atomicrmw(
+                        AtomicRMWBinOp::Add,
+                        pointer(&operands[0])?,
+                        self.lower_operand(&operands[1])?.into_int_value(),
+                        self.atomic_ordering(&operands[2])?,
+                    )?
+                    .into())
+            }
+            "atomic_i32_compare_exchange"
+            | "atomic_u64_compare_exchange"
+            | "atomic_usize_compare_exchange" => {
+                if operands.len() != 5 || *ty != Type::Primitive(PrimitiveType::Bool) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{operation} expects pointer, expected pointer, desired, success order, failure order, and bool result"
+                    )));
+                }
+                let expected_pointer = pointer(&operands[1])?;
+                let integer_type = self
+                    .generator
+                    .basic_type(&self.operand_type(&operands[2])?)?
+                    .into_int_type();
+                let expected = self
+                    .builder
+                    .build_load(integer_type, expected_pointer, "atomic.expected")?
+                    .into_int_value();
+                let pair = self.builder.build_cmpxchg(
+                    pointer(&operands[0])?,
+                    expected,
+                    self.lower_operand(&operands[2])?.into_int_value(),
+                    self.atomic_ordering(&operands[3])?,
+                    self.atomic_ordering(&operands[4])?,
+                )?;
+                let observed = self
+                    .builder
+                    .build_extract_value(pair, 0, "atomic.observed")?
+                    .into_int_value();
+                self.builder.build_store(expected_pointer, observed)?;
+                Ok(self
+                    .builder
+                    .build_extract_value(pair, 1, "atomic.exchanged")?)
+            }
+            "atomic_fence" => {
+                if operands.len() != 1 || *ty != Type::Primitive(PrimitiveType::Bool) {
+                    return Err(CodegenError::Unsupported(
+                        "atomic_fence expects a memory order and bool result".into(),
+                    ));
+                }
+                let order = self.atomic_ordering(&operands[0])?;
+                if !Self::valid_atomic_order(operation, order) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{order:?} ordering is invalid for {operation}"
+                    )));
+                }
+                self.builder.build_fence(order, false, "")?;
+                Ok(self.generator.context.bool_type().const_all_ones().into())
+            }
+            _ => Err(CodegenError::Unsupported(format!(
+                "unknown atomic operation {operation}"
+            ))),
+        }
+    }
+
+    fn lower_dynamic_atomic_operation(
+        &self,
+        operation: &str,
+        operands: &[Operand],
+        ty: &Type,
+        order_index: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let order = self.lower_operand(&operands[order_index])?.into_int_value();
+        let merge = self
+            .generator
+            .context
+            .append_basic_block(self.function, "atomic.order.merge");
+        let invalid = self
+            .generator
+            .context
+            .append_basic_block(self.function, "atomic.order.invalid");
+        let orderings = [
+            AtomicOrdering::Monotonic,
+            AtomicOrdering::Acquire,
+            AtomicOrdering::Release,
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::SequentiallyConsistent,
+        ];
+        let blocks = orderings
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                self.generator
+                    .context
+                    .append_basic_block(self.function, &format!("atomic.order.{index}"))
+            })
+            .collect::<Vec<_>>();
+        let cases = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (order.get_type().const_int(index as u64, false), *block))
+            .collect::<Vec<_>>();
+        self.builder.build_switch(order, invalid, &cases)?;
+        let mut incoming = Vec::with_capacity(blocks.len());
+        for (index, block) in blocks.iter().enumerate() {
+            self.builder.position_at_end(*block);
+            if !Self::valid_atomic_order(operation, orderings[index]) {
+                self.builder.build_unconditional_branch(invalid)?;
+                continue;
+            }
+            let mut fixed = operands.to_vec();
+            fixed[order_index] = Self::atomic_order_operand(index as i128);
+            let value = self.lower_atomic_operation(operation, &fixed, ty)?;
+            let predecessor = self
+                .builder
+                .get_insert_block()
+                .ok_or_else(|| CodegenError::Builder("atomic order block disappeared".into()))?;
+            self.builder.build_unconditional_branch(merge)?;
+            incoming.push((value, predecessor));
+        }
+        self.builder.position_at_end(invalid);
+        self.abort_invalid_atomic_order()?;
+        self.builder.position_at_end(merge);
+        let phi = self
+            .builder
+            .build_phi(self.generator.basic_type(ty)?, "atomic.order.value")?;
+        let incoming = incoming
+            .iter()
+            .map(|(value, block)| (value as &dyn BasicValue, *block))
+            .collect::<Vec<_>>();
+        phi.add_incoming(&incoming);
+        Ok(phi.as_basic_value())
+    }
+
+    fn lower_dynamic_atomic_compare_exchange(
+        &self,
+        operation: &str,
+        operands: &[Operand],
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if *ty != Type::Primitive(PrimitiveType::Bool) {
+            return Err(CodegenError::Unsupported(
+                "atomic compare exchange must return bool".into(),
+            ));
+        }
+        let success = self.lower_operand(&operands[3])?.into_int_value();
+        let failure = self.lower_operand(&operands[4])?.into_int_value();
+        let merge = self
+            .generator
+            .context
+            .append_basic_block(self.function, "atomic.cmpxchg.merge");
+        let invalid = self
+            .generator
+            .context
+            .append_basic_block(self.function, "atomic.cmpxchg.invalid");
+        let orderings = [
+            AtomicOrdering::Monotonic,
+            AtomicOrdering::Acquire,
+            AtomicOrdering::Release,
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::SequentiallyConsistent,
+        ];
+        let success_blocks = (0..orderings.len())
+            .map(|index| {
+                self.generator
+                    .context
+                    .append_basic_block(self.function, &format!("atomic.cmpxchg.success.{index}"))
+            })
+            .collect::<Vec<_>>();
+        let success_cases = success_blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (success.get_type().const_int(index as u64, false), *block))
+            .collect::<Vec<_>>();
+        self.builder
+            .build_switch(success, invalid, &success_cases)?;
+        let mut incoming = Vec::new();
+        for (success_index, success_block) in success_blocks.iter().enumerate() {
+            self.builder.position_at_end(*success_block);
+            let failure_blocks = (0..orderings.len())
+                .map(|failure_index| {
+                    self.generator.context.append_basic_block(
+                        self.function,
+                        &format!("atomic.cmpxchg.failure.{success_index}.{failure_index}"),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let failure_cases = failure_blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| (failure.get_type().const_int(index as u64, false), *block))
+                .collect::<Vec<_>>();
+            self.builder
+                .build_switch(failure, invalid, &failure_cases)?;
+            for (failure_index, failure_block) in failure_blocks.iter().enumerate() {
+                self.builder.position_at_end(*failure_block);
+                if orderings[failure_index] > orderings[success_index]
+                    || matches!(
+                        orderings[failure_index],
+                        AtomicOrdering::Release | AtomicOrdering::AcquireRelease
+                    )
+                {
+                    self.builder.build_unconditional_branch(invalid)?;
+                    continue;
+                }
+                let mut fixed = operands.to_vec();
+                fixed[3] = Self::atomic_order_operand(success_index as i128);
+                fixed[4] = Self::atomic_order_operand(failure_index as i128);
+                let value = self.lower_atomic_operation(operation, &fixed, ty)?;
+                let predecessor = self.builder.get_insert_block().ok_or_else(|| {
+                    CodegenError::Builder("atomic compare-exchange block disappeared".into())
+                })?;
+                self.builder.build_unconditional_branch(merge)?;
+                incoming.push((value, predecessor));
+            }
+        }
+        self.builder.position_at_end(invalid);
+        self.abort_invalid_atomic_order()?;
+        self.builder.position_at_end(merge);
+        let phi = self
+            .builder
+            .build_phi(self.generator.basic_type(ty)?, "atomic.cmpxchg.value")?;
+        let incoming = incoming
+            .iter()
+            .map(|(value, block)| (value as &dyn BasicValue, *block))
+            .collect::<Vec<_>>();
+        phi.add_incoming(&incoming);
+        Ok(phi.as_basic_value())
+    }
+
+    fn is_dynamic_atomic_order(&self, operand: &Operand) -> bool {
+        match operand {
+            Operand::Constant(Constant::Integer { .. } | Constant::Bool(_)) => false,
+            _ => self.constant_enum_operand(operand).is_none(),
+        }
+    }
+
+    fn atomic_order_operand(value: i128) -> Operand {
+        Operand::Constant(Constant::Integer {
+            value,
+            ty: Type::Primitive(PrimitiveType::U8),
+        })
+    }
+
+    fn abort_invalid_atomic_order(&self) -> Result<(), CodegenError> {
+        self.builder.build_call(
+            self.runtime_abort(),
+            &[self
+                .generator
+                .context
+                .i32_type()
+                .const_int(
+                    u64::from(stable_panic_code("invalid atomic memory order")),
+                    false,
+                )
+                .into()],
+            "atomic.order.abort",
+        )?;
+        self.builder.build_unreachable()?;
+        Ok(())
+    }
+
+    fn atomic_ordering(&self, operand: &Operand) -> Result<AtomicOrdering, CodegenError> {
+        let value = match operand {
+            Operand::Constant(Constant::Integer { value, .. }) => *value,
+            Operand::Constant(Constant::Bool(value)) => i128::from(*value),
+            _ => self
+                .constant_enum_operand(operand)
+                .or_else(|| {
+                    self.lower_operand(operand)
+                        .ok()?
+                        .into_int_value()
+                        .get_zero_extended_constant()
+                        .map(i128::from)
+                })
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "atomic memory order must be a compile-time constant".into(),
+                    )
+                })?,
+        };
+        match value {
+            0 => Ok(AtomicOrdering::Monotonic),
+            1 => Ok(AtomicOrdering::Acquire),
+            2 => Ok(AtomicOrdering::Release),
+            3 => Ok(AtomicOrdering::AcquireRelease),
+            4 => Ok(AtomicOrdering::SequentiallyConsistent),
+            _ => Err(CodegenError::Unsupported(format!(
+                "invalid atomic memory order {value}"
+            ))),
+        }
+    }
+
+    fn valid_atomic_order(operation: &str, ordering: AtomicOrdering) -> bool {
+        match operation {
+            "atomic_i32_load" | "atomic_u64_load" | "atomic_usize_load" => !matches!(
+                ordering,
+                AtomicOrdering::Release | AtomicOrdering::AcquireRelease
+            ),
+            "atomic_i32_store" | "atomic_u64_store" | "atomic_usize_store" => !matches!(
+                ordering,
+                AtomicOrdering::Acquire | AtomicOrdering::AcquireRelease
+            ),
+            "atomic_fence" => ordering != AtomicOrdering::Monotonic,
+            _ => true,
+        }
+    }
+
+    fn constant_enum_operand(&self, operand: &Operand) -> Option<i128> {
+        let place = match operand {
+            Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => place,
+            _ => return None,
+        };
+        for block in self.body.blocks.iter().rev() {
+            for statement in block.statements.iter().rev() {
+                let StatementKind::Assign(destination, value) = &statement.kind else {
+                    continue;
+                };
+                if destination != place {
+                    continue;
+                }
+                match value.as_ref() {
+                    Rvalue::Use(Operand::Constant(Constant::Integer { value, .. })) => {
+                        return Some(*value);
+                    }
+                    Rvalue::Aggregate {
+                        ty: Type::Nominal(declaration, _),
+                        variant: Some(variant),
+                        fields,
+                        ..
+                    } if fields.is_empty() => {
+                        return self.generator.layouts.nominals.get(declaration).and_then(
+                            |layout| match &layout.kind {
+                                NominalKind::Enum { discriminants, .. } => {
+                                    discriminants.get(*variant as usize).copied()
+                                }
+                                _ => None,
+                            },
+                        );
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        None
+    }
+
     fn lower_operand(&self, operand: &Operand) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => {
@@ -5559,11 +12356,6 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             ));
         };
         let source = self.operand_type(operand)?;
-        let Type::Nominal(target_declaration, _) = source.clone() else {
-            return Err(CodegenError::Unsupported(format!(
-                "interface coercion source is not nominal: {source:?}"
-            )));
-        };
         let data = if self.generator.is_class_type(&source) {
             self.lower_operand(operand)?.into_pointer_value()
         } else if let Some(place) = operand_place(operand) {
@@ -5588,16 +12380,33 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             self.builder.build_store(data, value)?;
             data
         };
-        let witness = self
-            .generator
-            .witnesses
-            .get(&(*interface, target_declaration))
-            .copied()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "no witness table for interface {interface:?} and target {target_declaration:?}"
-                ))
-            })?;
+        let witness = match &source {
+            Type::Primitive(_) | Type::String | Type::Str => self
+                .generator
+                .builtin_witnesses
+                .get(&(*interface, source.clone()))
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "no builtin witness table for interface {interface:?} and source {source:?}"
+                    ))
+                })?,
+            Type::Nominal(target_declaration, _) => self
+                .generator
+                .witnesses
+                .get(&(*interface, *target_declaration))
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "no witness table for interface {interface:?} and target {target_declaration:?}"
+                    ))
+                })?,
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "interface coercion source is not concrete: {source:?}"
+                )))
+            }
+        };
         let pair = self.generator.basic_type(target)?.into_struct_type();
         let pair = self
             .builder
@@ -5627,7 +12436,18 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .is_some_and(|layout| {
                         matches!(layout.kind, NominalKind::Enum { c_repr: true, .. })
                     });
-                Some(if c_repr {
+                let unit_enum = self
+                    .generator
+                    .layouts
+                    .nominals
+                    .get(declaration)
+                    .is_some_and(|layout| {
+                        matches!(
+                            layout.kind,
+                            NominalKind::Enum { ref variants, .. } if variants.iter().all(Vec::is_empty)
+                        )
+                    });
+                Some(if c_repr || unit_enum {
                     self.generator.context.i32_type()
                 } else {
                     self.generator.context.i64_type()
@@ -5654,15 +12474,21 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         };
         if matches!(
             &ty,
-            Type::Nominal(declaration, _)
-                if self
-                    .generator
-                    .layouts
-                    .nominals
-                    .get(declaration)
-                    .is_some_and(|layout| {
-                        matches!(layout.kind, NominalKind::Enum { c_repr: true, .. })
-                    })
+                Type::Nominal(declaration, _)
+                    if self
+                        .generator
+                        .layouts
+                        .nominals
+                        .get(declaration)
+                        .is_some_and(|layout| {
+                            matches!(
+                                layout.kind,
+                                NominalKind::Enum { c_repr: true, .. }
+                            ) || matches!(
+                                layout.kind,
+                                NominalKind::Enum { ref variants, .. } if variants.iter().all(Vec::is_empty)
+                            )
+                        })
         ) {
             return Ok(self
                 .builder
@@ -5796,11 +12622,48 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .as_pointer_value()
                     .into()
             }
-            Constant::String(value) => self
-                .builder
-                .build_global_string_ptr(value, "tn.string")?
+            Constant::String(value) => self.lower_static_string(value)?.into(),
+        })
+    }
+
+    fn lower_static_string(&self, value: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        let length = value.len();
+        let total = 16usize
+            .checked_add(length)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| CodegenError::Unsupported("string literal is too large".into()))?;
+        let array_length = u32::try_from(total)
+            .map_err(|_| CodegenError::Unsupported("string literal exceeds LLVM limits".into()))?;
+        let mut bytes = Vec::with_capacity(total);
+        bytes.extend_from_slice(&STRING_HEADER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(
+            &u64::try_from(length)
+                .map_err(|_| CodegenError::Unsupported("string literal length overflow".into()))?
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+        let byte_type = self.generator.context.i8_type();
+        let values = bytes
+            .iter()
+            .map(|byte| byte_type.const_int(u64::from(*byte), false))
+            .collect::<Vec<_>>();
+        let array_type = byte_type.array_type(array_length);
+        let initializer = byte_type.const_array(&values);
+        let global = self
+            .generator
+            .module
+            .add_global(array_type, None, "tn.string.header");
+        global.set_linkage(Linkage::Private);
+        global.set_constant(true);
+        global.set_alignment(8);
+        global.set_initializer(&initializer);
+        let zero = self.generator.context.i64_type().const_zero();
+        let data_offset = self.generator.context.i64_type().const_int(16, false);
+        Ok(unsafe {
+            global
                 .as_pointer_value()
-                .into(),
+                .const_gep(array_type, &[zero, data_offset])
         })
     }
 
@@ -6181,6 +13044,46 @@ fn stable_hash(value: &str) -> u64 {
         .fold(14_695_981_039_346_656_037, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
         })
+}
+
+fn builtin_type_name(ty: &Type) -> &'static str {
+    match ty {
+        Type::Primitive(PrimitiveType::Bool) => "bool",
+        Type::Primitive(PrimitiveType::I8) => "i8",
+        Type::Primitive(PrimitiveType::I16) => "i16",
+        Type::Primitive(PrimitiveType::I32) => "i32",
+        Type::Primitive(PrimitiveType::I64) => "i64",
+        Type::Primitive(PrimitiveType::I128) => "i128",
+        Type::Primitive(PrimitiveType::Isize) => "isize",
+        Type::Primitive(PrimitiveType::U8) => "u8",
+        Type::Primitive(PrimitiveType::U16) => "u16",
+        Type::Primitive(PrimitiveType::U32) => "u32",
+        Type::Primitive(PrimitiveType::U64) => "u64",
+        Type::Primitive(PrimitiveType::U128) => "u128",
+        Type::Primitive(PrimitiveType::Usize) => "usize",
+        Type::Primitive(PrimitiveType::F32) => "f32",
+        Type::Primitive(PrimitiveType::F64) => "f64",
+        Type::Primitive(PrimitiveType::Char) => "char",
+        Type::String => "string",
+        Type::Str => "str",
+        _ => "unsupported",
+    }
+}
+
+fn builtin_type_is_signed(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Primitive(
+            PrimitiveType::I8
+                | PrimitiveType::I16
+                | PrimitiveType::I32
+                | PrimitiveType::I64
+                | PrimitiveType::I128
+                | PrimitiveType::Isize
+                | PrimitiveType::F32
+                | PrimitiveType::F64
+        )
+    )
 }
 
 fn parse_pointer_bits(layout: &str) -> Option<u32> {

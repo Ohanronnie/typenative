@@ -498,6 +498,25 @@ impl Parser<'_, '_> {
         self.expect(TokenKind::LeftBrace);
         while self.current().is_some() && !self.at(TokenKind::RightBrace) {
             let before = self.cursor;
+            if matches!(
+                self.current(),
+                Some(
+                    TokenKind::Public
+                        | TokenKind::Protected
+                        | TokenKind::Private
+                        | TokenKind::Static
+                        | TokenKind::Mut
+                        | TokenKind::Move
+                        | TokenKind::Unsafe
+                        | TokenKind::Async
+                        | TokenKind::Function
+                )
+            ) {
+                self.visibility();
+                self.method(false);
+                self.ensure_progress(before);
+                continue;
+            }
             self.start(SyntaxKind::ENUM_VARIANT);
             self.expect(TokenKind::Identifier);
             if self.eat(TokenKind::LeftParen) {

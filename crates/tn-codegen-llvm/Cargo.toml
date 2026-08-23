@@ -11,6 +11,7 @@ thiserror.workspace = true
 tn-diagnostics = { path = "../tn-diagnostics" }
 tn-hir = { path = "../tn-hir" }
 tn-mir = { path = "../tn-mir" }
+tn-node-api = { path = "../tn-node-api" }
 
 [lints.rust]
 unsafe_code = "allow"
@@ -20,6 +21,21 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+comparison_chain = "allow"
+if_same_then_else = "allow"
+match_same_arms = "allow"
+needless_borrow = "allow"
+redundant_closure_for_method_calls = "allow"
+replace_box = "allow"
+similar_names = "allow"
+too_many_arguments = "allow"
+too_many_lines = "allow"
+unnested_or_patterns = "allow"
+unused_self = "allow"
+useless_conversion = "allow"
+clone_on_copy = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
 
 [dev-dependencies]
 tempfile.workspace = true

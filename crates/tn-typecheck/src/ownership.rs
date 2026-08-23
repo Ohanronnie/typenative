@@ -1,7 +1,9 @@
 use crate::CheckResult;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
-use tn_hir::{DeclarationId, DeclarationKind, DefinitionData, ImportClause, Program, Type};
+use tn_hir::{
+    AttributeKind, DeclarationId, DeclarationKind, DefinitionData, ImportClause, Program, Type,
+};
 use tn_mir::{
     Body, BorrowKind, Completion, LocalId, Operand, Place, Projection, Rvalue, StatementKind,
     TerminatorKind, validate,
@@ -124,8 +126,9 @@ impl OwnershipFacts {
         match ty {
             Type::String => true,
             Type::Nominal(id, _) => self.drop.contains(id),
-            Type::Optional(inner) | Type::Array(inner, _) | Type::Promise { result: inner, .. } => {
-                self.has_drop(inner)
+            Type::Optional(inner) | Type::Array(inner, _) => self.has_drop(inner),
+            Type::Promise { result, effects } => {
+                self.has_drop(result) || effects.iter().any(|effect| self.drop.contains(effect))
             }
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().any(|element| self.has_drop(element))
@@ -154,10 +157,12 @@ impl OwnershipFacts {
             | Type::Lifetime(_)
             | Type::Error
             | Type::Unknown => false,
-            Type::Optional(inner)
-            | Type::Array(inner, _)
-            | Type::Slice(inner)
-            | Type::Promise { result: inner, .. } => self.is_send(inner),
+            Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+                self.is_send(inner)
+            }
+            Type::Promise { result, effects } => {
+                self.is_send(result) && effects.iter().all(|effect| self.send.contains(effect))
+            }
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_send(element))
             }
@@ -178,10 +183,12 @@ impl OwnershipFacts {
             | Type::Lifetime(_)
             | Type::Error
             | Type::Unknown => false,
-            Type::Optional(inner)
-            | Type::Array(inner, _)
-            | Type::Slice(inner)
-            | Type::Promise { result: inner, .. } => self.is_sync(inner),
+            Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+                self.is_sync(inner)
+            }
+            Type::Promise { result, effects } => {
+                self.is_sync(result) && effects.iter().all(|effect| self.sync.contains(effect))
+            }
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_sync(element))
             }
@@ -265,7 +272,7 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
                 DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => {
                     fields.iter().map(|field| &field.ty).collect::<Vec<_>>()
                 }
-                DefinitionData::Enum { variants } => variants
+                DefinitionData::Enum { variants, .. } => variants
                     .iter()
                     .flat_map(|variant| variant.fields.iter().map(|field| &field.ty))
                     .collect::<Vec<_>>(),
@@ -308,8 +315,10 @@ fn has_marker(program: &Program, target: DeclarationId, requested: &str) -> bool
         return false;
     };
     declaration.attributes.iter().any(|attribute| {
-        (attribute.name == requested && attribute.arguments.is_empty())
-            || (attribute.name == "Conform"
+        (attribute.kind.as_str() == requested
+            && !matches!(requested, "Send" | "Sync")
+            && attribute.arguments.is_empty())
+            || (attribute.kind == AttributeKind::Conform
                 && attribute
                     .arguments
                     .iter()
@@ -340,7 +349,7 @@ pub(crate) fn declared_conformances(
     for attribute in declaration
         .attributes
         .iter()
-        .filter(|attribute| attribute.name == "Conform")
+        .filter(|attribute| attribute.kind == AttributeKind::Conform)
     {
         for argument in &attribute.arguments {
             if let Some(interface) = resolve_interface_name(program, declaration.module, argument) {
@@ -400,10 +409,16 @@ fn structurally_thread_safe(ty: &Type, sync: bool, facts: &OwnershipFacts) -> bo
                 structurally_thread_safe(referent, false, facts)
             }
         }
-        Type::Optional(inner)
-        | Type::Array(inner, _)
-        | Type::Slice(inner)
-        | Type::Promise { result: inner, .. } => structurally_thread_safe(inner, sync, facts),
+        Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+            structurally_thread_safe(inner, sync, facts)
+        }
+        Type::Promise { result, effects } => {
+            structurally_thread_safe(result, sync, facts)
+                && effects.iter().all(|effect| {
+                    let marker = if sync { &facts.sync } else { &facts.send };
+                    marker.contains(effect)
+                })
+        }
         Type::Tuple(elements) | Type::Template(elements) => elements
             .iter()
             .all(|element| structurally_thread_safe(element, sync, facts)),
@@ -917,6 +932,13 @@ fn visit_terminator(
                         .locals
                         .get(usize::try_from(loan.place.local.0).unwrap_or(usize::MAX))
                         .is_some_and(|local| local.argument)
+                    && !(matches!(
+                        loan.place.projection.first(),
+                        Some(tn_mir::Projection::Dereference)
+                    ) && body
+                        .locals
+                        .get(usize::try_from(loan.place.local.0).unwrap_or(usize::MAX))
+                        .is_some_and(|local| matches!(local.ty, Type::RawPointer { .. })))
                 {
                     diagnostics.push(diagnostic(
                         "OWNERSHIP_RETURNED_LOCAL_REFERENCE",

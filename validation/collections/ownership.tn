@@ -1,0 +1,116 @@
+import { AllocError } from "std/alloc";
+import { Map } from "std/collections";
+
+declare extern "C" {
+  function tn_runtime_reset_allocation_count(): void;
+  function tn_runtime_free_count(): u64;
+}
+function main(): i32 {
+  unsafe {
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let map = new Map<string, string>({
+      capacity: 8usize,
+    });
+    if (!map.set(string.from("key"), string.from("first"))) {
+      return 1i32;
+    }
+    if (map.set(string.from("key"), string.from("second"))) {
+      return 2i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 12u64) {
+      return 3i32;
+    }
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let map = new Map<string, string>({
+      capacity: 8usize,
+    });
+    map.set(string.from("key"), string.from("value"));
+    const query: string = "key";
+    const removed = map.remove( & query);
+    if (removed === undefined || map.length !== 0usize) {
+      return 4i32;
+    }
+    if (removed! !== "value") {
+      return 5i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 11u64) {
+      return 6i32;
+    }
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let map = new Map<string, string>({
+      capacity: 8usize,
+    });
+    map.set(string.from("one"), string.from("1"));
+    map.set(string.from("two"), string.from("2"));
+    map.clear();
+    if (map.length !== 0usize) {
+      return 7i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 12u64) {
+      return 8i32;
+    }
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let map = new Map<string, string>({
+      capacity: 8usize,
+    });
+    try {
+      try map.reserve(64usize);
+    } catch (error: AllocError) {
+      return 9i32;
+    }
+    map.set(string.from("one"), string.from("1"));
+    map.set(string.from("two"), string.from("2"));
+    try {
+      try map.shrinkToFit();
+    } catch (error: AllocError) {
+      return 10i32;
+    }
+    if (map.capacity !== 8usize) {
+      return 11i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 24u64) {
+      return 12i32;
+    }
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let map = new Map<string, string>({
+      capacity: 8usize,
+    });
+    map.set(string.from("one"), string.from("1"));
+    map.set(string.from("two"), string.from("2"));
+    map.set(string.from("three"), string.from("3"));
+    let seen: i32 = 0i32;
+    for (const entry of move map) {
+      seen = seen + 1i32;
+      if (seen === 1i32) {
+        break;
+      }
+    }
+    if (seen !== 1i32) {
+      return 13i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 15u64) {
+      return 14i32;
+    }
+  }
+  return 42i32;
+}

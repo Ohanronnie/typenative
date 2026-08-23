@@ -28,6 +28,18 @@ function main(): i32 throws Utf8Error | ParseIntegerError {
   if (name !== "ronnie") {
     return 10i32;
   }
+  const embedded = string.from("a\0b");
+  if (embedded !== "a\0b") {
+    return 13i32;
+  }
+  const embeddedBytes: &[u8] = embedded.bytes();
+  if (embeddedBytes[0usize] !== 97u8 || embeddedBytes[1usize] !== 0u8 || embeddedBytes[2usize] !== 98u8) {
+    return 14i32;
+  }
+  const embeddedCopy = embedded.clone();
+  if (embeddedCopy !== embedded) {
+    return 15i32;
+  }
   const guest = echo("guest");
   if (guest !== "guest") {
     return 11i32;

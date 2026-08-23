@@ -1,9 +1,87 @@
-import { Arc } from "std/alloc";
+import { AllocError, Arc, boxNewChecked, boxNew, rcClone, rcNew, rcNewChecked } from "std/alloc";
+import { c_size } from "std/ffi";
+
+declare extern "C" {
+  function tn_runtime_reset_allocation_count(): void;
+  function tn_runtime_free_count(): u64;
+  function tn_runtime_fail_alloc_after(successfulAllocations: c_size): void;
+  function tn_runtime_clear_alloc_failure(): void;
+}
 function main(): i32 {
-  let owner = new Arc(4i32);
-  let clone = owner.clone();
-  if (!clone.alive) {
-    return 1i32;
+  unsafe {
+    tn_runtime_reset_allocation_count();
+    tn_runtime_clear_alloc_failure();
+  }
+  {
+    let value = string.from("box-failure");
+    unsafe {
+      tn_runtime_fail_alloc_after(0usize);
+    }
+    try {
+      let ignored = try boxNewChecked(move value);
+      return 10i32;
+    } catch (error: AllocError) {
+      unsafe {
+        tn_runtime_clear_alloc_failure();
+        if (tn_runtime_free_count() !== 3u64) {
+          return 11i32;
+        }
+      }
+    }
+  }
+  {
+    let value = string.from("rc-failure");
+    unsafe {
+      tn_runtime_fail_alloc_after(0usize);
+    }
+    try {
+      let ignored = try rcNewChecked(move value);
+      return 12i32;
+    } catch (error: AllocError) {
+      unsafe {
+        tn_runtime_clear_alloc_failure();
+        if (tn_runtime_free_count() !== 6u64) {
+          return 13i32;
+        }
+      }
+    }
+  }
+  {
+    let boxed = boxNew(string.from("box"));
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 8u64) {
+      return 1i32;
+    }
+  }
+  unsafe {
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let owner = new Arc(string.from("arc"));
+    let clone = owner.clone();
+    let weak = owner.downgrade();
+    const upgraded = weak.upgrade();
+    if (upgraded === undefined) {
+      return 2i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 5u64) {
+      return 3i32;
+    }
+  }
+  unsafe {
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let owner = rcNew(string.from("rc"));
+    let clone = rcClone( & owner);
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 2u64) {
+      return 5i32;
+    }
   }
   return 42i32;
 }

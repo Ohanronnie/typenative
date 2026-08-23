@@ -1,0 +1,25 @@
+import { OrderedMap } from "std/collections";
+function main(): i32 {
+  let map = new OrderedMap<i32, i32>({
+    capacity: 2usize,
+  });
+  map.set(26i32, 2i32);
+  map.set(16i32, 1i32);
+  let output: i32 = 0i32;
+  for (const entry of move map) {
+    output = output * 100i32 + entry.key;
+  }
+  if (output === 2616i32) {
+    return 42i32;
+  }
+  if (output === 26i32) {
+    return 43i32;
+  }
+  if (output === 16i32) {
+    return 44i32;
+  }
+  if (output === 0i32) {
+    return 45i32;
+  }
+  return 46i32;
+}

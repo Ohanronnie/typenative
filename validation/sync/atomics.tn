@@ -1,0 +1,70 @@
+import { nullPointer } from "std/alloc";
+import { AtomicI32, MemoryOrder } from "std/core";
+import { JoinHandle, join, spawnRaw } from "std/thread";
+
+struct WorkerArgs {
+  public counter: * mut u8;
+  public iterations: usize;
+}
+function worker(argument: * mut u8): * mut u8 {
+  unsafe {
+    const args = *(argument as * const WorkerArgs);
+    let index: usize = 0usize;
+    while (index !== args.iterations) {
+      const counter = & mut *(args.counter as * mut AtomicI32);
+      counter.fetchAdd(1i32, MemoryOrder.Relaxed);
+      index = index + 1usize;
+    }
+  }
+  return nullPointer<u8>();
+}
+function startWorker(argument: & mut WorkerArgs): JoinHandle<u8> {
+  unsafe {
+    return spawnRaw(worker as * mut u8,(argument as * mut WorkerArgs)as * mut u8);
+  }
+}
+function joinWorker(handle: & mut JoinHandle<u8>, result: & mut * mut u8): i32 {
+  unsafe {
+    return join(handle, result as * mut u8);
+  }
+}
+function makeArguments(counter: & mut AtomicI32): WorkerArgs {
+  unsafe {
+    return {
+      counter:(counter as * mut AtomicI32)as * mut u8, iterations: 250000usize,
+    };
+  }
+}
+function main(): i32 {
+  let counter = new AtomicI32(0i32);
+  let arguments = makeArguments( & mut counter);
+  let first = startWorker( & mut arguments);
+  let second = startWorker( & mut arguments);
+  let third = startWorker( & mut arguments);
+  let fourth = startWorker( & mut arguments);
+  let result: * mut u8 = nullPointer<u8>();
+  if (joinWorker( & mut first, & mut result) !== 0i32) {
+    return 1i32;
+  }
+  if (joinWorker( & mut second, & mut result) !== 0i32) {
+    return 2i32;
+  }
+  if (joinWorker( & mut third, & mut result) !== 0i32) {
+    return 3i32;
+  }
+  if (joinWorker( & mut fourth, & mut result) !== 0i32) {
+    return 4i32;
+  }
+  if (counter.load(MemoryOrder.Acquire) !== 1000000i32) {
+    return 5i32;
+  }
+  counter.store(7i32, MemoryOrder.Release);
+  let expected = counter.load(MemoryOrder.Acquire);
+  if (!counter.compareExchange(expected, 9i32, MemoryOrder.AcquireRelease, MemoryOrder.Acquire)) {
+    return 6i32;
+  }
+  if (counter.load(MemoryOrder.SeqCst) !== 9i32) {
+    return 7i32;
+  }
+  return 42i32;
+}

@@ -105,20 +105,30 @@ function main(): i32 {
       if (output === undefined) {
         return 4i32;
       }
-      canonicalMapOutput = output!;
+      canonicalMapOutput = * output!;
+      if (canonicalMapOutput !== value) {
+        return 78i32;
+      }
     }
     {
-      const output = array.get(0usize);
+      const output = array.borrow(0usize);
       if (output === undefined) {
         return 5i32;
       }
-      canonicalArrayOutput = output!;
+      canonicalArrayOutput = * output!;
     }
     {
       const output = array.borrow(0usize);
       if (output === undefined || * output! !== value) {
         return 53i32;
       }
+    }
+    {
+      const output = array.borrowMut(0usize);
+      if (output === undefined) {
+        return 54i32;
+      }
+      * output! = value;
     }
     {
       const slice = array.slice();
@@ -292,7 +302,8 @@ function main(): i32 {
       }
     }
     {
-      if (!canonical.remove( & key)) {
+      const removed = canonical.remove( & key);
+      if (removed === undefined) {
         return 16i32;
       }
     }
@@ -317,7 +328,7 @@ function main(): i32 {
       if (output === undefined) {
         return 20i32;
       }
-      orderedMapOutput = output!;
+      orderedMapOutput = * output!;
       if (!orderedValues.contains( & key)) {
         return 21i32;
       }
@@ -351,7 +362,7 @@ function main(): i32 {
       if (output === undefined) {
         return 2i32;
       }
-      legacyMapOutput = output!;
+      legacyMapOutput = * output!;
     }
     map.remove( & key);
   }
@@ -478,7 +489,7 @@ function main(): i32 {
   for (const entry of iterableOrderedMap) {
     orderedMapIterated = orderedMapIterated * 100i32 + entry.key;
   }
-  if (orderedMapIterated !== 1626i32) {
+  if (orderedMapIterated !== 2616i32) {
     return 74i32;
   }
   let iterableOrderedSet = new OrderedSet<i32>({
@@ -490,7 +501,7 @@ function main(): i32 {
   for (const item of move iterableOrderedSet) {
     orderedSetIterated = orderedSetIterated * 100i32 + item;
   }
-  if (orderedSetIterated !== 1626i32) {
+  if (orderedSetIterated !== 2616i32) {
     return 75i32;
   }
   let iterableTextMap = new Map<string, string>({

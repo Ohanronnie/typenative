@@ -19,6 +19,13 @@ struct ParsedCommand {
   public readonly command: Command;
   public readonly consumed: usize;
 }
+function view(input: & BytesMut): Bytes {
+  unsafe {
+    return {
+      pointer: input.pointer as * const u8, length: input.length,
+    };
+  }
+}
 class Cursor {
   private input: & BytesMut;
   private offset: usize;
@@ -35,7 +42,7 @@ class Cursor {
       const current = this.input.get(this.offset)!;
       const next = this.input.get(this.offset + 1)!;
       if (current === 13 && next === 10) {
-        const line = this.input.slice(start, this.offset);
+        const line = view(this.input).slice(start, this.offset);
         this.offset += 2;
         return line;
       }
@@ -84,7 +91,7 @@ class Cursor {
     if (this.input.get(payloadEnd)! !== 13 || this.input.get(payloadEnd + 1)! !== 10) {
       throw RedisError.InvalidFrame;
     }
-    const payload = this.input.slice(this.offset, payloadEnd);
+    const payload = view(this.input).slice(this.offset, payloadEnd);
     this.offset = payloadEnd + 2;
     return payload;
   }
@@ -117,7 +124,7 @@ function parseCommand(input: & BytesMut,): ParsedCommand | undefined throws Redi
     parts.push(part!);
     index += 1;
   }
-  const nameBytes = parts.get(0);
+  const nameBytes = parts.removeAt(0usize);
   if (nameBytes === undefined) {
     throw RedisError.InvalidFrame;
   }
@@ -125,15 +132,13 @@ function parseCommand(input: & BytesMut,): ParsedCommand | undefined throws Redi
   let arguments = new Array<string>({
     capacity: 8,
   });
-  let argumentIndex: usize = 1;
-  while (argumentIndex<parts.length) {
-    const argumentBytes = parts.get(argumentIndex);
+  while (parts.length > 0usize) {
+    const argumentBytes = parts.removeAt(0usize);
     if (argumentBytes === undefined) {
       throw RedisError.InvalidFrame;
     }
     const argument = try decodePayload(argumentBytes!);
     arguments.push(argument);
-    argumentIndex += 1;
   }
   const result: ParsedCommand = {
     command: {
@@ -164,7 +169,7 @@ function encodeReply(reply: Reply, output: & mut BytesMut,): void {
       output.push(36);
       output.appendUnsignedDecimal(body.length);
       appendCrLf(output);
-      output.append(body.slice(0, body.length));
+      output.append(view( & body).slice(0, body.length));
       appendCrLf(output);
     }
     case Reply.Integer(value): {

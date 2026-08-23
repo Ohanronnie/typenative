@@ -29,26 +29,39 @@ function main(): i32 {
   let key: i32 = 16i32;
   values.set(key, 42i32);
   const stored = values.get( & key);
-  if (stored === undefined || stored! !== 42i32 || !values.contains( & key)) {
+  if (stored === undefined || !values.contains( & key)) {
     return 1i32;
   }
-  if (!values.remove( & key) || values.length !== 0usize) {
+  let storedValue: i32 = 0i32;
+  unsafe {
+    storedValue = * stored!;
+  }
+  if (storedValue !== 42i32) {
+    return 1i32;
+  }
+  const removed = values.remove( & key);
+  if (removed === undefined || removed! !== 42i32 || values.length !== 0usize) {
     return 2i32;
   }
   let owner = new Arc(42i32);
   let clone = owner.clone();
-  if (!clone.alive) {
+  let cloneValue: i32 = 0i32;
+  unsafe {
+    cloneValue = * clone.get();
+  }
+  if (cloneValue !== 42i32) {
     return 3i32;
   }
   let mutex = new Mutex<i32>(7i32);
   {
     using locked = mutex.lock();
-    if (!locked.locked) {
+    let value: i32 = 0i32;
+    unsafe {
+      value = * locked.getMut();
+    }
+    if (value !== 7i32) {
       return 4i32;
     }
-  }
-  if (mutex.value !== 7i32) {
-    return 5i32;
   }
   const answerResult: i32 = run(answer());
   if (answerResult !== 42i32) {

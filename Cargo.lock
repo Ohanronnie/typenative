@@ -836,6 +836,7 @@ dependencies = [
  "tn-diagnostics",
  "tn-hir",
  "tn-mir",
+ "tn-node-api",
 ]
 
 [[package]]

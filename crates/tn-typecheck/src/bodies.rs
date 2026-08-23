@@ -155,6 +155,32 @@ pub fn check_bodies_with_ownership(
                     );
                 }
             }
+            DefinitionData::Enum { methods, .. } => {
+                let self_type = Type::Nominal(
+                    definition.declaration,
+                    definition
+                        .generics
+                        .iter()
+                        .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
+                        .map(|parameter| Type::Generic(parameter.name.clone()))
+                        .collect(),
+                );
+                for method in methods {
+                    check_one(
+                        program,
+                        definition.declaration,
+                        Some(method.id),
+                        &method.function,
+                        (method.receiver != ReceiverMode::Static).then_some(self_type.clone()),
+                        &callable,
+                        ownership_facts,
+                        &mut diagnostics,
+                        &mut monomorphizations,
+                        &mut closures,
+                        &mut hir_bodies,
+                    );
+                }
+            }
             DefinitionData::Implementation {
                 target, methods, ..
             } => {
@@ -1162,9 +1188,9 @@ impl BodyChecker<'_> {
                 parameters: function
                     .parameters
                     .iter()
-                    .map(|parameter| parameter.ty.clone())
+                    .map(|parameter| normalize_alias_deep(self.program, &parameter.ty))
                     .collect(),
-                result: Box::new(function.result.clone()),
+                result: Box::new(normalize_alias_deep(self.program, &function.result)),
                 effects: function.effects.clone(),
                 generics: function
                     .generics
@@ -1685,6 +1711,16 @@ impl BodyChecker<'_> {
             };
             let name = self.module.source[name_token.range.clone()].to_owned();
             let expected_field = fields.iter().find(|field| field.name == name);
+            if expected_field
+                .is_some_and(|field| !self.can_initialize_member(*id, field.visibility))
+            {
+                self.error(
+                    "TYPE_INACCESSIBLE_MEMBER",
+                    format!("member `{name}` is not accessible here"),
+                    &name_token,
+                    "initialize private members from their declaring module",
+                );
+            }
             if !provided.insert(name.clone()) {
                 self.error(
                     "TYPE_DUPLICATE_OBJECT_FIELD",
@@ -1852,7 +1888,7 @@ impl BodyChecker<'_> {
         }
         if self.eat(TokenKind::LeftParen) {
             if value_struct && self.kind() == Some(TokenKind::LeftBrace) {
-                self.skip_object_fields();
+                let _ = self.object_literal(Some(&ty));
                 self.eat(TokenKind::RightParen);
                 return Some(value_type(ty));
             }
@@ -2414,7 +2450,7 @@ impl BodyChecker<'_> {
                 "TYPE_INACCESSIBLE_MEMBER",
                 format!("member `{name}` is not accessible here"),
                 &name_token,
-                "use a public member or access it from an allowed class context",
+                "use a public member or access it from the declaring type",
             );
         }
         let mut ty = specialize_nominal_member_type(self.program, base, &member.ty);
@@ -2625,6 +2661,20 @@ impl BodyChecker<'_> {
         let valid = compatible(self.program, &source.ty, &target)
             || runtime_numeric_cast
             || raw_pointer_cast;
+        let valid = valid
+            || matches!(
+                (&source.ty, &target),
+                (
+                    Type::Generic(name),
+                    Type::DynamicInterface(interface, _)
+                ) if generic_supports_interface(
+                    self.program,
+                    self.function,
+                    self.owner,
+                    name,
+                    *interface,
+                )
+            );
         if raw_pointer_cast
             && self.unsafe_depth == 0
             && let Some(token) = token
@@ -3128,7 +3178,10 @@ impl BodyChecker<'_> {
             .program
             .definition(self.owner)
             .and_then(|definition| match &definition.data {
-                DefinitionData::Class { .. } => Some(definition.declaration),
+                DefinitionData::Struct { .. }
+                | DefinitionData::Enum { .. }
+                | DefinitionData::Interface { .. }
+                | DefinitionData::Class { .. } => Some(definition.declaration),
                 DefinitionData::Implementation { target, .. } => nominal_id(target),
                 _ => None,
             });
@@ -3139,6 +3192,16 @@ impl BodyChecker<'_> {
             }
             Visibility::Public => true,
         }
+    }
+
+    fn can_initialize_member(&self, declaring: DeclarationId, visibility: Visibility) -> bool {
+        visibility == Visibility::Public
+            || self
+                .program
+                .graph
+                .declaration(declaring)
+                .is_some_and(|declaration| declaration.module == self.module.id)
+            || self.can_access(declaring, visibility)
     }
 
     fn error(&mut self, id: &str, message: impl Into<String>, token: &Token, label: &str) {
@@ -3188,7 +3251,10 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
                 if let Some(name) = &declaration.name {
                     functions.insert(
                         (declaration.module, name.clone()),
-                        (definition.declaration, function.clone()),
+                        (
+                            definition.declaration,
+                            normalize_function_aliases(program, function),
+                        ),
                     );
                 }
             }
@@ -3196,7 +3262,10 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
                 for method in methods {
                     functions.insert(
                         (declaration.module, method.name.clone()),
-                        (definition.declaration, method.function.clone()),
+                        (
+                            definition.declaration,
+                            normalize_function_aliases(program, &method.function),
+                        ),
                     );
                 }
             }
@@ -3222,7 +3291,10 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
                         DefinitionData::Function(function) => {
                             functions.insert(
                                 (module.id, imported.local.clone()),
-                                (declaration.id, function.clone()),
+                                (
+                                    declaration.id,
+                                    normalize_function_aliases(program, function),
+                                ),
                             );
                         }
                         DefinitionData::Extern { functions: methods } => {
@@ -3232,7 +3304,10 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
                             {
                                 functions.insert(
                                     (module.id, imported.local.clone()),
-                                    (declaration.id, method.function.clone()),
+                                    (
+                                        declaration.id,
+                                        normalize_function_aliases(program, &method.function),
+                                    ),
                                 );
                             }
                         }
@@ -3243,6 +3318,89 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
         }
     }
     functions
+}
+
+fn normalize_function_aliases(program: &Program, function: &Function) -> Function {
+    let mut normalized = function.clone();
+    for parameter in &mut normalized.parameters {
+        parameter.ty = normalize_alias_deep(program, &parameter.ty);
+    }
+    normalized.result = normalize_alias_deep(program, &normalized.result);
+    normalized
+}
+
+fn normalize_alias_deep(program: &Program, ty: &Type) -> Type {
+    let ty = normalize_alias(program, ty);
+    match ty {
+        Type::Nominal(declaration, arguments) => Type::Nominal(
+            declaration,
+            arguments
+                .iter()
+                .map(|argument| normalize_alias_deep(program, argument))
+                .collect(),
+        ),
+        Type::DynamicInterface(declaration, arguments) => Type::DynamicInterface(
+            declaration,
+            arguments
+                .iter()
+                .map(|argument| normalize_alias_deep(program, argument))
+                .collect(),
+        ),
+        Type::Promise { result, effects } => Type::Promise {
+            result: Box::new(normalize_alias_deep(program, &result)),
+            effects,
+        },
+        Type::Optional(inner) => Type::Optional(Box::new(normalize_alias_deep(program, &inner))),
+        Type::Array(inner, length) => {
+            Type::Array(Box::new(normalize_alias_deep(program, &inner)), length)
+        }
+        Type::Slice(inner) => Type::Slice(Box::new(normalize_alias_deep(program, &inner))),
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| normalize_alias_deep(program, element))
+                .collect(),
+        ),
+        Type::Reference {
+            mutable,
+            lifetime,
+            referent,
+        } => Type::Reference {
+            mutable,
+            lifetime,
+            referent: Box::new(normalize_alias_deep(program, &referent)),
+        },
+        Type::RawPointer { mutable, pointee } => Type::RawPointer {
+            mutable,
+            pointee: Box::new(normalize_alias_deep(program, &pointee)),
+        },
+        Type::Function(function) => Type::Function(tn_hir::FunctionType {
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| normalize_alias_deep(program, parameter))
+                .collect(),
+            result: Box::new(normalize_alias_deep(program, &function.result)),
+            effects: function.effects,
+            generics: function.generics,
+            is_async: function.is_async,
+            is_unsafe: function.is_unsafe,
+        }),
+        Type::Template(elements) => Type::Template(
+            elements
+                .iter()
+                .map(|element| normalize_alias_deep(program, element))
+                .collect(),
+        ),
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::Generic(_)
+        | Type::Lifetime(_)
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => ty,
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3720,10 +3878,12 @@ fn maximal_expression_ids(
 }
 
 fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
+    let actual = normalize_alias(program, actual);
+    let expected = normalize_alias(program, expected);
     if actual == expected || matches!(actual, Type::Error | Type::Primitive(PrimitiveType::Never)) {
         return true;
     }
-    match (actual, expected) {
+    match (&actual, &expected) {
         (actual, Type::Optional(expected)) if compatible(program, actual, expected) => true,
         (Type::Array(actual, _), Type::Slice(expected))
         | (Type::Optional(actual), Type::Optional(expected)) => {
@@ -3754,6 +3914,26 @@ fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
             explicitly_conforms(program, *actual, *interface)
         }
         _ => false,
+    }
+}
+
+fn normalize_alias(program: &Program, ty: &Type) -> Type {
+    let mut current = ty.clone();
+    let mut visited = BTreeSet::new();
+    loop {
+        let Type::Nominal(declaration, arguments) = &current else {
+            return current;
+        };
+        if !arguments.is_empty() || !visited.insert(*declaration) {
+            return current;
+        }
+        let Some(DefinitionData::TypeAlias(alias)) = program
+            .definition(*declaration)
+            .map(|definition| &definition.data)
+        else {
+            return current;
+        };
+        current = alias.clone();
     }
 }
 
@@ -4289,6 +4469,33 @@ fn generic_supports_operator(
         })
 }
 
+fn generic_supports_interface(
+    program: &Program,
+    function: &Function,
+    owner: DeclarationId,
+    name: &str,
+    required: DeclarationId,
+) -> bool {
+    function
+        .generics
+        .iter()
+        .chain(
+            program
+                .definition(owner)
+                .into_iter()
+                .flat_map(|definition| definition.generics.iter()),
+        )
+        .find(|parameter| parameter.name == name)
+        .is_some_and(|parameter| {
+            parameter.bounds.iter().any(|bound| {
+                let tn_hir::GenericBound::Interface(interface, _) = bound else {
+                    return false;
+                };
+                *interface == required
+            })
+        })
+}
+
 fn declaration_name(program: &Program, declaration: DeclarationId) -> Option<&str> {
     program
         .graph
@@ -4558,7 +4765,7 @@ fn pattern_space(program: &Program, ty: &Type) -> (BTreeMap<String, bool>, bool)
         ),
         Type::Nominal(id, _) => {
             let variants = program.definition(*id).and_then(|definition| {
-                let DefinitionData::Enum { variants } = &definition.data else {
+                let DefinitionData::Enum { variants, .. } = &definition.data else {
                     return None;
                 };
                 Some(
@@ -4578,7 +4785,7 @@ fn pattern_constructor(program: &Program, ty: &Type, key: Option<&str>) -> Optio
     let (Type::Nominal(id, _), Some(key)) = (ty, key) else {
         return None;
     };
-    let DefinitionData::Enum { variants } = &program.definition(*id)?.data else {
+    let DefinitionData::Enum { variants, .. } = &program.definition(*id)?.data else {
         return None;
     };
     variants
@@ -4635,7 +4842,7 @@ fn classify_pattern(
                     .map(|(parameter, argument)| (parameter.name.clone(), argument.clone()))
                     .collect::<BTreeMap<_, _>>();
                 match &definition.data {
-                    DefinitionData::Enum { variants } => {
+                    DefinitionData::Enum { variants, .. } => {
                         if let Some((variant, variant_index)) =
                             variants.iter().find_map(|variant| {
                                 tokens
@@ -4828,7 +5035,7 @@ fn pattern_binding_projections(
         return projections;
     };
     let fields = match (&definition.data, constructor) {
-        (DefinitionData::Enum { variants }, Some(constructor)) => variants
+        (DefinitionData::Enum { variants, .. }, Some(constructor)) => variants
             .iter()
             .find(|variant| variant.id == constructor)
             .map(|variant| {
@@ -4950,6 +5157,7 @@ fn readonly_field_owner(program: &Program, member: MemberId) -> Option<Declarati
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn resolve_member(program: &Program, owner: DeclarationId, name: &str) -> Option<ResolvedMember> {
     let definition = program.definition(owner)?;
     match &definition.data {
@@ -5014,39 +5222,51 @@ fn resolve_member(program: &Program, owner: DeclarationId, name: &str) -> Option
                 ty: function_type(&method.function),
                 callable: Some(CallableIdentity::Method(method.id)),
             }),
-        DefinitionData::Enum { variants } => variants
+        DefinitionData::Enum { variants, methods } => methods
             .iter()
-            .find(|variant| variant.name == name)
-            .map(|variant| ResolvedMember {
-                id: variant.id,
+            .find(|method| method.name == name)
+            .map(|method| ResolvedMember {
+                id: method.id,
                 owner,
-                visibility: Visibility::Public,
-                ty: if variant.fields.is_empty() {
-                    Type::Nominal(owner, Vec::new())
-                } else {
-                    Type::Function(tn_hir::FunctionType {
-                        parameters: variant
-                            .fields
-                            .iter()
-                            .map(|field| field.ty.clone())
-                            .collect(),
-                        result: Box::new(Type::Nominal(owner, Vec::new())),
-                        effects: Vec::new(),
-                        generics: definition
-                            .generics
-                            .iter()
-                            .map(|parameter| tn_hir::GenericConstraint {
-                                name: parameter.name.clone(),
-                                namespace: parameter.namespace,
-                                bounds: parameter.bounds.clone(),
+                visibility: method.visibility,
+                ty: function_type(&method.function),
+                callable: Some(CallableIdentity::Method(method.id)),
+            })
+            .or_else(|| {
+                variants
+                    .iter()
+                    .find(|variant| variant.name == name)
+                    .map(|variant| ResolvedMember {
+                        id: variant.id,
+                        owner,
+                        visibility: Visibility::Public,
+                        ty: if variant.fields.is_empty() {
+                            Type::Nominal(owner, Vec::new())
+                        } else {
+                            Type::Function(tn_hir::FunctionType {
+                                parameters: variant
+                                    .fields
+                                    .iter()
+                                    .map(|field| field.ty.clone())
+                                    .collect(),
+                                result: Box::new(Type::Nominal(owner, Vec::new())),
+                                effects: Vec::new(),
+                                generics: definition
+                                    .generics
+                                    .iter()
+                                    .map(|parameter| tn_hir::GenericConstraint {
+                                        name: parameter.name.clone(),
+                                        namespace: parameter.namespace,
+                                        bounds: parameter.bounds.clone(),
+                                    })
+                                    .collect(),
+                                is_async: false,
+                                is_unsafe: false,
                             })
-                            .collect(),
-                        is_async: false,
-                        is_unsafe: false,
+                        },
+                        callable: (!variant.fields.is_empty())
+                            .then_some(CallableIdentity::Method(variant.id)),
                     })
-                },
-                callable: (!variant.fields.is_empty())
-                    .then_some(CallableIdentity::Method(variant.id)),
             })
             .or_else(|| resolve_inherent_method(program, owner, name)),
         _ => None,
@@ -5089,6 +5309,7 @@ fn resolved_method_receiver(program: &Program, member: MemberId) -> Option<Recei
         .iter()
         .find_map(|definition| match &definition.data {
             DefinitionData::Class { methods, .. }
+            | DefinitionData::Enum { methods, .. }
             | DefinitionData::Interface { methods, .. }
             | DefinitionData::Implementation { methods, .. }
             | DefinitionData::Extern { functions: methods } => methods

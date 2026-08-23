@@ -1,0 +1,96 @@
+import { Heap, Map, OrderedMap, Set } from "std/collections";
+import { Equal, Hash, Ord, Ordering } from "std/core";
+
+@Conform(Hash, Equal, Ord)
+struct CollisionKey {
+  public id: i32;
+  public hash(): u64 {
+    return 1u64;
+  }
+  public equals(other: & CollisionKey): bool {
+    return this.id === other.id;
+  }
+  public compare(other: & CollisionKey): Ordering {
+    if (this.id<other.id) {
+      return Ordering.Less;
+    }
+    if (this.id > other.id) {
+      return Ordering.Greater;
+    }
+    return Ordering.Equal;
+  }
+}
+function makeKey(id: i32): CollisionKey {
+  return {
+    id: id,
+  };
+}
+function main(): i32 {
+  let first: CollisionKey = makeKey(1i32);
+  let second: CollisionKey = makeKey(2i32);
+  let third: CollisionKey = makeKey(3i32);
+  let map = new Map<CollisionKey, i32>({
+    capacity: 8usize,
+  });
+  map.set(move first, 10i32);
+  map.set(move second, 20i32);
+  map.set(move third, 30i32);
+  let lookup: CollisionKey = makeKey(2i32);
+  const stored = map.get( & lookup);
+  if (stored === undefined) {
+    return 1i32;
+  }
+  unsafe {
+    const storedValue = * stored!;
+    if (storedValue !== 20i32) {
+      return 1i32;
+    }
+  }
+  const removed = map.remove( & lookup);
+  if (removed === undefined) {
+    return 2i32;
+  }
+  const removedValue = removed!;
+  if (removedValue !== 20i32 || map.length !== 2usize) {
+    return 2i32;
+  }
+  if (map.contains( & lookup)) {
+    return 3i32;
+  }
+  let set = new Set<CollisionKey>({
+    capacity: 8usize,
+  });
+  let setValue: CollisionKey = makeKey(3i32);
+  set.insert(move setValue);
+  let setLookup: CollisionKey = makeKey(3i32);
+  if (!set.contains( & setLookup)) {
+    return 4i32;
+  }
+  let ordered = new OrderedMap<CollisionKey, i32>({
+    capacity: 8usize,
+  });
+  ordered.set(makeKey(3i32), 3i32);
+  ordered.set(makeKey(1i32), 1i32);
+  let order: i32 = 0i32;
+  for (const entry of move ordered) {
+    order = order * 10i32 + entry.key.id;
+  }
+  if (order !== 31i32) {
+    return 5i32;
+  }
+  let heap = new Heap<CollisionKey>({
+    capacity: 4usize,
+  });
+  heap.push(makeKey(3i32));
+  heap.push(makeKey(1i32));
+  heap.push(makeKey(2i32));
+  const smallest = heap.pop();
+  if (smallest === undefined) {
+    return 6i32;
+  }
+  const smallestValue = smallest!;
+  if (smallestValue.id !== 1i32) {
+    return 6i32;
+  }
+  return 42i32;
+}

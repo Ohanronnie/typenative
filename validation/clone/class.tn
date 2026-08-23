@@ -1,0 +1,17 @@
+
+@Clone final class User {
+  public id: i32;
+  public text: string;
+  public constructor(id: i32, text: string) {
+    this.id = id;
+    this.text = move text;
+  }
+}
+function main(): i32 {
+  const original = new User(42i32, string.from("class"));
+  const copied = original.clone();
+  if (copied.id !== 42i32 || copied.text !== "class") {
+    return 1i32;
+  }
+  return 42i32;
+}

@@ -1,6 +1,7 @@
+import { c_size } from "std/ffi";
 declare extern "C" {
-  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
-  function strlen(bytes: * const u8): usize;
+  function tn_console_write(fd: i32, bytes: * const u8, length: c_size): i32;
+  function tn_string_length(bytes: * const u8): c_size;
 }
 export struct Formatter {
   public bytes: * mut u8;
@@ -13,7 +14,7 @@ export interface Debug {
 }
 export function writeStatic(output: & mut Formatter, text: & static str): void {
   unsafe {
-    tn_console_write(1i32, text as * const u8, strlen(text as * const u8));
+    tn_console_write(1i32, text as * const u8, tn_string_length(text as * const u8));
   }
 }
 export function boolName(value: bool): & static str {

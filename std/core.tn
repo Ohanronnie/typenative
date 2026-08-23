@@ -1,6 +1,70 @@
 export interface Copy {
 }
 export interface Clone {
+  clone(): Self;
+}
+export interface Hash {
+  hash(): u64;
+}
+export interface Equal<Rhs> {
+  equals(other: & Rhs): bool;
+}
+export enum Ordering {
+  Less, Equal, Greater,
+}
+export interface Ord<Rhs> {
+  compare(other: & Rhs): Ordering;
+}
+export enum MemoryOrder {
+  Relaxed, Acquire, Release, AcquireRelease, SeqCst,
+}
+@Intrinsic("atomic_i32_load")
+function atomicI32Load(pointer: * const i32, order: MemoryOrder): i32 {
+  return 0i32;
+}
+@Intrinsic("atomic_i32_store")
+function atomicI32Store(pointer: * mut i32, value: i32, order: MemoryOrder): i32 {
+  return 0i32;
+}
+@Intrinsic("atomic_i32_fetch_add")
+function atomicI32FetchAdd(pointer: * mut i32, delta: i32, order: MemoryOrder): i32 {
+  return 0i32;
+}
+@Intrinsic("atomic_i32_compare_exchange")
+function atomicI32CompareExchange(pointer: * mut i32, expected: * mut i32, desired: i32, success: MemoryOrder, failure: MemoryOrder,): bool {
+  return false;
+}
+@Intrinsic("atomic_u64_load")
+function atomicU64Load(pointer: * const u64, order: MemoryOrder): u64 {
+  return 0u64;
+}
+@Intrinsic("atomic_u64_store")
+function atomicU64Store(pointer: * mut u64, value: u64, order: MemoryOrder): u64 {
+  return 0u64;
+}
+@Intrinsic("atomic_u64_fetch_add")
+function atomicU64FetchAdd(pointer: * mut u64, delta: u64, order: MemoryOrder): u64 {
+  return 0u64;
+}
+@Intrinsic("atomic_u64_compare_exchange")
+function atomicU64CompareExchange(pointer: * mut u64, expected: * mut u64, desired: u64, success: MemoryOrder, failure: MemoryOrder,): bool {
+  return false;
+}
+@Intrinsic("atomic_usize_load")
+function atomicUsizeLoad(pointer: * const usize, order: MemoryOrder): usize {
+  return 0usize;
+}
+@Intrinsic("atomic_usize_store")
+function atomicUsizeStore(pointer: * mut usize, value: usize, order: MemoryOrder): usize {
+  return 0usize;
+}
+@Intrinsic("atomic_usize_fetch_add")
+function atomicUsizeFetchAdd(pointer: * mut usize, delta: usize, order: MemoryOrder): usize {
+  return 0usize;
+}
+@Intrinsic("atomic_usize_compare_exchange")
+function atomicUsizeCompareExchange(pointer: * mut usize, expected: * mut usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
+  return false;
 }
 export interface Drop {
 }
@@ -35,36 +99,84 @@ export struct Range<T> {
   public start: T;
   public end: T;
 }
-export struct AtomicI32 {
-  public value: i32;
+export class AtomicI32 {
+  private value: i32;
+  public constructor(value: i32) {
+    this.value = value;
+  }
+  public load(order: MemoryOrder): i32 {
+    unsafe {
+      return atomicI32Load(( & this.value)as * const i32, order);
+    }
+  }
+  public store(value: i32, order: MemoryOrder): i32 {
+    unsafe {
+      return atomicI32Store(( & mut this.value)as * mut i32, value, order);
+    }
+  }
+  public mut fetchAdd(delta: i32, order: MemoryOrder): i32 {
+    unsafe {
+      return atomicI32FetchAdd(( & mut this.value)as * mut i32, delta, order);
+    }
+  }
+  public mut compareExchange(expected: i32, desired: i32, success: MemoryOrder, failure: MemoryOrder,): bool {
+    let observed = expected;
+    unsafe {
+      return atomicI32CompareExchange(( & mut this.value)as * mut i32,( & mut observed)as * mut i32, desired, success, failure,);
+    }
+  }
 }
-export struct AtomicUsize {
-  public value: usize;
+export class AtomicU64 {
+  private value: u64;
+  public constructor(value: u64) {
+    this.value = value;
+  }
+  public load(order: MemoryOrder): u64 {
+    unsafe {
+      return atomicU64Load(( & this.value)as * const u64, order);
+    }
+  }
+  public store(value: u64, order: MemoryOrder): u64 {
+    unsafe {
+      return atomicU64Store(( & mut this.value)as * mut u64, value, order);
+    }
+  }
+  public mut fetchAdd(delta: u64, order: MemoryOrder): u64 {
+    unsafe {
+      return atomicU64FetchAdd(( & mut this.value)as * mut u64, delta, order);
+    }
+  }
+  public mut compareExchange(expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder,): bool {
+    let observed = expected;
+    unsafe {
+      return atomicU64CompareExchange(( & mut this.value)as * mut u64,( & mut observed)as * mut u64, desired, success, failure,);
+    }
+  }
 }
-export struct AtomicU64 {
-  public value: u64;
-}
-export function atomicI32(value: i32): AtomicI32 {
-  return {
-    value: value
-  };
-}
-export function atomicLoad(value: & AtomicI32): i32 {
-  return value.value;
-}
-export function atomicUsize(value: usize): AtomicUsize {
-  return {
-    value: value
-  };
-}
-export function atomicLoadUsize(value: & AtomicUsize): usize {
-  return value.value;
-}
-export function atomicU64(value: u64): AtomicU64 {
-  return {
-    value: value
-  };
-}
-export function atomicLoadU64(value: & AtomicU64): u64 {
-  return value.value;
+export class AtomicUsize {
+  private value: usize;
+  public constructor(value: usize) {
+    this.value = value;
+  }
+  public load(order: MemoryOrder): usize {
+    unsafe {
+      return atomicUsizeLoad(( & this.value)as * const usize, order);
+    }
+  }
+  public store(value: usize, order: MemoryOrder): usize {
+    unsafe {
+      return atomicUsizeStore(( & mut this.value)as * mut usize, value, order);
+    }
+  }
+  public mut fetchAdd(delta: usize, order: MemoryOrder): usize {
+    unsafe {
+      return atomicUsizeFetchAdd(( & mut this.value)as * mut usize, delta, order);
+    }
+  }
+  public mut compareExchange(expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
+    let observed = expected;
+    unsafe {
+      return atomicUsizeCompareExchange(( & mut this.value)as * mut usize,( & mut observed)as * mut usize, desired, success, failure,);
+    }
+  }
 }

@@ -1,4 +1,6 @@
+import { c_size } from "std/ffi";
 import { runtimeAbort, runtimeAlloc, runtimeFree } from "../runtime";
+
 declare extern "C" {
   function clock_gettime(clockId: i32, value: * mut u8): i32;
   function stat(path: * const u8, output: * mut u8): i32;
@@ -6,7 +8,7 @@ declare extern "C" {
   function opendir(path: * const u8): * mut u8;
   function readdir(directory: * mut u8): * mut u8;
   function closedir(directory: * mut u8): i32;
-  function memcpy(destination: * mut u8, source: * const u8, length: usize): * mut u8;
+  function memcpy(destination: * mut u8, source: * const u8, length: c_size): * mut u8;
 }
 @Intrinsic("is_null")
 export function platformIsNull<T>(pointer: * const T): bool {

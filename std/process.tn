@@ -4,11 +4,13 @@ declare extern "C" {
   function tn_process_id(): i32;
   function tn_process_argc(): i32;
   function tn_process_argv(index: i32): * const u8;
-  function tn_process_spawn(command: * const u8): i32;
+  function tn_process_spawn_argv(arguments: * const * const u8, count: c_size): i32;
   function tn_process_wait(process: i32, exitCode: * mut i32): i32;
   function tn_process_kill(process: i32, signal: i32): i32;
 }
+import { Array } from "std/collections";
 import { Drop } from "std/core";
+import { c_size } from "std/ffi";
 export struct ProcessError {
   public code: i32;
 }
@@ -37,25 +39,42 @@ export function argument(index: i32): * const u8 {
     return tn_process_argv(index);
   }
 }
-@Drop export struct Child {
-  public process: i32;
-  public waited: bool;
+@Drop export class Child {
+  private process: i32;
+  private waited: bool;
+  private constructor(process: i32) {
+    this.process = process;
+    this.waited = false;
+  }
+  public static unsafe fromRaw(process: i32): Child throws ProcessError {
+    if (process <= 0i32) {
+      throw processError(22i32);
+    }
+    return new Child(process);
+  }
   mut drop(): void {
-    if (!this.waited && this.process > 0i32) {
-      unsafe {
-        tn_process_kill(this.process, 15i32);
-        let exitCode: i32 = 0i32;
-        const output = & mut exitCode;
-        tn_process_wait(this.process, output as * mut i32);
+  }
+  public mut wait(): i32 throws ProcessError {
+    if (this.waited) {
+      throw processError(10i32);
+    }
+    let exitCode: i32 = 0i32;
+    unsafe {
+      const status = tn_process_wait(this.process,( & mut exitCode)as * mut i32);
+      if (status !== 0i32) {
+        throw processError(status);
       }
     }
+    this.waited = true;
+    return exitCode;
   }
-}
-export function spawn(command: & str): Child {
-  unsafe {
-    return {
-      process: tn_process_spawn(command as * const u8), waited: false
-    };
+  public kill(signal: i32): void throws ProcessError {
+    unsafe {
+      const status = tn_process_kill(this.process, signal);
+      if (status !== 0i32) {
+        throw processError(status);
+      }
+    }
   }
 }
 function processError(code: i32): ProcessError {
@@ -63,27 +82,34 @@ function processError(code: i32): ProcessError {
     code: code
   };
 }
-export function spawnChecked(command: & str): Child throws ProcessError {
-  const child = spawn(command);
-  if (child.process <= 0i32) {
-    throw processError(child.process);
+@Drop export class Command {
+  private arguments: Array<string>;
+  public constructor(program: & str) {
+    this.arguments = new Array<string>({
+      capacity: 4usize
+    });
+    this.arguments.push(string.from(program));
   }
-  return child;
-}
-export function wait(child: & mut Child, exitCode: * mut i32): i32 {
-  if (child.waited) {
-    return 10i32;
+  public mut arg(value: & str): void {
+    this.arguments.push(string.from(value));
   }
-  unsafe {
-    const status = tn_process_wait(child.process, exitCode);
-    if (status === 0i32) {
-      child.waited = true;
+  public spawn(): Child throws ProcessError {
+    const first = this.arguments.borrow(0usize);
+    if (first === undefined) {
+      throw processError( - 22i32);
     }
-    return status;
+    unsafe {
+      const process = tn_process_spawn_argv((first!as * const * const u8), this.arguments.length,);
+      if (process <= 0i32) {
+        throw processError(process);
+      }
+      return try Child.fromRaw(process);
+    }
   }
-}
-export function kill(child: & Child, signal: i32): i32 {
-  unsafe {
-    return tn_process_kill(child.process, signal);
+  public status(): i32 throws ProcessError {
+    let child = try this.spawn();
+    return try child.wait();
+  }
+  mut drop(): void {
   }
 }

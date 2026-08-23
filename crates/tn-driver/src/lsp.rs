@@ -165,6 +165,7 @@ fn semantic_diagnostics(source: &str) -> Vec<LspDiagnostic> {
             target: crate::Target::host().unwrap_or(crate::Target::Aarch64AppleDarwin),
             profile: crate::Profile::Debug,
             emit: crate::Emit::Executable,
+            sanitizers: Vec::new(),
             link: crate::LinkConfig::default(),
         },
         config_path: None,

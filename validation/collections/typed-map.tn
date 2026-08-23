@@ -1,0 +1,15 @@
+import { Map } from "std/collections";
+function main(): i32 {
+  let map = new Map<i32, i32>({
+    capacity: 8usize,
+  });
+  let key = 16i32;
+  map.set(key, 42i32);
+  const output = map.get( & key);
+  if (output === undefined) {
+    return 1i32;
+  }
+  unsafe {
+    return * output!;
+  }
+}

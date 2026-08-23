@@ -1,0 +1,24 @@
+import { InteriorNulError, freeCString, fromStr } from "std/ffi";
+function main(): i32 {
+  try {
+    let invalid = try fromStr("a\0b");
+    return 1i32;
+  } catch (error: InteriorNulError) {
+    if (error.offset !== 1usize) {
+      return 2i32;
+    }
+  }
+  try {
+    let valid = try fromStr("ok");
+    if (valid.isFreed()) {
+      return 3i32;
+    }
+    freeCString( & mut valid);
+    if (!valid.isFreed()) {
+      return 4i32;
+    }
+  } catch (error: InteriorNulError) {
+    return 5i32;
+  }
+  return 42i32;
+}

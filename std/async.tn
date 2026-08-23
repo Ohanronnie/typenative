@@ -26,6 +26,8 @@ declare extern "C" {
   function tn_reactor_unwatch(reactor: * mut u8, handle: i32): i32;
   function tn_reactor_wait(reactor: * mut u8, timeout: i32, ready: * mut i32, events: * mut i32): i32;
   function tn_reactor_destroy(reactor: * mut u8): i32;
+  function tn_pointer_is_null(pointer: * const u8): i32;
+  function tn_runtime_abort(code: u32): void;
 }
 export interface Future<T> {
 }
@@ -35,20 +37,59 @@ export struct Task<T> {
   public promise: Promise<T, never>;
 }
 @Drop export class TaskGroup<E> {
-  public handle: * mut u8;
-  public closed: bool;
+  private handle: * mut u8;
+  private closed: bool;
   public constructor() {
     unsafe {
       this.handle = tn_task_group_create();
+      if (tn_pointer_is_null(this.handle as * const u8) !== 0i32) {
+        tn_runtime_abort(12u32);
+      }
     }
     this.closed = false;
   }
-  mut drop(): void {
-    if (!this.closed) {
-      unsafe {
-        tn_task_group_destroy(this.handle);
-      }
+  public isClosed(): bool {
+    return this.closed;
+  }
+  public mut cancel(): i32 {
+    unsafe {
+      return tn_task_group_cancel(this.handle);
     }
+  }
+  public isCancelled(): bool {
+    unsafe {
+      return tn_task_group_is_cancelled(this.handle) !== 0i32;
+    }
+  }
+  public mut enter(): i32 {
+    unsafe {
+      return tn_task_group_enter(this.handle);
+    }
+  }
+  public mut leave(): i32 {
+    unsafe {
+      return tn_task_group_leave(this.handle);
+    }
+  }
+  public mut wait(): i32 {
+    unsafe {
+      return tn_task_group_wait(this.handle);
+    }
+  }
+  public mut close(): i32 {
+    if (this.closed) {
+      return 0i32;
+    }
+    unsafe {
+      const status = tn_task_group_destroy(this.handle);
+      if (status === 0i32) {
+        this.closed = true;
+      }
+      return status;
+    }
+  }
+  mut drop(): void {
+    this.close();
   }
   public final spawn<T>(promise: Promise<T, never >): bool {
     unsafe {
@@ -57,14 +98,40 @@ export struct Task<T> {
   }
 }
 @Drop export struct Reactor {
-  public handle: * mut u8;
-  public closed: bool;
-  mut drop(): void {
-    if (!this.closed) {
-      unsafe {
-        tn_reactor_destroy(this.handle);
-      }
+  private handle: * mut u8;
+  private closed: bool;
+  public isClosed(): bool {
+    return this.closed;
+  }
+  public mut watch(handle: i32, events: i32): i32 {
+    unsafe {
+      return tn_reactor_watch(this.handle, handle, events);
     }
+  }
+  public mut unwatch(handle: i32): i32 {
+    unsafe {
+      return tn_reactor_unwatch(this.handle, handle);
+    }
+  }
+  public mut poll(timeout: i32, ready: * mut i32, events: * mut i32): i32 {
+    unsafe {
+      return tn_reactor_wait(this.handle, timeout, ready, events);
+    }
+  }
+  public mut close(): i32 {
+    if (this.closed) {
+      return 0i32;
+    }
+    unsafe {
+      const status = tn_reactor_destroy(this.handle);
+      if (status === 0i32) {
+        this.closed = true;
+      }
+      return status;
+    }
+  }
+  mut drop(): void {
+    this.close();
   }
 }
 export function runI32(promise: Promise<i32, never >): i32 {
@@ -132,68 +199,42 @@ export function take(promise: * mut u8, failed: * mut i32): * mut u8 {
 }
 export function reactor(): Reactor {
   unsafe {
+    const handle = tn_reactor_create();
+    if (tn_pointer_is_null(handle as * const u8) !== 0i32) {
+      tn_runtime_abort(12u32);
+    }
     return {
-      handle: tn_reactor_create(), closed: false
+      handle: handle, closed: false
     };
   }
 }
 export function watch(reactor: & mut Reactor, handle: i32, events: i32): i32 {
-  unsafe {
-    return tn_reactor_watch(reactor.handle, handle, events);
-  }
+  return reactor.watch(handle, events);
 }
 export function unwatch(reactor: & mut Reactor, handle: i32): i32 {
-  unsafe {
-    return tn_reactor_unwatch(reactor.handle, handle);
-  }
+  return reactor.unwatch(handle);
 }
 export function poll(reactor: & mut Reactor, timeout: i32, ready: * mut i32, events: * mut i32,): i32 {
-  unsafe {
-    return tn_reactor_wait(reactor.handle, timeout, ready, events);
-  }
+  return reactor.poll(timeout, ready, events);
 }
 export function closeReactor(reactor: & mut Reactor): i32 {
-  if (reactor.closed) {
-    return 0i32;
-  }
-  unsafe {
-    const status = tn_reactor_destroy(reactor.handle);
-    reactor.closed = true;
-    return status;
-  }
+  return reactor.close();
 }
 export function cancelGroup<E>(group: & mut TaskGroup<E >): i32 {
-  unsafe {
-    return tn_task_group_cancel(group.handle);
-  }
+  return group.cancel();
 }
 export function isGroupCancelled<E>(group: & TaskGroup<E >): bool {
-  unsafe {
-    return tn_task_group_is_cancelled(group.handle) !== 0i32;
-  }
+  return group.isCancelled();
 }
 export function enterGroup<E>(group: & mut TaskGroup<E >): i32 {
-  unsafe {
-    return tn_task_group_enter(group.handle);
-  }
+  return group.enter();
 }
 export function leaveGroup<E>(group: & mut TaskGroup<E >): i32 {
-  unsafe {
-    return tn_task_group_leave(group.handle);
-  }
+  return group.leave();
 }
 export function waitGroup<E>(group: & mut TaskGroup<E >): i32 {
-  unsafe {
-    return tn_task_group_wait(group.handle);
-  }
+  return group.wait();
 }
 export function closeTaskGroup<E>(group: & mut TaskGroup<E >): i32 {
-  if (group.closed) {
-    return 0i32;
-  }
-  unsafe {
-    const status = tn_task_group_destroy(group.handle);
-    group.closed = true;
-    return status;
-  }
+  return group.close();
 }

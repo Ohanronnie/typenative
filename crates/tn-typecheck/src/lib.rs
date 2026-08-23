@@ -20,7 +20,7 @@ pub use ownership::{
     check_static_requirements, derive_ownership_facts,
 };
 pub use signatures::{check_signatures, check_signatures_with_ownership};
-pub use source_rules::check_source_rules;
+pub use source_rules::{check_source_rules, is_c_abi_type};
 
 /// Computes explicit and structural destruction requirements for nominal types.
 pub fn derive_drop_semantics(program: &Program) -> DropSemantics {
@@ -50,7 +50,7 @@ pub fn derive_drop_semantics_with_ownership(
                 DefinitionData::Struct { fields, .. } => {
                     fields.iter().map(|field| &field.ty).collect()
                 }
-                DefinitionData::Enum { variants } => variants
+                DefinitionData::Enum { variants, .. } => variants
                     .iter()
                     .flat_map(|variant| variant.fields.iter().map(|field| &field.ty))
                     .collect(),

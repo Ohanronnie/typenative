@@ -1,4 +1,4 @@
-import { BytesMut, cursor, fromStatic, readU8 } from "std/bytes";
+import { BytesMut, cursor, fromStatic, readU8, SliceError } from "std/bytes";
 import { Error } from "std/core";
 
 @Conform(Error)
@@ -23,8 +23,8 @@ function encode(request: Request): BytesMut {
   output.push(request.id);
   return output;
 }
-function decode(input: & BytesMut): Request throws ProtocolError {
-  let view = input.slice(0usize, input.length);
+function decode(input: & BytesMut): Request throws ProtocolError | SliceError {
+  let view = try input.slice(0usize, input.length);
   let inputCursor = cursor(view);
   let marker: u8 = 0u8;
   let id: u8 = 0u8;
@@ -58,6 +58,8 @@ export function protocolProbe(): i32 {
     }
   } catch (error: ProtocolError) {
     return 2i32;
+  } catch (error: SliceError) {
+    return 2i32;
   }
   let malformed = new BytesMut({
     capacity: 1usize,
@@ -70,6 +72,8 @@ export function protocolProbe(): i32 {
     return switch(error) {
       case ProtocolError.Truncated: 0i32, default: 4i32,
     };
+  } catch (error: SliceError) {
+    return 4i32;
   }
 }
 export function staticProtocolProbe(): i32 {

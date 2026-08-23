@@ -1,8 +1,11 @@
 import { BytesMut } from "std/bytes";
+import { c_size } from "std/ffi";
+import { fromRaw } from "std/string";
+
 declare extern "C" {
   function tn_clock_monotonic_ns(): u64;
   function tn_clock_wall_ns(): i64;
-  function tn_string_from_bytes(bytes: * const u8, length: usize): string;
+  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
 }
 // Duration stores elapsed nanoseconds and all scaled constructors saturate at
 // the largest representable value. Arithmetic never wraps into a short delay.
@@ -154,7 +157,7 @@ export class Date {
     appendUnsignedNumber( & mut buffer, parts.millisecond, 3usize);
     buffer.appendAscii("Z");
     unsafe {
-      return tn_string_from_bytes(buffer.pointer as * const u8, buffer.length);
+      return fromRaw(tn_string_from_bytes(buffer.pointer as * const u8, buffer.length), buffer.length);
     }
   }
 }

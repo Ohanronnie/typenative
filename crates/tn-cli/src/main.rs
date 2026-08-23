@@ -34,6 +34,8 @@ struct BuildArgs {
     out: Option<PathBuf>,
     #[arg(long, help = "print compiler phase timings to stderr")]
     timings: bool,
+    #[arg(long = "sanitize", value_enum)]
+    sanitizers: Vec<SanitizerArg>,
     #[arg(long = "link-library")]
     link_libraries: Vec<String>,
     #[arg(long = "link-search")]
@@ -51,6 +53,8 @@ struct RunArgs {
     profile: Option<Profile>,
     #[arg(long, help = "print compiler phase timings to stderr")]
     timings: bool,
+    #[arg(long = "sanitize", value_enum)]
+    sanitizers: Vec<SanitizerArg>,
     #[arg(last = true)]
     arguments: Vec<String>,
 }
@@ -105,8 +109,6 @@ enum Profile {
 enum Target {
     #[value(name = "aarch64-apple-darwin")]
     Aarch64AppleDarwin,
-    #[value(name = "x86_64-unknown-linux-gnu")]
-    X86_64UnknownLinuxGnu,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -118,6 +120,13 @@ enum Emit {
     Assembly,
     SharedLibrary,
     NodeAddon,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SanitizerArg {
+    Address,
+    Undefined,
+    Thread,
 }
 
 fn main() -> std::process::ExitCode {
@@ -148,6 +157,7 @@ fn build(args: &BuildArgs) -> std::process::ExitCode {
         }
     };
     apply_target_profile(&mut project, args.target, args.profile);
+    apply_sanitizers(&mut project, &args.sanitizers);
     if let Some(emit) = args.emit {
         project.config.emit = driver_emit(emit);
     }
@@ -184,6 +194,7 @@ fn run(args: &RunArgs) -> std::process::ExitCode {
         }
     };
     apply_target_profile(&mut project, args.target, args.profile);
+    apply_sanitizers(&mut project, &args.sanitizers);
     project.config.emit = tn_driver::Emit::Executable;
     let output = match tn_driver::build_project_with_timings(&project, None, args.timings) {
         Ok(output) => output,
@@ -227,7 +238,6 @@ fn apply_target_profile(
     if let Some(target) = target {
         project.config.target = match target {
             Target::Aarch64AppleDarwin => tn_driver::Target::Aarch64AppleDarwin,
-            Target::X86_64UnknownLinuxGnu => tn_driver::Target::X86_64UnknownLinuxGnu,
         };
     }
     if let Some(profile) = profile {
@@ -236,6 +246,21 @@ fn apply_target_profile(
             Profile::Optimized => tn_driver::Profile::Optimized,
         };
     }
+}
+
+fn apply_sanitizers(project: &mut tn_driver::Project, requested: &[SanitizerArg]) {
+    if requested.is_empty() {
+        return;
+    }
+    project.config.sanitizers = requested
+        .iter()
+        .copied()
+        .map(|sanitizer| match sanitizer {
+            SanitizerArg::Address => tn_driver::Sanitizer::Address,
+            SanitizerArg::Undefined => tn_driver::Sanitizer::Undefined,
+            SanitizerArg::Thread => tn_driver::Sanitizer::Thread,
+        })
+        .collect();
 }
 
 const fn driver_emit(emit: Emit) -> tn_driver::Emit {

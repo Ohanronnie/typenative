@@ -16,7 +16,8 @@ pub use docs::generate_docs;
 pub use lint::lint_project;
 pub use lsp::run_lsp;
 pub use project::{
-    Emit, LinkConfig, Profile, Project, ProjectConfig, Target, UnsupportedHost, load_project,
+    Emit, LinkConfig, Profile, Project, ProjectConfig, Sanitizer, Target, UnsupportedHost,
+    load_project,
 };
 pub use test::{TestRun, run_tests};
 

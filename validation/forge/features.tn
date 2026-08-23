@@ -3,9 +3,6 @@ import { cancel, cancelGroup, closeTaskGroup, destroyPromise, enterGroup, isGrou
 import { fromStatic } from "std/bytes";
 import { AsyncIterable, Clone, Copy, Drop, Iterable, Send, Sync } from "std/core";
 
-declare extern "C" {
-  function strlen(value: * const u8): usize;
-}
 @Copy struct CopyWitness {
   public value: i32;
 }
@@ -100,10 +97,8 @@ export function featureProbe(): i32 {
     rawFree(pointer);
   }
   const bytes = fromStatic("forge");
-  unsafe {
-    if (strlen(bytes.pointer) !== 5usize) {
-      return 6i32;
-    }
+  if (bytes.length !== 5usize) {
+    return 6i32;
   }
   let total: i32 = 0i32;
   for (const value of values()) {

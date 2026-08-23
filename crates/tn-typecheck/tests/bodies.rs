@@ -253,6 +253,9 @@ class Base {
   protected shared: i32;
   public own(): i32 { return this.secret; }
 }
+struct Record {
+  private secret: i32;
+}
 class Derived extends Base {
   public inherited(): i32 { return this.shared; }
   public forbidden(): i32 { return this.secret; }
@@ -260,6 +263,8 @@ class Derived extends Base {
 function classes(value: Base): void {
   const upcast: Base = new Derived();
   const forbidden = value.secret;
+  const item: Record = { secret: 7i32 };
+  const itemSecret = item.secret;
   const abstractValue = new AbstractThing();
 }
 ",
@@ -268,7 +273,7 @@ function classes(value: Base): void {
         .iter()
         .filter(|condition| condition.as_str() == "TYPE_INACCESSIBLE_MEMBER")
         .count();
-    assert_eq!(inaccessible, 2, "{diagnostics:?}");
+    assert_eq!(inaccessible, 3, "{diagnostics:?}");
     assert!(diagnostics.contains(&"TYPE_CONSTRUCTS_ABSTRACT_CLASS".into()));
     assert!(!diagnostics.contains(&"TYPE_MISMATCH".into()));
 }

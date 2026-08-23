@@ -1,0 +1,31 @@
+import { Array } from "std/collections";
+declare extern "C" {
+  function tn_runtime_reset_allocation_count(): void;
+  function tn_runtime_free_count(): u64;
+}
+function main(): i32 {
+  unsafe {
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let values = new Array<string>({
+      capacity: 2usize,
+    });
+    values.push(string.from("first"));
+    values.push(string.from("second"));
+    const borrowed = values.borrow(0usize);
+    if (borrowed === undefined || borrowed! !== "first") {
+      return 1i32;
+    }
+    const removed = values.removeAt(0usize);
+    if (removed === undefined || removed! !== "first" || values.length !== 1usize) {
+      return 2i32;
+    }
+  }
+  unsafe {
+    if (tn_runtime_free_count() !== 5u64) {
+      return 3i32;
+    }
+  }
+  return 42i32;
+}

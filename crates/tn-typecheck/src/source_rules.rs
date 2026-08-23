@@ -1,7 +1,11 @@
 use crate::CheckResult;
-use std::collections::BTreeMap;
+use crate::ownership::declared_conformances;
+use std::collections::{BTreeMap, BTreeSet};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
-use tn_hir::{DeclarationKind, DefinitionData, Program, Type, Visibility};
+use tn_hir::{
+    AttributeKind, DeclarationKind, DefinitionData, FunctionType, PrimitiveType, Program, Type,
+    Visibility,
+};
 use tn_syntax::{Token, TokenKind, lex};
 
 #[allow(clippy::too_many_lines)]
@@ -87,6 +91,10 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
         check_constant_initializers(program, module.id, &lexed.tokens, &mut diagnostics);
     }
     for definition in &program.definitions {
+        check_drop_declaration(program, definition, &mut diagnostics);
+        check_clone_declaration(program, definition, &mut diagnostics);
+    }
+    for definition in &program.definitions {
         match &definition.data {
             DefinitionData::Struct { fields, methods } => {
                 for field in fields {
@@ -111,7 +119,8 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
             DefinitionData::Function(function) => {
                 check_function_body(program, definition.declaration, function, &mut diagnostics);
             }
-            DefinitionData::Class { methods, .. }
+            DefinitionData::Enum { methods, .. }
+            | DefinitionData::Class { methods, .. }
             | DefinitionData::Interface { methods, .. }
             | DefinitionData::Implementation { methods, .. } => {
                 for method in methods {
@@ -128,12 +137,12 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
                     if !function.function.generics.is_empty()
                         || function.function.is_async
                         || !function.function.effects.is_empty()
-                        || !c_abi_type(program, &function.function.result)
+                        || !is_c_abi_type(program, &function.function.result)
                         || function
                             .function
                             .parameters
                             .iter()
-                            .any(|parameter| !c_abi_type(program, &parameter.ty))
+                            .any(|parameter| !is_c_abi_type(program, &parameter.ty))
                     {
                         diagnostics.push(diag(
                             "TYPE_INVALID_C_ABI_SIGNATURE",
@@ -153,26 +162,272 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
     CheckResult { diagnostics }
 }
 
-fn c_abi_type(program: &Program, ty: &Type) -> bool {
+fn check_drop_declaration(
+    program: &Program,
+    definition: &tn_hir::Definition,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(declaration) = program.graph.declaration(definition.declaration) else {
+        return;
+    };
+    if !declaration
+        .attributes
+        .iter()
+        .any(|attribute| attribute.kind == AttributeKind::Drop)
+    {
+        return;
+    }
+    let (DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. }) =
+        &definition.data
+    else {
+        return;
+    };
+    let drop_methods = methods
+        .iter()
+        .filter(|method| method.name == "drop")
+        .collect::<Vec<_>>();
+    let valid = drop_methods.len() == 1 && {
+        let method = drop_methods[0];
+        method.visibility == Visibility::Private
+            && method.receiver == tn_hir::ReceiverMode::Mutable
+            && method.function.generics.is_empty()
+            && method.function.effects.is_empty()
+            && !method.function.is_async
+            && !method.function.is_generator
+            && method.function.result == Type::Primitive(PrimitiveType::Void)
+            && method.function.body_start != 0
+            && method.function.body_end > method.function.body_start
+            && !drop_body_moves_or_calls_drop(program, declaration.module, &method.function)
+    };
+    if !valid {
+        diagnostics.push(diag(
+            "TYPE_INVALID_DROP_DESTRUCTOR",
+            "@Drop requires exactly one private mut drop(): void method that cannot throw, suspend, move the receiver, or call drop directly",
+            &declaration.span,
+            "define one private mutable non-async non-throwing destructor method",
+        ));
+    }
+}
+
+fn check_clone_declaration(
+    program: &Program,
+    definition: &tn_hir::Definition,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(declaration) = program.graph.declaration(definition.declaration) else {
+        return;
+    };
+    if !declaration
+        .attributes
+        .iter()
+        .any(|attribute| attribute.kind == AttributeKind::Clone)
+    {
+        return;
+    }
+
+    let mut fields = Vec::new();
+    let mut base = None;
+    match &definition.data {
+        DefinitionData::Struct { fields: stored, .. } => {
+            fields.extend(stored.iter().map(|field| (&field.ty, &field.span)));
+        }
+        DefinitionData::Enum { variants, .. } => {
+            fields.extend(
+                variants.iter().flat_map(|variant| {
+                    variant.fields.iter().map(|field| (&field.ty, &field.span))
+                }),
+            );
+        }
+        DefinitionData::Class {
+            base: class_base,
+            fields: stored,
+            ..
+        } => {
+            base = *class_base;
+            fields.extend(stored.iter().map(|field| (&field.ty, &field.span)));
+        }
+        _ => return,
+    }
+
+    for (ty, span) in fields {
+        if !is_cloneable_type(program, definition, ty, &mut BTreeSet::new()) {
+            diagnostics.push(diag(
+                "TYPE_CLONE_FIELD_NOT_CLONEABLE",
+                "@Clone requires every stored field to be cloneable",
+                span,
+                "add a real clone() method to the field type or remove @Clone",
+            ));
+        }
+    }
+    if let Some(base) = base
+        && !nominal_has_clone_method(program, base, &mut BTreeSet::new())
+    {
+        let span = program
+            .graph
+            .declaration(base)
+            .map_or(&declaration.span, |declaration| &declaration.span);
+        diagnostics.push(diag(
+            "TYPE_CLONE_BASE_NOT_CLONEABLE",
+            "@Clone requires every stored base to be cloneable",
+            span,
+            "add @Clone or a real clone() method to the base class",
+        ));
+    }
+}
+
+fn is_cloneable_type(
+    program: &Program,
+    owner: &tn_hir::Definition,
+    ty: &Type,
+    visiting: &mut BTreeSet<tn_hir::DeclarationId>,
+) -> bool {
     match ty {
-        Type::Primitive(primitive) => !matches!(primitive, tn_hir::PrimitiveType::Never),
-        // The compiler representation of owned and borrowed strings is a pointer, so both
-        // canonical string spellings have the same C ABI shape as the runtime helpers that
-        // produce and consume them.
-        Type::String | Type::Str | Type::RawPointer { .. } => true,
+        Type::Primitive(_)
+        | Type::RawPointer { .. }
+        | Type::Function(_)
+        | Type::String
+        | Type::Str
+        | Type::Slice(_)
+        | Type::Reference { mutable: false, .. } => true,
+        Type::Reference { mutable: true, .. }
+        | Type::Promise { .. }
+        | Type::DynamicInterface(_, _)
+        | Type::Lifetime(_)
+        | Type::Error
+        | Type::Unknown => false,
+        Type::Optional(inner) | Type::Array(inner, _) => {
+            is_cloneable_type(program, owner, inner, visiting)
+        }
+        Type::Tuple(elements) | Type::Template(elements) => elements
+            .iter()
+            .all(|element| is_cloneable_type(program, owner, element, visiting)),
+        Type::Generic(name) => owner.generics.iter().any(|parameter| {
+            parameter.name == *name
+                && parameter.bounds.iter().any(|bound| {
+                    matches!(bound, tn_hir::GenericBound::Interface(interface, _)
+                        if program
+                            .graph
+                            .declaration(*interface)
+                            .and_then(|declaration| declaration.name.as_deref())
+                            == Some("Clone"))
+                })
+        }),
+        Type::Nominal(declaration, arguments) => {
+            arguments
+                .iter()
+                .all(|argument| is_cloneable_type(program, owner, argument, visiting))
+                && nominal_has_clone_method(program, *declaration, visiting)
+        }
+        Type::ErrorUnion(effects) => effects
+            .iter()
+            .all(|effect| nominal_has_clone_method(program, *effect, visiting)),
+    }
+}
+
+fn nominal_has_clone_method(
+    program: &Program,
+    declaration: tn_hir::DeclarationId,
+    visiting: &mut BTreeSet<tn_hir::DeclarationId>,
+) -> bool {
+    if !visiting.insert(declaration) {
+        return true;
+    }
+    let Some(definition) = program.definition(declaration) else {
+        return false;
+    };
+    let has_method = match &definition.data {
+        DefinitionData::Struct { methods, .. }
+        | DefinitionData::Enum { methods, .. }
+        | DefinitionData::Class { methods, .. } => methods.iter().any(|method| {
+            method.name == "clone"
+                && method.visibility == Visibility::Public
+                && method.receiver != tn_hir::ReceiverMode::Static
+                && method.function.generics.is_empty()
+                && method.function.effects.is_empty()
+                && !method.function.is_async
+        }),
+        _ => false,
+    };
+    if has_method {
+        return true;
+    }
+    if let DefinitionData::Class {
+        base: Some(base), ..
+    } = &definition.data
+    {
+        return nominal_has_clone_method(program, *base, visiting);
+    }
+    declared_conformances(program, declaration)
+        .iter()
+        .any(|interface| {
+            program
+                .graph
+                .declaration(*interface)
+                .and_then(|declaration| declaration.name.as_deref())
+                == Some("Clone")
+        })
+}
+
+fn drop_body_moves_or_calls_drop(
+    program: &Program,
+    module_id: tn_hir::ModuleId,
+    function: &tn_hir::Function,
+) -> bool {
+    let Some(module) = program.graph.module(module_id) else {
+        return true;
+    };
+    let tokens = lex(&module.path.to_string_lossy(), module.source.as_bytes())
+        .tokens
+        .into_iter()
+        .filter(|token| {
+            !token.kind.is_trivia()
+                && token.range.start > function.body_start as usize
+                && token.range.end < function.body_end as usize
+        })
+        .collect::<Vec<_>>();
+    tokens
+        .windows(2)
+        .any(|pair| pair[0].kind == TokenKind::Move && pair[1].kind == TokenKind::This)
+        || tokens.windows(4).any(|window| {
+            window[0].kind == TokenKind::Dot
+                && window[1].kind == TokenKind::Identifier
+                && &module.source[window[1].range.clone()] == "drop"
+                && window[2].kind == TokenKind::LeftParen
+        })
+}
+
+pub fn is_c_abi_type(program: &Program, ty: &Type) -> bool {
+    match ty {
+        Type::Primitive(primitive) => matches!(
+            primitive,
+            PrimitiveType::Bool
+                | PrimitiveType::I8
+                | PrimitiveType::I16
+                | PrimitiveType::I32
+                | PrimitiveType::I64
+                | PrimitiveType::U8
+                | PrimitiveType::U16
+                | PrimitiveType::U32
+                | PrimitiveType::U64
+                | PrimitiveType::F32
+                | PrimitiveType::F64
+                | PrimitiveType::Void
+        ),
+        Type::RawPointer { pointee, .. } => is_c_abi_type(program, pointee),
+        Type::Function(function) => is_c_function_type(program, function),
         Type::Nominal(declaration, arguments) => {
             if !arguments.is_empty() {
                 return false;
+            }
+            if is_declared_c_scalar(program, *declaration) {
+                return true;
             }
             let Some(item) = program.graph.declaration(*declaration) else {
                 return false;
             };
             if !item.attributes.iter().any(|attribute| {
-                attribute.name == "Layout"
-                    && attribute
-                        .arguments
-                        .first()
-                        .is_some_and(|argument| argument == "C")
+                attribute.kind == AttributeKind::Layout
+                    && attribute.arguments.as_slice() == [String::from("C")]
             }) {
                 return false;
             }
@@ -181,9 +436,9 @@ fn c_abi_type(program: &Program, ty: &Type) -> bool {
             };
             match &definition.data {
                 DefinitionData::Struct { fields, .. } => {
-                    fields.iter().all(|field| c_abi_type(program, &field.ty))
+                    fields.iter().all(|field| is_c_abi_type(program, &field.ty))
                 }
-                DefinitionData::Enum { variants } => {
+                DefinitionData::Enum { variants, .. } => {
                     variants.iter().all(|variant| variant.fields.is_empty())
                 }
                 _ => false,
@@ -191,6 +446,47 @@ fn c_abi_type(program: &Program, ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_c_function_type(program: &Program, function: &FunctionType) -> bool {
+    function.generics.is_empty()
+        && function.effects.is_empty()
+        && !function.is_async
+        && function.is_unsafe
+        && function
+            .parameters
+            .iter()
+            .all(|parameter| is_c_abi_type(program, parameter))
+        && is_c_abi_type(program, &function.result)
+}
+
+fn is_declared_c_scalar(program: &Program, declaration: tn_hir::DeclarationId) -> bool {
+    let Some(item) = program.graph.declaration(declaration) else {
+        return false;
+    };
+    if !program.graph.is_bundled_module(item.module, "ffi.tn") {
+        return false;
+    }
+    let Some(name) = item.name.as_deref() else {
+        return false;
+    };
+    if !matches!(name, "c_char" | "c_int" | "c_uint" | "c_size" | "c_ssize") {
+        return false;
+    }
+    let Some(DefinitionData::TypeAlias(Type::Primitive(primitive))) = program
+        .definition(declaration)
+        .map(|definition| &definition.data)
+    else {
+        return false;
+    };
+    matches!(
+        (name, primitive),
+        ("c_char", PrimitiveType::I8)
+            | ("c_int", PrimitiveType::I32)
+            | ("c_uint", PrimitiveType::U32)
+            | ("c_size", PrimitiveType::Usize)
+            | ("c_ssize", PrimitiveType::Isize)
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -205,41 +501,47 @@ fn check_declaration_attributes(
         };
         let mut seen = BTreeMap::<&str, &tn_hir::Attribute>::new();
         for attribute in &declaration.attributes {
-            if attribute.name != "Conform"
-                && seen.insert(attribute.name.as_str(), attribute).is_some()
+            if attribute.kind != AttributeKind::Conform
+                && seen.insert(attribute.kind.as_str(), attribute).is_some()
             {
                 diagnostics.push(diag(
                     "TYPE_DUPLICATE_ATTRIBUTE",
-                    format!("attribute `@{}` is declared more than once", attribute.name),
+                    format!(
+                        "attribute `@{}` is declared more than once",
+                        attribute.kind.as_str()
+                    ),
                     &attribute.span,
                     "remove the duplicate compiler-owned attribute",
                 ));
             }
-            let valid = match attribute.name.as_str() {
-                "Test" => match &definition.data {
+            let valid = match &attribute.kind {
+                AttributeKind::Test => match &definition.data {
                     DefinitionData::Function(function) => {
                         function.generics.is_empty()
                             && function.parameters.is_empty()
-                            && (function.result == Type::Primitive(tn_hir::PrimitiveType::Void)
+                            && (function.result == Type::Primitive(PrimitiveType::Void)
                                 || matches!(function.result, Type::Promise { .. }))
                     }
                     _ => false,
                 },
-                "Export" => matches!(
+                AttributeKind::Export => matches!(
                     definition.data,
                     DefinitionData::Function(_) | DefinitionData::Class { .. }
                 ),
-                "Copy" => matches!(
+                AttributeKind::Copy => matches!(
                     definition.data,
                     DefinitionData::Struct { .. } | DefinitionData::Enum { .. }
                 ),
-                "Clone" | "Drop" | "Send" | "Sync" => matches!(
+                AttributeKind::Clone => match &definition.data {
+                    DefinitionData::Struct { .. } | DefinitionData::Enum { .. } => true,
+                    DefinitionData::Class { is_final, .. } => *is_final,
+                    _ => false,
+                },
+                AttributeKind::Drop => matches!(
                     definition.data,
-                    DefinitionData::Struct { .. }
-                        | DefinitionData::Enum { .. }
-                        | DefinitionData::Class { .. }
+                    DefinitionData::Struct { .. } | DefinitionData::Class { .. }
                 ),
-                "Conform" => {
+                AttributeKind::Conform => {
                     matches!(
                         definition.data,
                         DefinitionData::Struct { .. }
@@ -247,41 +549,39 @@ fn check_declaration_attributes(
                             | DefinitionData::Class { .. }
                     ) && !attribute.arguments.is_empty()
                 }
-                "Sealed" => matches!(
+                AttributeKind::Sealed => matches!(
                     definition.data,
                     DefinitionData::Interface { .. } | DefinitionData::Class { .. }
                 ),
-                "Layout" => matches!(
+                AttributeKind::Layout => matches!(
                     definition.data,
                     DefinitionData::Struct { .. } | DefinitionData::Enum { .. }
                 ),
-                "Intrinsic" => match &definition.data {
-                    DefinitionData::Function(_) => valid_intrinsic_operation(
-                        &module.path.to_string_lossy(),
-                        &attribute.arguments,
-                    ),
+                AttributeKind::Intrinsic => match &definition.data {
+                    DefinitionData::Function(_) => {
+                        valid_intrinsic_operation(program, module.id, &attribute.arguments)
+                    }
                     DefinitionData::Struct { .. } => {
                         matches!(attribute.arguments.as_slice(), [key] if key == "string" || key == "usize")
-                            && module.path.to_string_lossy().ends_with("std/string.tn")
+                            && program.graph.is_bundled_module(module.id, "string.tn")
                     }
                     _ => false,
                 },
-                "Inline" => matches!(definition.data, DefinitionData::Function(_)),
-                "Expand" => false,
-                _ => true,
+                AttributeKind::Inline => matches!(definition.data, DefinitionData::Function(_)),
+                AttributeKind::Expand | AttributeKind::Unknown(_) => false,
             };
             if !valid {
                 diagnostics.push(diag(
                     "TYPE_INVALID_ATTRIBUTE_TARGET",
                     format!(
                         "attribute `@{}` is not valid on this declaration",
-                        attribute.name
+                        attribute.kind.as_str()
                     ),
                     &attribute.span,
                     "apply the attribute to the declaration kind described by the language specification",
                 ));
             }
-            if attribute.name == "Export" && attribute.arguments.len() > 1 {
+            if attribute.kind == AttributeKind::Export && attribute.arguments.len() > 1 {
                 diagnostics.push(diag(
                     "TYPE_INVALID_EXPORT_ATTRIBUTE",
                     "`@Export` accepts zero or one symbol argument",
@@ -289,7 +589,7 @@ fn check_declaration_attributes(
                     "use `@Export` or `@Export(\"symbol\")`",
                 ));
             }
-            if attribute.name == "Test" && !attribute.arguments.is_empty() {
+            if attribute.kind == AttributeKind::Test && !attribute.arguments.is_empty() {
                 diagnostics.push(diag(
                     "TYPE_INVALID_TEST_ATTRIBUTE",
                     "`@Test` does not accept arguments",
@@ -298,18 +598,22 @@ fn check_declaration_attributes(
                 ));
             }
             if matches!(
-                attribute.name.as_str(),
-                "Copy" | "Clone" | "Drop" | "Send" | "Sync" | "Sealed" | "Inline"
+                attribute.kind,
+                AttributeKind::Copy
+                    | AttributeKind::Clone
+                    | AttributeKind::Drop
+                    | AttributeKind::Sealed
+                    | AttributeKind::Inline
             ) && !attribute.arguments.is_empty()
             {
                 diagnostics.push(diag(
                     "TYPE_INVALID_ATTRIBUTE_ARGUMENTS",
-                    format!("`@{}` does not accept arguments", attribute.name),
+                    format!("`@{}` does not accept arguments", attribute.kind.as_str()),
                     &attribute.span,
                     "remove the attribute arguments",
                 ));
             }
-            if attribute.name == "Layout"
+            if attribute.kind == AttributeKind::Layout
                 && !matches!(attribute.arguments.as_slice(), [layout] if layout == "C" || layout == "u8")
             {
                 diagnostics.push(diag(
@@ -323,57 +627,69 @@ fn check_declaration_attributes(
     }
 }
 
-fn valid_intrinsic_operation(path: &str, arguments: &[String]) -> bool {
+fn valid_intrinsic_operation(
+    program: &Program,
+    module: tn_hir::ModuleId,
+    arguments: &[String],
+) -> bool {
     let [operation] = arguments else {
         return false;
     };
+    let bundled = |relative: &str| program.graph.is_bundled_module(module, relative);
     match operation.as_str() {
-        "checked_u16" => path.ends_with("std/env.tn"),
-        "platform_sockaddr_family" => path.ends_with("runtime/runtime.tn"),
+        "checked_u16" => bundled("env.tn"),
+        "string_from_raw" => bundled("string.tn"),
+        "platform_sockaddr_family" | "byte_address" => bundled("runtime.tn"),
         "size_of" => {
-            path.ends_with("std/alloc.tn")
-                || path.ends_with("std/collections.tn")
-                || path.ends_with("runtime/runtime.tn")
-                || path.ends_with("runtime/platform/darwin-arm64.tn")
-                || path.ends_with("runtime/platform/linux-x86_64.tn")
+            bundled("alloc.tn")
+                || bundled("collections.tn")
+                || bundled("runtime.tn")
+                || bundled("platform/darwin-arm64.tn")
+                || bundled("platform/linux-x86_64.tn")
         }
-        "is_null" | "null_pointer" => {
-            path.ends_with("std/alloc.tn")
-                || path.ends_with("runtime/runtime.tn")
-                || path.ends_with("runtime/platform/darwin-arm64.tn")
-                || path.ends_with("runtime/platform/linux-x86_64.tn")
+        "is_null" | "null_pointer" | "store_raw" => {
+            bundled("alloc.tn")
+                || bundled("runtime.tn")
+                || bundled("platform/darwin-arm64.tn")
+                || bundled("platform/linux-x86_64.tn")
         }
-        "store_raw" => {
-            path.ends_with("std/alloc.tn")
-                || path.ends_with("compiler-tn/support.tn")
-                || path.ends_with("runtime/runtime.tn")
-                || path.ends_with("runtime/platform/darwin-arm64.tn")
-                || path.ends_with("runtime/platform/linux-x86_64.tn")
-        }
-        "byte_address" => {
-            path.ends_with("runtime/runtime.tn") || path.ends_with("compiler-tn/support.tn")
+        "drop_value" | "arc_clone" | "weak_upgrade" | "u64_to_usize" | "usize_to_u64" => {
+            bundled("alloc.tn")
         }
         "call_raw" | "call_raw_void" | "call_raw_pointer" | "byte_address_i32" => {
-            path.ends_with("runtime/runtime.tn")
+            bundled("runtime.tn")
         }
-        "byte_read_i32" => path.ends_with("compiler-tn/support.tn"),
-        "borrow_shared" => path.ends_with("std/alloc.tn") || path.ends_with("std/string.tn"),
-        "borrow_mut" => path.ends_with("std/alloc.tn") || path.ends_with("std/sync.tn"),
+        "atomic_i32_load"
+        | "atomic_i32_store"
+        | "atomic_i32_fetch_add"
+        | "atomic_i32_compare_exchange"
+        | "atomic_u64_load"
+        | "atomic_u64_store"
+        | "atomic_u64_fetch_add"
+        | "atomic_u64_compare_exchange"
+        | "atomic_usize_load"
+        | "atomic_usize_store"
+        | "atomic_usize_fetch_add"
+        | "atomic_usize_compare_exchange"
+        | "atomic_fence" => bundled("sync.tn") || bundled("core.tn") || bundled("runtime.tn"),
+        "borrow_shared" => bundled("alloc.tn") || bundled("string.tn"),
+        "borrow_mut" => bundled("alloc.tn") || bundled("sync.tn"),
         "borrow_element" => {
-            path.ends_with("std/collections.tn")
-                || path.ends_with("runtime/runtime.tn")
-                || path.ends_with("runtime/platform/darwin-arm64.tn")
-                || path.ends_with("runtime/platform/linux-x86_64.tn")
+            bundled("collections.tn")
+                || bundled("runtime.tn")
+                || bundled("platform/darwin-arm64.tn")
+                || bundled("platform/linux-x86_64.tn")
         }
-        "arc_clone" => path.ends_with("std/alloc.tn"),
+        "borrow_element_mut" => bundled("collections.tn"),
         "is_string"
         | "is_copy"
         | "element_initialized"
         | "move_element"
         | "store_element"
-        | "drop_initialized_elements" => path.ends_with("std/collections.tn"),
-        "slice_from_raw_parts" => {
-            path.ends_with("std/string.tn") || path.ends_with("std/collections.tn")
+        | "drop_element"
+        | "drop_initialized_elements" => bundled("collections.tn") || bundled("sync.tn"),
+        "slice_from_raw_parts" | "slice_length" => {
+            bundled("string.tn") || bundled("collections.tn") || bundled("bytes.tn")
         }
         _ => false,
     }
@@ -389,8 +705,6 @@ fn check_attributes(module: &tn_hir::Module, tokens: &[Token], diagnostics: &mut
         "Copy",
         "Clone",
         "Drop",
-        "Send",
-        "Sync",
         "Conform",
         "Sealed",
         "Layout",

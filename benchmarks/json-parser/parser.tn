@@ -1,8 +1,9 @@
 import { Bytes } from "std/bytes";
+import { c_size } from "std/ffi";
 import { argument, argumentCount } from "std/process";
 
 declare extern "C" {
-  function strlen(bytes: * const u8): usize;
+  function tn_cstring_length(bytes: * const u8): c_size;
   function atoi(bytes: * const u8): i32;
 }
 class JsonParser {
@@ -253,7 +254,7 @@ function main(): i32 {
     const inputPointer = argument(1i32);
     const iterationPointer = argument(2i32);
     const input: Bytes = {
-      pointer: inputPointer, length: strlen(inputPointer),
+      pointer: inputPointer, length: tn_cstring_length(inputPointer),
     };
     const iterations = atoi(iterationPointer);
     if (iterations <= 0i32) {

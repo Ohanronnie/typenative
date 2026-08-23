@@ -63,7 +63,60 @@ impl DeclarationKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AttributeKind {
+    Copy,
+    Clone,
+    Drop,
+    Conform,
+    Sealed,
+    Layout,
+    Export,
+    Intrinsic,
+    Inline,
+    Test,
+    Expand,
+    Unknown(String),
+}
+
+impl AttributeKind {
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "Copy" => Self::Copy,
+            "Clone" => Self::Clone,
+            "Drop" => Self::Drop,
+            "Conform" => Self::Conform,
+            "Sealed" => Self::Sealed,
+            "Layout" => Self::Layout,
+            "Export" => Self::Export,
+            "Intrinsic" => Self::Intrinsic,
+            "Inline" => Self::Inline,
+            "Test" => Self::Test,
+            "Expand" => Self::Expand,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Copy => "Copy",
+            Self::Clone => "Clone",
+            Self::Drop => "Drop",
+            Self::Conform => "Conform",
+            Self::Sealed => "Sealed",
+            Self::Layout => "Layout",
+            Self::Export => "Export",
+            Self::Intrinsic => "Intrinsic",
+            Self::Inline => "Inline",
+            Self::Test => "Test",
+            Self::Expand => "Expand",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Attribute {
+    pub kind: AttributeKind,
     pub name: String,
     pub arguments: Vec<String>,
     pub span: SourceSpan,
@@ -116,6 +169,8 @@ pub struct Module {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModuleGraph {
     pub root: PathBuf,
+    pub standard_library: PathBuf,
+    pub runtime_root: Option<PathBuf>,
     pub entry: ModuleId,
     pub modules: Vec<Module>,
 }
@@ -130,6 +185,16 @@ impl ModuleGraph {
             .iter()
             .flat_map(|module| &module.declarations)
             .find(|declaration| declaration.id == id)
+    }
+
+    pub fn is_bundled_module(&self, module: ModuleId, relative_path: &str) -> bool {
+        self.module(module).is_some_and(|module| {
+            module.path == self.standard_library.join(relative_path)
+                || self
+                    .runtime_root
+                    .as_ref()
+                    .is_some_and(|root| module.path == root.join(relative_path))
+        })
     }
 }
 
@@ -310,6 +375,7 @@ pub enum DefinitionData {
     },
     Enum {
         variants: Vec<EnumVariant>,
+        methods: Vec<Method>,
     },
     Interface {
         methods: Vec<Method>,
@@ -577,7 +643,8 @@ impl Program {
                 .attributes
                 .iter()
                 .any(|attribute| {
-                    attribute.name == "Intrinsic" && attribute.arguments.as_slice() == [key]
+                    attribute.kind == AttributeKind::Intrinsic
+                        && attribute.arguments.as_slice() == [key]
                 })
                 .then_some(definition.declaration)
         })
@@ -586,7 +653,7 @@ impl Program {
     pub fn intrinsic_type_for_declaration(&self, declaration: DeclarationId) -> Option<Type> {
         let declaration = self.graph.declaration(declaration)?;
         declaration.attributes.iter().find_map(|attribute| {
-            (attribute.name == "Intrinsic")
+            (attribute.kind == AttributeKind::Intrinsic)
                 .then(|| attribute.arguments.first())
                 .flatten()
                 .and_then(|key| intrinsic_type_from_key(key))

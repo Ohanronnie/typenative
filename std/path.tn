@@ -1,13 +1,18 @@
 import { rawAlloc, rawFree } from "std/alloc";
 import { Drop } from "std/core";
+import { c_size } from "std/ffi";
+import { fromRaw } from "std/string";
 
 export struct Path {
-  public text: & static str;
+  private text: & static str;
+  public asStr(): & static str {
+    return this.text;
+  }
 }
 @Drop export struct OwnedPath {
-  public pointer: * mut u8;
-  public length: usize;
-  public capacity: usize;
+  private pointer: * mut u8;
+  private length: usize;
+  private capacity: usize;
   mut drop(): void {
     unsafe {
       rawFree(this.pointer);
@@ -18,10 +23,10 @@ export struct PathError {
   public code: i32;
 }
 declare extern "C" {
-  function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32;
-  function tn_path_basename(path: * const u8, output: * mut u8, capacity: usize): i32;
-  function tn_string_from_bytes(bytes: * const u8, length: usize): string;
-  function strlen(bytes: * const u8): usize;
+  function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: c_size): i32;
+  function tn_path_basename(path: * const u8, output: * mut u8, capacity: c_size): i32;
+  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
+  function tn_string_length(bytes: * const u8): c_size;
 }
 export function join(left: & static str, right: & static str, output: * mut u8, capacity: usize): i32 {
   unsafe {
@@ -40,7 +45,7 @@ function pathError(code: i32): PathError {
 }
 export function joinOwned(left: & static str, right: & static str): OwnedPath throws PathError {
   unsafe {
-    const capacity = strlen(left as * const u8) + strlen(right as * const u8) + 2usize;
+    const capacity = tn_string_length(left as * const u8) + tn_string_length(right as * const u8) + 2usize;
     const pointer = rawAlloc(capacity);
     const status = tn_path_join(left as * const u8, right as * const u8, pointer, capacity);
     if (status !== 0i32) {
@@ -48,20 +53,21 @@ export function joinOwned(left: & static str, right: & static str): OwnedPath th
       throw pathError(status);
     }
     return {
-      pointer: pointer, length: strlen(pointer as * const u8), capacity: capacity
+      pointer: pointer, length: tn_string_length(pointer as * const u8), capacity: capacity
     };
   }
 }
 export function basenameOwned(path: & static str): string throws PathError {
   unsafe {
-    const capacity = strlen(path as * const u8) + 1usize;
+    const capacity = tn_string_length(path as * const u8) + 1usize;
     const pointer = rawAlloc(capacity);
     const status = tn_path_basename(path as * const u8, pointer, capacity);
     if (status !== 0i32) {
       rawFree(pointer);
       throw pathError(status);
     }
-    const result = tn_string_from_bytes(pointer as * const u8, strlen(pointer as * const u8));
+    const length = tn_string_length(pointer as * const u8);
+    const result = fromRaw(tn_string_from_bytes(pointer as * const u8, length), length);
     rawFree(pointer);
     return result;
   }

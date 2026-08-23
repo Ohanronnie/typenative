@@ -140,6 +140,41 @@ function main(value: string): u8 {
 }
 
 #[test]
+fn lowers_atomic_class_methods_to_direct_intrinsic_operations() {
+    let program = source_program_with_workspace_standard_library(
+        r#"
+import { AtomicI32, MemoryOrder } from "std/core";
+function main(): i32 {
+  let counter = new AtomicI32(0i32);
+  counter.fetchAdd(1i32, MemoryOrder.Relaxed);
+  return counter.load(MemoryOrder.Acquire);
+}
+"#,
+    );
+    let mir = lower_mir(&program);
+    let operations = mir
+        .iter()
+        .flat_map(|body| body.blocks.iter())
+        .flat_map(|block| block.statements.iter())
+        .filter_map(|statement| match &statement.kind {
+            StatementKind::Assign(_, value) => match value.as_ref() {
+                Rvalue::RawOperation { operation, .. } => Some(operation.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        operations.contains(&"atomic_i32_fetch_add".into()),
+        "{operations:?}"
+    );
+    assert!(
+        operations.contains(&"atomic_i32_load".into()),
+        "{operations:?}"
+    );
+}
+
+#[test]
 fn preserves_copy_queries_until_generic_specialization() {
     let program = source_program_with_workspace_standard_library(
         "import { Array } from \"std/collections\";\nfunction main(): void {}\n",
@@ -255,6 +290,187 @@ function less(left: &i32, right: &i32): bool {
             Type::Primitive(PrimitiveType::I32)
         ]
     );
+}
+
+#[test]
+fn lowers_direct_dereference_of_a_method_call() {
+    let program = source_program(
+        r"
+class Counter {
+  private value: i32;
+  public constructor(value: i32) { this.value = value; }
+  public get(): &i32 { unsafe { return & this.value; } }
+}
+function read(counter: Counter): i32 { unsafe { return * counter.get(); } }
+",
+    );
+    let body = lower_mir(&program)
+        .into_iter()
+        .find(|body| {
+            body.member.is_none()
+                && body
+                    .locals
+                    .iter()
+                    .any(|local| local.name.as_deref() == Some("counter"))
+        })
+        .expect("method dereference MIR");
+    tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    assert!(body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), Rvalue::VtableLookup { .. })
+            )
+        })
+    }));
+    assert!(body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), Rvalue::RawOperation { operation, .. } if operation == "dereference")
+            )
+        })
+    }));
+}
+
+#[test]
+fn lowers_arc_get_as_a_class_method_call() {
+    let program = source_program_with_workspace_standard_library(
+        r#"
+import { Arc } from "std/alloc";
+function main(): i32 {
+  let owner = new Arc(42i32);
+  let value: i32 = 0i32;
+  unsafe { value = * owner.get(); }
+  return value;
+}
+"#,
+    );
+    let arc = program
+        .definitions
+        .iter()
+        .find(|definition| {
+            program
+                .graph
+                .declaration(definition.declaration)
+                .and_then(|declaration| declaration.name.as_deref())
+                == Some("Arc")
+        })
+        .expect("Arc declaration");
+    let tn_hir::DefinitionData::Class { methods, .. } = &arc.data else {
+        panic!("Arc must be a class");
+    };
+    assert!(methods.iter().any(|method| method.name == "get"));
+    let body = lower_mir(&program)
+        .into_iter()
+        .find(|body| {
+            body.member.is_none()
+                && program
+                    .graph
+                    .declaration(body.declaration)
+                    .and_then(|declaration| declaration.name.as_deref())
+                    == Some("main")
+        })
+        .expect("Arc get MIR");
+    tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    assert!(body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), Rvalue::VtableLookup { .. })
+            )
+        })
+    }));
+}
+
+#[test]
+fn lowers_generic_async_run_body_after_specialization() {
+    let program = source_program_with_workspace_standard_library(
+        r#"
+import { run } from "std/async";
+async function answer(): Promise<i32, never> { return 42i32; }
+function main(): i32 { return run(answer()); }
+"#,
+    );
+    let body = lower_mir(&program)
+        .into_iter()
+        .find(|body| {
+            body.member.is_none()
+                && program
+                    .graph
+                    .declaration(body.declaration)
+                    .and_then(|declaration| declaration.name.as_deref())
+                    == Some("run")
+        })
+        .expect("generic run MIR");
+    tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    assert!(body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), Rvalue::RawOperation { operation, .. } if operation == "dereference")
+            )
+        })
+    }));
+    assert!(
+        body.blocks
+            .iter()
+            .any(|block| { matches!(block.terminator.kind, TerminatorKind::Return(Some(_))) }),
+        "{body:#?}"
+    );
+}
+
+#[test]
+fn lowers_generic_mutex_guard_get_mut_body() {
+    let program = source_program_with_workspace_standard_library(
+        r#"
+import { MutexGuard } from "std/sync";
+function main(): void {}
+"#,
+    );
+    let guard = program
+        .definitions
+        .iter()
+        .find(|definition| {
+            program
+                .graph
+                .declaration(definition.declaration)
+                .and_then(|declaration| declaration.name.as_deref())
+                == Some("MutexGuard")
+        })
+        .expect("MutexGuard declaration");
+    let tn_hir::DefinitionData::Struct { methods, .. } = &guard.data else {
+        panic!("MutexGuard must be a struct");
+    };
+    let get_mut = methods
+        .iter()
+        .find(|method| method.name == "getMut")
+        .expect("MutexGuard.getMut method");
+    let body = lower_mir(&program)
+        .into_iter()
+        .find(|body| body.declaration == guard.declaration && body.member == Some(get_mut.id))
+        .expect("MutexGuard.getMut MIR");
+    tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    assert!(
+        body.blocks
+            .iter()
+            .any(|block| { matches!(block.terminator.kind, TerminatorKind::Return(Some(_))) })
+    );
+    assert!(body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Borrow {
+                    kind: BorrowKind::Mutable,
+                    ..
+                }
+            )
+        })
+    }));
 }
 
 #[test]
@@ -724,6 +940,41 @@ enum Choice { Number(i32), Pointer(*const i32) }
             pointee: Box::new(Type::Primitive(PrimitiveType::I32)),
         }]
     )));
+}
+
+#[test]
+fn promise_error_alternatives_participate_in_thread_safety() {
+    let program = source_program(
+        r"
+class UnsafeError { public pointer: *const i32; }
+function ready(): Promise<i32, never> { return undefined; }
+function unsafePromise(): Promise<i32, UnsafeError> { return undefined; }
+",
+    );
+    let declaration = |name: &str| {
+        program
+            .graph
+            .modules
+            .iter()
+            .flat_map(|module| &module.declarations)
+            .find(|declaration| declaration.name.as_deref() == Some(name))
+            .expect("named function")
+            .id
+    };
+    let facts = tn_typecheck::derive_ownership_facts(&program);
+    let promise = |name: &str| {
+        let definition = program
+            .definition(declaration(name))
+            .expect("named function definition");
+        let tn_hir::DefinitionData::Function(function) = &definition.data else {
+            panic!("expected function");
+        };
+        function.result.clone()
+    };
+    assert!(facts.is_send(&promise("ready")));
+    assert!(facts.is_sync(&promise("ready")));
+    assert!(!facts.is_send(&promise("unsafePromise")));
+    assert!(!facts.is_sync(&promise("unsafePromise")));
 }
 
 #[test]

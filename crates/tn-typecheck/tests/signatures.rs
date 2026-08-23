@@ -44,7 +44,11 @@ fn multi_module_signature_conditions(files: &[(&str, &str)], entry: &str) -> Vec
     let standard_library = directory.path().join("std");
     std::fs::create_dir(&standard_library).expect("create standard library fixture");
     for (name, source) in files {
-        std::fs::write(directory.path().join(name), source).expect("write module fixture");
+        let path = directory.path().join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create module parent");
+        }
+        std::fs::write(path, source).expect("write module fixture");
     }
     let path = directory.path().join(entry);
     let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
@@ -52,6 +56,29 @@ fn multi_module_signature_conditions(files: &[(&str, &str)], entry: &str) -> Vec
     let program = tn_hir::lower_program(graph).expect("lower multi-module fixture");
     tn_typecheck::check_signatures(&program)
         .diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.condition.as_str().to_owned())
+        .collect()
+}
+
+fn multi_module_semantic_conditions(files: &[(&str, &str)], entry: &str) -> Vec<String> {
+    let directory = tempfile::tempdir().expect("temporary multi-module semantic fixture");
+    let standard_library = directory.path().join("std");
+    std::fs::create_dir(&standard_library).expect("create standard library fixture");
+    for (name, source) in files {
+        let path = directory.path().join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create module parent");
+        }
+        std::fs::write(path, source).expect("write semantic module fixture");
+    }
+    let path = directory.path().join(entry);
+    let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+        .expect("load multi-module semantic graph");
+    let program = tn_hir::lower_program(graph).expect("lower multi-module semantic fixture");
+    let mut diagnostics = tn_typecheck::check_signatures(&program).diagnostics;
+    diagnostics.extend(tn_typecheck::check_source_rules(&program).diagnostics);
+    diagnostics
         .into_iter()
         .map(|diagnostic| diagnostic.condition.as_str().to_owned())
         .collect()
@@ -96,6 +123,86 @@ declare extern "C" {
 "#,
     );
     assert!(diagnostics.contains(&"TYPE_INVALID_FOREIGN_SIGNATURE".into()));
+}
+
+#[test]
+fn bare_send_and_sync_attributes_are_rejected() {
+    let diagnostics = semantic_conditions(
+        r"
+@Send
+struct BareSend {}
+@Sync
+struct BareSync {}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_UNKNOWN_ATTRIBUTE")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn c_abi_rejects_language_only_and_wide_types() {
+    let diagnostics = semantic_conditions(
+        r#"
+declare extern "C" {
+  function invalidString(value: string): void;
+  function invalidWide(value: i128): void;
+}
+"#,
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_INVALID_C_ABI_SIGNATURE")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn intrinsic_authorization_rejects_project_path_suffixes() {
+    let frozen_support = format!("{}-tn/support.tn", "compiler");
+    let frozen_import = format!("import {{ fake }} from \"./{}-tn/support\";\n", "compiler");
+    let diagnostics = multi_module_semantic_conditions(
+        &[
+            (
+                &frozen_support,
+                "@Intrinsic(\"byte_read_i32\")\nexport function fake(value: *mut u8): i32 { return 0i32; }\n",
+            ),
+            ("main.tn", &frozen_import),
+        ],
+        "main.tn",
+    );
+    assert!(
+        diagnostics.contains(&"TYPE_INVALID_ATTRIBUTE_TARGET".into()),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn self_is_only_available_in_interface_method_signatures() {
+    let diagnostics = semantic_conditions(
+        r"
+interface Clone { clone(): Self; }
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let diagnostics = semantic_conditions(
+        r"
+struct Invalid { value(): Self { return undefined; } }
+",
+    );
+    assert!(
+        diagnostics.contains(&"TYPE_SELF_ONLY_INTERFACE_METHOD".into()),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]
@@ -408,6 +515,63 @@ struct Reviewed { public pointer: *mut i32; }
             })
             .count(),
         2,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn drop_requires_exact_private_mutable_nonthrowing_method() {
+    let diagnostics = semantic_conditions(
+        r"
+class Failure {}
+@Drop
+struct Missing { value: i32; }
+@Drop
+struct Public { public drop(): void {} }
+@Drop
+struct Static { static drop(): void {} }
+@Drop
+struct Throwing { private mut drop(): void throws Failure {} }
+@Drop
+struct Async { private mut async drop(): Promise<void, never> { return undefined; } }
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_INVALID_DROP_DESTRUCTOR")
+            .count(),
+        5,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn clone_is_restricted_to_cloneable_fields_and_final_classes() {
+    let diagnostics = semantic_conditions(
+        r"
+class Opaque {}
+@Clone
+struct InvalidField { value: Opaque; }
+@Clone
+class InvalidClass {}
+class Base {}
+@Clone
+final class InvalidBase extends Base {}
+@Clone
+struct Valid { value: string; }
+",
+    );
+    assert!(
+        diagnostics.contains(&"TYPE_CLONE_FIELD_NOT_CLONEABLE".into()),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics.contains(&"TYPE_INVALID_ATTRIBUTE_TARGET".into()),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics.contains(&"TYPE_CLONE_BASE_NOT_CLONEABLE".into()),
         "{diagnostics:?}"
     );
 }

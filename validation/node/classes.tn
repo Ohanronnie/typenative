@@ -1,5 +1,6 @@
+import { c_size } from "std/ffi";
 declare extern "C" {
-  function tn_runtime_free_count(): usize;
+  function tn_runtime_free_count(): c_size;
 }
 @Export("freeCount")
 function freeCount(): usize {

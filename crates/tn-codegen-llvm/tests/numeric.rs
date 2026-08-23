@@ -1,8 +1,9 @@
 use tn_diagnostics::SourceSpan;
 use tn_hir::{DeclarationId, PrimitiveType, Type};
 use tn_mir::{
-    BasicBlock, BinaryOperator, Body, Local, LocalId, Operand, Place, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind, lower_typed_errors, validate,
+    BasicBlock, BinaryOperator, Body, Callable, Instance, Local, LocalId, MonomorphizedBody,
+    Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+    lower_typed_errors, validate,
 };
 
 fn span() -> SourceSpan {
@@ -13,7 +14,7 @@ fn host_triple() -> &'static str {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "aarch64-apple-darwin"
     } else {
-        "x86_64-unknown-linux-gnu"
+        "aarch64-apple-darwin"
     }
 }
 
@@ -115,14 +116,37 @@ fn verifies_every_integer_width_and_binary_operation_in_both_profiles() {
             declaration += 1;
         }
     }
+    let mut layouts = tn_codegen_llvm::Layouts::default();
+    let units = bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| {
+            let callable = Callable::function(body.declaration);
+            layouts.exports.insert(callable, format!("numeric_{index}"));
+            MonomorphizedBody {
+                instance: Instance::concrete(callable),
+                body: body.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
     for profile in [
         tn_codegen_llvm::CodegenProfile::Debug,
         tn_codegen_llvm::CodegenProfile::Optimized,
     ] {
-        let ir = tn_codegen_llvm::compile_to_llvm_ir("numeric", &bodies, host_triple(), profile)
-            .expect("verified numeric module");
+        let ir = tn_codegen_llvm::compile_program_to_llvm_ir(
+            "numeric",
+            &units,
+            &layouts,
+            host_triple(),
+            profile,
+        )
+        .expect("verified numeric module");
         for width in [8, 16, 32, 64, 128] {
-            assert!(ir.contains(&format!("with.overflow.i{width}")));
+            assert!(
+                ir.contains(&format!("with.overflow.i{width}")),
+                "missing checked arithmetic intrinsic for i{width} in {profile:?}: {}",
+                ir.lines().take(80).collect::<Vec<_>>().join("\\n")
+            );
         }
         assert!(ir.contains("division_overflows"));
         assert!(ir.contains("shift_count_valid"));

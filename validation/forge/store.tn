@@ -12,8 +12,13 @@ export function storeProbe(): i32 throws FileError {
   values.set(7i32, 49i32);
   const key = 7i32;
   const stored = values.get( & key);
-  if (stored === undefined || stored! !== 49i32) {
+  if (stored === undefined) {
     return 1i32;
+  }
+  unsafe {
+    if ( * stored! !== 49i32) {
+      return 1i32;
+    }
   }
   let file = try openWriteChecked("/tmp/typenative-forge-artifact");
   const marker = fromStatic("forge-artifact\n");

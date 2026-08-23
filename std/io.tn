@@ -1,13 +1,14 @@
 import { rawAlloc, rawFree } from "std/alloc";
 import { Bytes } from "std/bytes";
 import { Drop } from "std/core";
+import { c_size } from "std/ffi";
 
 declare extern "C" {
-  function tn_console_write(fd: i32, bytes: * const u8, length: usize): i32;
-  function tn_io_write_all(fd: i32, bytes: * const u8, length: usize): i32;
+  function tn_console_write(fd: i32, bytes: * const u8, length: c_size): i32;
+  function tn_io_write_all(fd: i32, bytes: * const u8, length: c_size): i32;
   function tn_io_flush(fd: i32): i32;
-  function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
-  function tn_bytes_copy_to_at(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32;
+  function tn_bytes_copy(source: * const u8, length: c_size, destination: * mut u8): c_size;
+  function tn_bytes_copy_to_at(source: * const u8, sourceLength: c_size, sourceOffset: c_size, count: c_size, destination: * mut u8, destinationLength: c_size, destinationOffset: c_size): i32;
 }
 export struct IOError {
   public code: i32;

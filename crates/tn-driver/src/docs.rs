@@ -1,6 +1,8 @@
 use crate::{BuildError, Project};
 use std::fmt::Write;
-use tn_hir::{Declaration, DefinitionData, Function, Method, Program, Type, Visibility};
+use tn_hir::{
+    AttributeKind, Declaration, DefinitionData, Function, Method, Program, Type, Visibility,
+};
 
 /// Produces deterministic Markdown API documentation for the public declarations in a project.
 ///
@@ -42,7 +44,7 @@ fn render_program(program: &Program) -> Result<String, BuildError> {
                     || declaration
                         .attributes
                         .iter()
-                        .any(|attribute| attribute.name == "Export"))
+                        .any(|attribute| attribute.kind == AttributeKind::Export))
                     && declaration.name.is_some()
             })
             .collect::<Vec<_>>();
@@ -122,7 +124,7 @@ fn render_declaration(
             }
             output.push_str("}\n```");
         }
-        DefinitionData::Enum { variants } => {
+        DefinitionData::Enum { variants, .. } => {
             writeln!(
                 output,
                 "### `{display_name}`\n\n```typenative\nexport enum {display_name} {{"

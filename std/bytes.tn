@@ -1,21 +1,22 @@
 import { AllocError, isNull, rawAlloc, rawRealloc, tryRawRealloc } from "std/alloc";
 import { Drop } from "std/core";
+import { c_size, c_ssize } from "std/ffi";
 
 declare extern "C" {
-  function strlen(bytes: * const u8): usize;
-  function tn_utf8_validate(bytes: * const u8, length: usize): i32;
-  function tn_bytes_copy(source: * const u8, length: usize, destination: * mut u8): usize;
-  function tn_bytes_read_u8(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32;
-  function tn_bytes_read_u8_mut(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32;
-  function tn_bytes_write_u8(bytes: * mut u8, length: usize, index: usize, value: u8): i32;
-  function tn_bytes_slice(bytes: * const u8, length: usize, start: usize, end: usize): * const u8;
-  function tn_bytes_slice_mut(bytes: * mut u8, length: usize, start: usize, end: usize): * const u8;
-  function tn_bytes_move_at(bytes: * mut u8, length: usize, sourceOffset: usize, destinationOffset: usize, count: usize): i32;
-  function tn_bytes_append_ascii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize;
-  function tn_bytes_append_safe_ascii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize;
-  function tn_bytes_append_bytes(buffer: * mut u8, capacity: usize, length: usize, source: * const u8, sourceLength: usize): usize;
-  function tn_bytes_append_decimal(buffer: * mut u8, capacity: usize, length: usize, value: number): usize;
-  function tn_bytes_append_usize(buffer: * mut u8, capacity: usize, length: usize, value: usize): usize;
+  function tn_string_length(bytes: * const u8): c_size;
+  function tn_utf8_validate(bytes: * const u8, length: c_size): i32;
+  function tn_bytes_copy(source: * const u8, length: c_size, destination: * mut u8): c_size;
+  function tn_bytes_read_u8(bytes: * const u8, length: c_size, index: c_size, value: * mut u8): i32;
+  function tn_bytes_read_u8_mut(bytes: * const u8, length: c_size, index: c_size, value: * mut u8): i32;
+  function tn_bytes_write_u8(bytes: * mut u8, length: c_size, index: c_size, value: u8): i32;
+  function tn_bytes_slice(bytes: * const u8, length: c_size, start: c_size, end: c_size): * const u8;
+  function tn_bytes_slice_mut(bytes: * mut u8, length: c_size, start: c_size, end: c_size): * const u8;
+  function tn_bytes_move_at(bytes: * mut u8, length: c_size, sourceOffset: c_size, destinationOffset: c_size, count: c_size): i32;
+  function tn_bytes_append_ascii(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8, textLength: c_size): c_size;
+  function tn_bytes_append_safe_ascii(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8, textLength: c_size): c_size;
+  function tn_bytes_append_bytes(buffer: * mut u8, capacity: c_size, length: c_size, source: * const u8, sourceLength: c_size): c_size;
+  function tn_bytes_append_decimal(buffer: * mut u8, capacity: c_size, length: c_size, value: c_ssize): c_size;
+  function tn_bytes_append_usize(buffer: * mut u8, capacity: c_size, length: c_size, value: c_size): c_size;
 }
 function strPointer(text: & str): * const u8 {
   unsafe {
@@ -26,6 +27,16 @@ function stringPointer(text: string): * const u8 {
   unsafe {
     return text as * const u8;
   }
+}
+@Intrinsic("slice_from_raw_parts")
+function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
+  unsafe {
+    return & *(pointer as * const[T]);
+  }
+}
+@Intrinsic("slice_length")
+function sliceLength<T>(value: &[T]): usize {
+  return 0usize;
 }
 export struct Bytes {
   public pointer: * const u8;
@@ -40,9 +51,24 @@ export struct Bytes {
       };
     }
   }
+  public asSlice(): &[u8] {
+    unsafe {
+      return sliceFromRawParts<u8>(this.pointer, this.length);
+    }
+  }
 }
 export struct BytesMutOptions {
   public capacity: usize;
+}
+export struct SliceError {
+  public start: usize;
+  public end: usize;
+  public length: usize;
+}
+function sliceError(start: usize, end: usize, length: usize): SliceError {
+  return {
+    start: start, end: end, length: length,
+  };
 }
 @Drop export class BytesMut {
   public pointer: * mut u8;
@@ -66,8 +92,18 @@ export struct BytesMutOptions {
   public get(index: usize): u8 | undefined {
     return getMut( & this, index);
   }
-  public slice(start: usize, end: usize): Bytes {
+  public slice(start: usize, end: usize): &[u8]throws SliceError {
+    if (start > end || end > this.length) {
+      throw sliceError(start, end, this.length);
+    }
     return sliceMut( & this, start, end);
+  }
+  public asBytes(): Bytes {
+    unsafe {
+      return {
+        pointer: this.pointer as * const u8, length: this.length,
+      };
+    }
   }
   public mut reserve(capacity: usize): void {
     reserve( & mut this, capacity);
@@ -102,8 +138,45 @@ export struct BytesMutOptions {
   }
 }
 export struct Cursor {
-  public bytes: Bytes;
-  public offset: usize;
+  private bytes: &[u8];
+  private offset: usize;
+  public position(): usize {
+    return this.offset;
+  }
+  public remaining(): usize {
+    const length = sliceLength<u8>(this.bytes);
+    if (this.offset >= length) {
+      return 0usize;
+    }
+    return length - this.offset;
+  }
+  public mut readU8(value: & mut u8): bool {
+    if (this.offset >= sliceLength<u8>(this.bytes)) {
+      return false;
+    }
+    unsafe {
+      * value = this.bytes[this.offset];
+    }
+    this.offset = this.offset + 1usize;
+    return true;
+  }
+  public peekU8(value: & mut u8): bool {
+    if (this.offset >= sliceLength<u8>(this.bytes)) {
+      return false;
+    }
+    unsafe {
+      * value = this.bytes[this.offset];
+    }
+    return true;
+  }
+  public mut advance(count: usize): bool {
+    const length = sliceLength<u8>(this.bytes);
+    if (this.offset >= length || count > length - this.offset) {
+      return false;
+    }
+    this.offset = this.offset + count;
+    return true;
+  }
 }
 declare extern "C" {
   function tn_runtime_free(pointer: * mut u8): void;
@@ -118,11 +191,11 @@ export function empty(): Bytes {
 export function fromStatic(text: & static str): Bytes {
   unsafe {
     return {
-      pointer: text as * const u8, length: strlen(text as * const u8)
+      pointer: text as * const u8, length: tn_string_length(text as * const u8)
     };
   }
 }
-export function cursor(bytes: Bytes): Cursor {
+export function cursor(bytes: &[u8]): Cursor {
   return {
     bytes: bytes, offset: 0usize
   };
@@ -181,7 +254,7 @@ export function appendAscii(bytes: & mut BytesMut, text: & str): void {
   let textLength: usize = 0usize;
   const textPointer = strPointer(text);
   unsafe {
-    textLength = strlen(textPointer);
+    textLength = tn_string_length(textPointer);
   }
   const required = bytes.length + textLength + 1usize;
   reserve(bytes, required);
@@ -196,7 +269,7 @@ export function appendSafeAscii(bytes: & mut BytesMut, text: & str): void {
   let textLength: usize = 0usize;
   const textPointer = strPointer(text);
   unsafe {
-    textLength = strlen(textPointer);
+    textLength = tn_string_length(textPointer);
   }
   const required = bytes.length + textLength + 1usize;
   reserve(bytes, required);
@@ -251,7 +324,7 @@ function appendString(bytes: & mut BytesMut, text: string): void {
   let textLength: usize = 0usize;
   const textPointer = stringPointer(text);
   unsafe {
-    textLength = strlen(textPointer);
+    textLength = tn_string_length(textPointer);
   }
   const required = bytes.length + textLength + 1usize;
   reserve(bytes, required);
@@ -266,7 +339,7 @@ function appendSafeString(bytes: & mut BytesMut, text: string): void {
   let textLength: usize = 0usize;
   const textPointer = stringPointer(text);
   unsafe {
-    textLength = strlen(textPointer);
+    textLength = tn_string_length(textPointer);
   }
   const required = bytes.length + textLength + 1usize;
   reserve(bytes, required);
@@ -362,49 +435,24 @@ function getMut(bytes: & BytesMut, index: usize): u8 | undefined {
     return readValue( & view, index);
   }
 }
-function sliceMut(bytes: & BytesMut, start: usize, end: usize): Bytes {
+function sliceMut(bytes: & BytesMut, start: usize, end: usize): &[u8] {
   unsafe {
     const pointer = tn_bytes_slice_mut(bytes.pointer, bytes.length, start, end);
-    const length = end - start;
-    return {
-      pointer: pointer, length: length,
-    };
+    return sliceFromRawParts<u8>(pointer, end - start);
   }
 }
 export function clear(bytes: & mut BytesMut): void {
   bytes.length = 0usize;
 }
 export function remaining(cursor: & Cursor): usize {
-  const offset = cursor.offset;
-  const bytes: & Bytes = cursor.bytes;
-  if (offset >= bytes.length) {
-    return 0usize;
-  }
-  return bytes.length - offset;
+  return cursor.remaining();
 }
 export function readU8(cursor: & mut Cursor, value: & mut u8): bool {
-  const bytes: & Bytes = cursor.bytes;
-  unsafe {
-    const status = tn_bytes_read_u8(bytes.pointer, bytes.length, cursor.offset, value as * mut u8);
-    if (status !== 0i32) {
-      return false;
-    }
-  }
-  cursor.offset = cursor.offset + 1usize;
-  return true;
+  return cursor.readU8(value);
 }
 export function peekU8(cursor: & Cursor, value: & mut u8): bool {
-  const bytes: & Bytes = cursor.bytes;
-  unsafe {
-    return tn_bytes_read_u8(bytes.pointer, bytes.length, cursor.offset, value as * mut u8) === 0i32;
-  }
+  return cursor.peekU8(value);
 }
 export function advance(cursor: & mut Cursor, count: usize): bool {
-  const offset = cursor.offset;
-  const bytes: & Bytes = cursor.bytes;
-  if (offset >= bytes.length || count > bytes.length - offset) {
-    return false;
-  }
-  cursor.offset = cursor.offset + count;
-  return true;
+  return cursor.advance(count);
 }

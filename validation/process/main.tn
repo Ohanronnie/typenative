@@ -1,0 +1,13 @@
+import { Command, ProcessError } from "std/process";
+function main(): i32 throws ProcessError {
+  let command = new Command("/usr/bin/printf");
+  command.arg("%s|");
+  command.arg("space path");
+  command.arg("apostrophe'path");
+  command.arg("semicolon;path");
+  command.arg("dollar$path");
+  command.arg("tab\tpath");
+  command.arg("line\npath");
+  const status = try command.status();
+  return status === 0i32?42i32: status;
+}

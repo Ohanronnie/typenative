@@ -1,6 +1,6 @@
 use crate::{
-    Attribute, Declaration, DeclarationId, DeclarationKind, Import, ImportClause, ImportName,
-    Module, ModuleGraph, ModuleId,
+    Attribute, AttributeKind, Declaration, DeclarationId, DeclarationKind, Import, ImportClause,
+    ImportName, Module, ModuleGraph, ModuleId,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -14,6 +14,7 @@ use tn_syntax::{Token, TokenKind, lex, parse};
 ///
 /// Returns all syntax and resolution diagnostics together, or an I/O error when a source file
 /// cannot be read.
+#[allow(clippy::too_many_lines)]
 pub fn load_module_graph(
     root: &Path,
     entry: &Path,
@@ -22,6 +23,15 @@ pub fn load_module_graph(
     let root = normalize_existing(root)?;
     let entry = normalize_existing(entry)?;
     let standard_library = normalize_existing(standard_library)?;
+    let runtime_root = entry.parent().and_then(|parent| {
+        if parent.file_name().is_some_and(|name| name == "platform") {
+            parent.parent().map(Path::to_path_buf)
+        } else if parent.file_name().is_some_and(|name| name == "runtime") {
+            Some(parent.to_path_buf())
+        } else {
+            None
+        }
+    });
     let mut pending = VecDeque::from([entry.clone()]);
     let string_prelude = standard_library.join("string.tn");
     if string_prelude.is_file() {
@@ -109,6 +119,8 @@ pub fn load_module_graph(
     let entry_id = module_id(&entry, &root, &standard_library);
     let graph = ModuleGraph {
         root,
+        standard_library,
+        runtime_root,
         entry: entry_id,
         modules,
     };
@@ -261,6 +273,7 @@ fn scan_attribute(tokens: &[&Token], index: usize, source: &str, file: &str) -> 
         }
     }
     Some(Attribute {
+        kind: AttributeKind::parse(&source[name.range.clone()]),
         name: source[name.range.clone()].to_owned(),
         arguments,
         span: SourceSpan::new(file, tokens[index].range.start..name.range.end, source),

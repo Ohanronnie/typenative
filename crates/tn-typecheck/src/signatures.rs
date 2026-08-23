@@ -3,8 +3,8 @@ use crate::{CheckResult, derive_ownership_facts};
 use std::collections::{BTreeMap, BTreeSet};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
 use tn_hir::{
-    DeclarationId, Definition, DefinitionData, Function, GenericBound, GenericParameter, Method,
-    Namespace, PrimitiveType, Program, Type, Visibility,
+    AttributeKind, DeclarationId, Definition, DefinitionData, Function, GenericBound,
+    GenericParameter, Method, Namespace, PrimitiveType, Program, Type, Visibility,
 };
 use tn_syntax::{TokenKind, lex};
 
@@ -84,7 +84,7 @@ fn has_unsafe_marker_conformance(program: &Program, target: DeclarationId, marke
         .declaration(target)
         .is_some_and(|declaration| {
             declaration.attributes.iter().any(|attribute| {
-                attribute.name == "Conform"
+                attribute.kind == AttributeKind::Conform
                     && attribute
                         .arguments
                         .iter()
@@ -108,7 +108,7 @@ fn check_copy_implementations(
         };
         let fields = match &definition.data {
             DefinitionData::Struct { fields, .. } => fields.iter().map(|field| &field.ty).collect(),
-            DefinitionData::Enum { variants } => variants
+            DefinitionData::Enum { variants, .. } => variants
                 .iter()
                 .flat_map(|variant| variant.fields.iter().map(|field| &field.ty))
                 .collect(),
@@ -175,11 +175,14 @@ fn check_definition_types(
                 check_function_types(&method.function, &method.span, definitions, diagnostics);
             }
         }
-        DefinitionData::Enum { variants } => {
+        DefinitionData::Enum { variants, methods } => {
             for variant in variants {
                 for field in &variant.fields {
                     check_type(&field.ty, &field.span, definitions, diagnostics);
                 }
+            }
+            for method in methods {
+                check_function_types(&method.function, &method.span, definitions, diagnostics);
             }
         }
         DefinitionData::Interface { methods, .. } => {
@@ -472,17 +475,27 @@ fn check_definition(
                 diagnostics,
             );
         }
-        DefinitionData::Enum { variants } => {
+        DefinitionData::Enum { variants, methods } => {
             check_enum_discriminants(variants, diagnostics);
             for variant in variants {
                 for field in &variant.fields {
                     reject_void(&field.ty, &field.span, diagnostics);
                 }
             }
+            reject_duplicate_methods(methods, diagnostics);
+            for method in methods {
+                check_function(
+                    program,
+                    definition.declaration,
+                    &method.function,
+                    diagnostics,
+                );
+                check_generic_parameters(&method.function.generics, definitions, diagnostics);
+            }
             check_declared_interfaces(
                 program,
                 definition.declaration,
-                &[],
+                methods,
                 definitions,
                 diagnostics,
             );

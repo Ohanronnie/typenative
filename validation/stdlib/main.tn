@@ -1,12 +1,12 @@
 import { fromStatic, cursor, readU8, advance } from "std/bytes";
 function main(): i32 {
   const bytes = fromStatic("abc");
-  let input = cursor(bytes);
+  let input = cursor(bytes.asSlice());
   let value: u8 = 0u8;
   if (!readU8( & mut input, & mut value)) {
     return 1i32;
   }
-  if (value !== 97u8 || !advance( & mut input, 2usize) || input.offset !== 3usize) {
+  if (value !== 97u8 || !advance( & mut input, 2usize) || input.position() !== 3usize) {
     return 2i32;
   }
   const text = string.from("hé");

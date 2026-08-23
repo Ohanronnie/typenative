@@ -1,5 +1,6 @@
 import { Bytes, BytesMut } from "std/bytes";
 import { AsyncDisposable, Drop } from "std/core";
+import { c_size, c_ssize } from "std/ffi";
 
 declare extern "C" {
   function tn_net_tcp_connect(host: * const u8, port: u16): i32;
@@ -8,24 +9,72 @@ declare extern "C" {
   function tn_net_tcp_accept(handle: i32): i32;
   function tn_net_set_nonblocking(handle: i32, enabled: i32): i32;
   function tn_net_shutdown(handle: i32): i32;
-  function tn_net_read(handle: i32, bytes: * mut u8, length: usize): isize;
-  function tn_net_read_into(handle: i32, bytes: * mut u8, capacity: usize, length: usize, received: * mut usize): i32;
-  function tn_net_write(handle: i32, bytes: * const u8, length: usize): isize;
-  function tn_net_read_exact(handle: i32, bytes: * mut u8, length: usize): i32;
-  function tn_net_write_all(handle: i32, bytes: * const u8, length: usize): i32;
+  function tn_net_read(handle: i32, bytes: * mut u8, length: c_size): c_ssize;
+  function tn_net_read_into(handle: i32, bytes: * mut u8, capacity: c_size, length: c_size, received: * mut c_size): i32;
+  function tn_net_write(handle: i32, bytes: * const u8, length: c_size): c_ssize;
+  function tn_net_read_exact(handle: i32, bytes: * mut u8, length: c_size): i32;
+  function tn_net_write_all(handle: i32, bytes: * const u8, length: c_size): i32;
   function tn_net_close(handle: i32): i32;
   function tn_net_udp_bind(host: * const u8, port: u16): i32;
-  function tn_net_udp_send(handle: i32, bytes: * const u8, length: usize, host: * const u8, port: u16): isize;
-  function tn_net_udp_recv(handle: i32, bytes: * mut u8, length: usize): isize;
+  function tn_net_udp_send(handle: i32, bytes: * const u8, length: c_size, host: * const u8, port: u16): c_ssize;
+  function tn_net_udp_recv(handle: i32, bytes: * mut u8, length: c_size): c_ssize;
   function tn_net_resolve_ipv4(host: * const u8, address: * mut u32): i32;
 }
 export struct Endpoint {
-  public host: & static str;
+  public host: & str;
   public port: u16;
 }
 @Drop export struct TcpStream {
-  public handle: i32;
-  public closed: bool;
+  private handle: i32;
+  private closed: bool;
+  public isOpen(): bool {
+    return !this.closed && this.handle >= 0i32;
+  }
+  public setNonblocking(enabled: bool): i32 {
+    let mode: i32 = 0i32;
+    if (enabled) {
+      mode = 1i32;
+    }
+    unsafe {
+      return tn_net_set_nonblocking(this.handle, mode);
+    }
+  }
+  public shutdown(): i32 {
+    unsafe {
+      return tn_net_shutdown(this.handle);
+    }
+  }
+  public readRaw(bytes: * mut u8, length: usize): isize {
+    unsafe {
+      return tn_net_read(this.handle, bytes, length);
+    }
+  }
+  public writeRaw(bytes: * const u8, length: usize): isize {
+    unsafe {
+      return tn_net_write(this.handle, bytes, length);
+    }
+  }
+  public readExactRaw(bytes: * mut u8, length: usize): i32 {
+    unsafe {
+      return tn_net_read_exact(this.handle, bytes, length);
+    }
+  }
+  public writeAllRaw(bytes: * const u8, length: usize): i32 {
+    unsafe {
+      return tn_net_write_all(this.handle, bytes, length);
+    }
+  }
+  public acceptRaw(): TcpStream throws NetworkError {
+    unsafe {
+      const handle = tn_net_tcp_accept(this.handle);
+      if (handle<0i32) {
+        throw networkError( - 1i32);
+      }
+      return {
+        handle: handle, closed: false
+      };
+    }
+  }
   mut drop(): void {
     if (!this.closed) {
       unsafe {
@@ -70,14 +119,31 @@ export struct Endpoint {
   }
 }
 @Drop export struct UdpSocket {
-  public handle: i32;
-  public closed: bool;
-  mut drop(): void {
+  private handle: i32;
+  private closed: bool;
+  public isOpen(): bool {
+    return !this.closed && this.handle >= 0i32;
+  }
+  public sendRaw(bytes: * const u8, length: usize, host: & str, port: u16): isize {
+    unsafe {
+      return tn_net_udp_send(this.handle, bytes, length, host as * const u8, port);
+    }
+  }
+  public receiveRaw(bytes: * mut u8, length: usize): isize {
+    unsafe {
+      return tn_net_udp_recv(this.handle, bytes, length);
+    }
+  }
+  public mut close(): void {
     if (!this.closed) {
       unsafe {
         tn_net_close(this.handle);
       }
+      this.closed = true;
     }
+  }
+  mut drop(): void {
+    this.close();
   }
 }
 export struct NetworkError {
@@ -90,8 +156,8 @@ function networkError(code: i32): NetworkError {
 }
 @Conform(AsyncDisposable)
 @Drop export class TcpListener {
-  public handle: i32;
-  public closed: bool;
+  private handle: i32;
+  private closed: bool;
   public constructor(endpoint: Endpoint)throws NetworkError {
     unsafe {
       const handle = tn_net_tcp_listen(endpoint.host as * const u8, endpoint.port, 128i32);
@@ -129,7 +195,7 @@ function networkError(code: i32): NetworkError {
     return;
   }
 }
-export function connect(endpoint: Endpoint): TcpStream {
+function connect(endpoint: Endpoint): TcpStream {
   unsafe {
     const handle = tn_net_tcp_connect(endpoint.host as * const u8, endpoint.port);
     return {
@@ -137,7 +203,7 @@ export function connect(endpoint: Endpoint): TcpStream {
     };
   }
 }
-export function listen(endpoint: Endpoint, backlog: i32): TcpStream {
+function listen(endpoint: Endpoint, backlog: i32): TcpStream {
   unsafe {
     return {
       handle: tn_net_tcp_listen(endpoint.host as * const u8, endpoint.port, backlog), closed: false
@@ -146,92 +212,75 @@ export function listen(endpoint: Endpoint, backlog: i32): TcpStream {
 }
 export function connectChecked(endpoint: Endpoint): TcpStream throws NetworkError {
   const stream = connect(endpoint);
-  if (stream.handle<0i32) {
+  if (!stream.isOpen()) {
     throw networkError( - 1i32);
   }
   return stream;
 }
-export function accept(stream: & TcpStream): TcpStream {
-  unsafe {
-    return {
-      handle: tn_net_tcp_accept(stream.handle), closed: false
-    };
-  }
+function accept(stream: & TcpStream): TcpStream throws NetworkError {
+  return try stream.acceptRaw();
 }
 export function setNonblocking(stream: & TcpStream, enabled: bool): i32 {
-  let mode: i32 = 0i32;
-  if (enabled) {
-    mode = 1i32;
-  }
-  unsafe {
-    return tn_net_set_nonblocking(stream.handle, mode);
-  }
+  return stream.setNonblocking(enabled);
 }
 export function shutdown(stream: & TcpStream): i32 {
-  unsafe {
-    return tn_net_shutdown(stream.handle);
-  }
+  return stream.shutdown();
 }
 export function close(stream: & mut TcpStream): void {
-  if (!stream.closed) {
-    unsafe {
-      tn_net_close(stream.handle);
-    }
-    stream.closed = true;
-  }
+  stream.close();
 }
 export function read(stream: & TcpStream, bytes: * mut u8, length: usize): isize {
-  unsafe {
-    return tn_net_read(stream.handle, bytes, length);
-  }
+  return stream.readRaw(bytes, length);
 }
 export function write(stream: & TcpStream, bytes: * const u8, length: usize): isize {
-  unsafe {
-    return tn_net_write(stream.handle, bytes, length);
-  }
+  return stream.writeRaw(bytes, length);
 }
 export function readExact(stream: & TcpStream, bytes: * mut u8, length: usize): void throws NetworkError {
-  let status: i32 = 0i32;
-  unsafe {
-    status = tn_net_read_exact(stream.handle, bytes, length);
-  }
+  const status = stream.readExactRaw(bytes, length);
   if (status !== 0i32) {
     throw networkError(status);
   }
 }
 export function writeAll(stream: & TcpStream, bytes: * const u8, length: usize): void throws NetworkError {
-  let status: i32 = 0i32;
-  unsafe {
-    status = tn_net_write_all(stream.handle, bytes, length);
-  }
+  const status = stream.writeAllRaw(bytes, length);
   if (status !== 0i32) {
     throw networkError(status);
   }
 }
-export function udpBind(host: & static str, port: u16): UdpSocket {
+function udpBind(host: & str, port: u16): UdpSocket {
   unsafe {
     return {
       handle: tn_net_udp_bind(host as * const u8, port), closed: false
     };
   }
 }
-export function udpSend(socket: & UdpSocket, bytes: * const u8, length: usize, host: & static str, port: u16): isize {
-  unsafe {
-    return tn_net_udp_send(socket.handle, bytes, length, host as * const u8, port);
+export function listenChecked(endpoint: Endpoint, backlog: i32): TcpListener throws NetworkError {
+  return try new TcpListener(endpoint);
+}
+export function acceptChecked(stream: & TcpStream): TcpStream throws NetworkError {
+  return try stream.acceptRaw();
+}
+export function udpBindChecked(host: & str, port: u16): UdpSocket throws NetworkError {
+  const socket = udpBind(host, port);
+  if (!socket.isOpen()) {
+    throw networkError( - 1i32);
   }
+  return socket;
+}
+export function isOpen(stream: & TcpStream): bool {
+  return stream.isOpen();
+}
+export function isUdpOpen(socket: & UdpSocket): bool {
+  return socket.isOpen();
+}
+export function udpSend(socket: & UdpSocket, bytes: * const u8, length: usize, host: & str, port: u16): isize {
+  return socket.sendRaw(bytes, length, host, port);
 }
 export function udpReceive(socket: & UdpSocket, bytes: * mut u8, length: usize): isize {
-  unsafe {
-    return tn_net_udp_recv(socket.handle, bytes, length);
-  }
+  return socket.receiveRaw(bytes, length);
 }
 export function closeUdp(socket: & mut UdpSocket): void {
-  if (!socket.closed) {
-    unsafe {
-      tn_net_close(socket.handle);
-    }
-    socket.closed = true;
-  }
+  socket.close();
 }
 export function resolveIpv4(host: & static str, address: * mut u32): i32 {
   unsafe {

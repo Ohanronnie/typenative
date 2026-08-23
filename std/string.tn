@@ -1,13 +1,18 @@
 import { Bytes } from "std/bytes";
 import { ParseIntegerError } from "std/core";
+import { c_size } from "std/ffi";
 
 declare extern "C" {
-  function tn_utf8_validate(bytes: * const u8, length: usize): i32;
-  function tn_string_from_bytes(bytes: * const u8, length: usize): string;
-  function tn_string_equals(left: * const u8, right: * const u8): i32;
-  function tn_string_to_ascii_upper(text: * const u8): string;
-  function strlen(bytes: * const u8): usize;
-  function tn_parse_ascii(bytes: * const u8, length: usize, value: * mut usize, offset: * mut usize): i32;
+  function tn_utf8_validate(bytes: * const u8, length: c_size): i32;
+  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
+  function tn_string_equals(left: * const u8, leftLength: c_size, right: * const u8, rightLength: c_size): i32;
+  function tn_string_length(bytes: * const u8): c_size;
+  function tn_string_to_ascii_upper(text: * const u8): * mut u8;
+  function tn_parse_ascii(bytes: * const u8, length: c_size, value: * mut c_size, offset: * mut c_size): i32;
+}
+@Intrinsic("string_from_raw")
+export function fromRaw(pointer: * mut u8, length: usize): string {
+  return "";
 }
 export struct Utf8Error {
   public offset: usize;
@@ -40,13 +45,16 @@ struct OwnedString {
   }
   public toAsciiUppercase(): string {
     unsafe {
-      return tn_string_to_ascii_upper(this as * const u8);
+      const pointer = this as * const u8;
+      const result = tn_string_to_ascii_upper(pointer);
+      return fromRaw(result, tn_string_length(result as * const u8));
     }
   }
   public clone(): string {
     unsafe {
       const pointer = this as * const u8;
-      return tn_string_from_bytes(pointer, strlen(pointer));
+      const length = tn_string_length(pointer);
+      return fromRaw(tn_string_from_bytes(pointer, length), length);
     }
   }
   public asStr(): & str {
@@ -57,13 +65,13 @@ struct OwnedString {
   public bytes(): &[u8] {
     unsafe {
       const pointer = this as * const u8;
-      return sliceFromRawParts<u8>(pointer, strlen(pointer));
+      return sliceFromRawParts<u8>(pointer, tn_string_length(pointer));
     }
   }
 }
 declare extern "C" {
-  function tn_utf8_decode(bytes: * const u8, length: usize, offset: usize, codepoint: * mut u32, next: * mut usize): i32;
-  function tn_utf8_slice_copy(bytes: * const u8, length: usize, start: usize, end: usize, destination: * mut u8, capacity: usize, written: * mut usize): i32;
+  function tn_utf8_decode(bytes: * const u8, length: c_size, offset: c_size, codepoint: * mut u32, next: * mut c_size): i32;
+  function tn_utf8_slice_copy(bytes: * const u8, length: c_size, start: c_size, end: c_size, destination: * mut u8, capacity: c_size, written: * mut c_size): i32;
 }
 import { rawAlloc, rawFree } from "std/alloc";
 export struct Chars {
@@ -74,7 +82,7 @@ export struct Chars {
 function bytes(text: & str): Bytes {
   unsafe {
     return {
-      pointer: text as * const u8, length: strlen(text as * const u8),
+      pointer: text as * const u8, length: tn_string_length(text as * const u8),
     };
   }
 }
@@ -83,22 +91,24 @@ function fromUtf8(value: Bytes): string throws Utf8Error {
     if (tn_utf8_validate(value.pointer, value.length) === 0i32) {
       throw utf8Error(0usize);
     }
-    return tn_string_from_bytes(value.pointer, value.length);
+    return fromRaw(tn_string_from_bytes(value.pointer, value.length), value.length);
   }
 }
 function length(value: string): usize {
   unsafe {
-    return strlen(value as * const u8);
+    return tn_string_length(value as * const u8);
   }
 }
 function emptyOwned(): string {
   unsafe {
-    return tn_string_from_bytes("" as * const u8, 0usize);
+    return fromRaw(tn_string_from_bytes("" as * const u8, 0usize), 0usize);
   }
 }
 function toAsciiUppercase(value: string): string {
   unsafe {
-    return tn_string_to_ascii_upper(value as * const u8);
+    const pointer = value as * const u8;
+    const result = tn_string_to_ascii_upper(pointer);
+    return fromRaw(result, tn_string_length(result as * const u8));
   }
 }
 function integerError(offset: usize): ParseIntegerError {
@@ -120,19 +130,19 @@ function parseAscii(value: Bytes): usize throws ParseIntegerError {
 }
 function isValidUtf8(text: & static str): bool {
   unsafe {
-    return tn_utf8_validate(text as * const u8, strlen(text as * const u8)) !== 0;
+    return tn_utf8_validate(text as * const u8, tn_string_length(text as * const u8)) !== 0;
   }
 }
 function fromStatic(text: & str): string {
   unsafe {
-    const length = strlen(text as * const u8);
-    return tn_string_from_bytes(text as * const u8, length);
+    const length = tn_string_length(text as * const u8);
+    return fromRaw(tn_string_from_bytes(text as * const u8, length), length);
   }
 }
 function chars(text: & static str): Chars {
   unsafe {
     return {
-      pointer: text as * const u8, length: strlen(text as * const u8), offset: 0usize
+      pointer: text as * const u8, length: tn_string_length(text as * const u8), offset: 0usize
     };
   }
 }
@@ -155,7 +165,7 @@ function utf8Error(offset: usize): Utf8Error {
 }
 function sliceOwned(text: & static str, start: usize, end: usize): string throws Utf8Error {
   unsafe {
-    const length = strlen(text as * const u8);
+    const length = tn_string_length(text as * const u8);
     if (start > end || end > length || end - start === 18446744073709551615usize) {
       throw utf8Error(start);
     }
@@ -168,7 +178,7 @@ function sliceOwned(text: & static str, start: usize, end: usize): string throws
       rawFree(pointer);
       throw utf8Error(start);
     }
-    const result = tn_string_from_bytes(pointer as * const u8, written);
+    const result = fromRaw(tn_string_from_bytes(pointer as * const u8, written), written);
     rawFree(pointer);
     return result;
   }

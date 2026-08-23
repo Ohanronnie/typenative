@@ -1,8 +1,10 @@
 import { Bytes } from "std/bytes";
 struct Failure {
+  public code: i32;
 }
 function failure(): Failure {
   return {
+    code: 23i32,
   };
 }
 @Export("immediate")

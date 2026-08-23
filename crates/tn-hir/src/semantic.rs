@@ -1,8 +1,8 @@
 use crate::{
-    Declaration, DeclarationId, DeclarationKind, Definition, DefinitionData, EnumField,
-    EnumVariant, Field, Function, GenericBound, GenericParameter, MemberId, Method, Module,
-    ModuleGraph, ModuleId, Namespace, Parameter, PrimitiveType, Program, ReceiverMode, Type,
-    Visibility,
+    AttributeKind, Declaration, DeclarationId, DeclarationKind, Definition, DefinitionData,
+    EnumField, EnumVariant, Field, Function, GenericBound, GenericParameter, MemberId, Method,
+    Module, ModuleGraph, ModuleId, Namespace, Parameter, PrimitiveType, Program, ReceiverMode,
+    Type, Visibility,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,6 +102,7 @@ struct Cursor<'source, 'tokens> {
     module: ModuleId,
     generics: BTreeMap<String, Namespace>,
     definition_generics: Vec<GenericParameter>,
+    allow_self: bool,
 }
 
 impl<'source, 'tokens> Cursor<'source, 'tokens> {
@@ -125,6 +126,7 @@ impl<'source, 'tokens> Cursor<'source, 'tokens> {
             module: module.id,
             generics: BTreeMap::new(),
             definition_generics: Vec::new(),
+            allow_self: false,
         }
     }
 
@@ -644,6 +646,20 @@ fn parse_named_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     let name = cursor.text().unwrap_or_default().to_owned();
+    if name == "Self" {
+        let span = cursor.span();
+        cursor.bump();
+        if cursor.allow_self {
+            return Type::Generic(name);
+        }
+        diagnostics.push(diag(
+            "TYPE_SELF_ONLY_INTERFACE_METHOD",
+            "Self is available only in interface method signatures",
+            &span,
+            "use a concrete nominal type or a declared generic parameter here",
+        ));
+        return Type::Error;
+    }
     if let Some(primitive) = primitive(&name) {
         cursor.bump();
         return primitive;
@@ -871,9 +887,32 @@ fn lower_enum(
     cursor.name(diagnostics);
     let generics = capture_definition_generic_parameters(cursor, resolver, diagnostics);
     cursor.definition_generics = generics;
+    cursor.allow_self = true;
     cursor.eat(TokenKind::LeftBrace);
     let mut variants = Vec::new();
+    let mut methods = Vec::new();
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
+        let checkpoint = cursor.index;
+        if matches!(
+            cursor.kind(),
+            Some(
+                TokenKind::Public
+                    | TokenKind::Protected
+                    | TokenKind::Private
+                    | TokenKind::Static
+                    | TokenKind::Mut
+                    | TokenKind::Move
+                    | TokenKind::Unsafe
+                    | TokenKind::Async
+                    | TokenKind::Function
+            )
+        ) && let Some(method) =
+            parse_method(cursor, owner, resolver, diagnostics, false, methods.len())
+        {
+            methods.push(method);
+            continue;
+        }
+        cursor.index = checkpoint;
         let Some((name, span)) = cursor.name(diagnostics) else {
             cursor.bump();
             continue;
@@ -927,7 +966,7 @@ fn lower_enum(
             break;
         }
     }
-    DefinitionData::Enum { variants }
+    DefinitionData::Enum { variants, methods }
 }
 
 fn lower_interface(
@@ -941,6 +980,7 @@ fn lower_interface(
     cursor.name(diagnostics);
     let generics = capture_definition_generic_parameters(cursor, resolver, diagnostics);
     cursor.definition_generics = generics;
+    cursor.allow_self = true;
     cursor.eat(TokenKind::LeftBrace);
     let mut methods = Vec::new();
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
@@ -1036,7 +1076,7 @@ fn has_attribute(declaration: &Declaration, name: &str) -> bool {
     declaration
         .attributes
         .iter()
-        .any(|attribute| attribute.name == name)
+        .any(|attribute| attribute.kind == AttributeKind::parse(name))
 }
 
 fn lower_impl(
@@ -1356,7 +1396,7 @@ fn validate_coherence_and_inheritance(
             for attribute in declaration
                 .attributes
                 .iter()
-                .filter(|attribute| attribute.name == "Conform")
+                .filter(|attribute| attribute.kind == AttributeKind::Conform)
             {
                 for interface in &attribute.arguments {
                     if !conformances.insert(interface.clone()) {

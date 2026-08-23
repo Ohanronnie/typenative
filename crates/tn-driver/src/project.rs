@@ -6,22 +6,17 @@ use std::path::{Path, PathBuf};
 pub enum Target {
     #[serde(rename = "aarch64-apple-darwin")]
     Aarch64AppleDarwin,
-    #[serde(rename = "x86_64-unknown-linux-gnu")]
-    X86_64UnknownLinuxGnu,
 }
 
 impl Target {
-    /// Returns the required target matching the current host.
+    /// Returns the required macOS ARM64 target matching the current host.
     ///
     /// # Errors
     ///
-    /// Returns [`UnsupportedHost`] outside the supported Darwin ARM64 and Linux AMD64 hosts.
+    /// Returns [`UnsupportedHost`] outside the supported Darwin ARM64 host.
     pub const fn host() -> Result<Self, UnsupportedHost> {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return Ok(Self::Aarch64AppleDarwin);
-        }
-        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            return Ok(Self::X86_64UnknownLinuxGnu);
         }
         Err(UnsupportedHost)
     }
@@ -29,23 +24,17 @@ impl Target {
     pub const fn triple(self) -> &'static str {
         match self {
             Self::Aarch64AppleDarwin => "aarch64-apple-darwin",
-            Self::X86_64UnknownLinuxGnu => "x86_64-unknown-linux-gnu",
         }
     }
 
     pub const fn runtime_module(self) -> &'static str {
         match self {
             Self::Aarch64AppleDarwin => "darwin-arm64.tn",
-            Self::X86_64UnknownLinuxGnu => "linux-x86_64.tn",
         }
     }
 
     pub const fn is_macos(self) -> bool {
         matches!(self, Self::Aarch64AppleDarwin)
-    }
-
-    pub const fn is_linux(self) -> bool {
-        matches!(self, Self::X86_64UnknownLinuxGnu)
     }
 }
 
@@ -66,6 +55,32 @@ pub enum Profile {
     #[default]
     Debug,
     Optimized,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Sanitizer {
+    Address,
+    Undefined,
+    Thread,
+}
+
+impl Sanitizer {
+    pub const fn codegen(self) -> tn_codegen_llvm::Sanitizer {
+        match self {
+            Self::Address => tn_codegen_llvm::Sanitizer::Address,
+            Self::Undefined => tn_codegen_llvm::Sanitizer::Undefined,
+            Self::Thread => tn_codegen_llvm::Sanitizer::Thread,
+        }
+    }
+
+    pub const fn link_argument(self) -> &'static str {
+        match self {
+            Self::Address => "-fsanitize=address",
+            Self::Undefined => "-fsanitize=undefined",
+            Self::Thread => "-fsanitize=thread",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -101,6 +116,8 @@ pub struct ProjectConfig {
     pub profile: Profile,
     #[serde(default)]
     pub emit: Emit,
+    #[serde(default)]
+    pub sanitizers: Vec<Sanitizer>,
     #[serde(default)]
     pub link: LinkConfig,
 }
@@ -146,6 +163,7 @@ pub fn load_project(input: Option<&Path>) -> Result<Project, ProjectError> {
                 target: default_target(),
                 profile: Profile::default(),
                 emit: Emit::default(),
+                sanitizers: Vec::new(),
                 link: LinkConfig::default(),
             },
             config_path: None,
@@ -256,27 +274,16 @@ mod tests {
     fn target_triples_are_exact() {
         assert_eq!(Target::Aarch64AppleDarwin.triple(), "aarch64-apple-darwin");
         assert_eq!(
-            Target::X86_64UnknownLinuxGnu.triple(),
-            "x86_64-unknown-linux-gnu"
-        );
-        assert_eq!(
             Target::Aarch64AppleDarwin.runtime_module(),
             "darwin-arm64.tn"
-        );
-        assert_eq!(
-            Target::X86_64UnknownLinuxGnu.runtime_module(),
-            "linux-x86_64.tn"
         );
     }
 
     #[test]
-    fn linux_target_is_accepted_by_strict_configuration() {
+    fn non_macos_target_is_rejected_by_strict_configuration() {
         let config = serde_json::from_str::<ProjectConfig>(
             r#"{"entry":"src/main.tn","target":"x86_64-unknown-linux-gnu"}"#,
         );
-        assert_eq!(
-            config.expect("Linux target").target,
-            Target::X86_64UnknownLinuxGnu
-        );
+        assert!(config.is_err());
     }
 }

@@ -1,8 +1,9 @@
 use tn_diagnostics::SourceSpan;
 use tn_hir::{DeclarationId, FunctionType, PrimitiveType, Type};
 use tn_mir::{
-    BasicBlock, BasicBlockId, BinaryOperator, Body, Constant, Local, LocalId, Operand, Place,
-    Rvalue, Statement, StatementKind, Terminator, TerminatorKind, lower_typed_errors, validate,
+    BasicBlock, BasicBlockId, BinaryOperator, Body, Callable, Constant, Instance, Local, LocalId,
+    MonomorphizedBody, Operand, Place, Rvalue, Statement, StatementKind, Terminator,
+    TerminatorKind, lower_typed_errors, validate,
 };
 
 fn span() -> SourceSpan {
@@ -23,7 +24,7 @@ fn host_triple() -> &'static str {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "aarch64-apple-darwin"
     } else {
-        "x86_64-unknown-linux-gnu"
+        "aarch64-apple-darwin"
     }
 }
 
@@ -93,6 +94,163 @@ fn verifies_checked_integer_control_flow_before_emission() {
         .expect("verified backend emission");
         assert!(std::fs::metadata(path).expect("emitted product").len() > 0);
     }
+}
+
+#[test]
+fn carries_inline_attribute_to_direct_llvm_function() {
+    let body = Body {
+        declaration: DeclarationId(77),
+        member: None,
+        locals: Vec::new(),
+        blocks: vec![BasicBlock {
+            statements: Vec::new(),
+            terminator: Terminator {
+                kind: TerminatorKind::Return(None),
+                span: span(),
+            },
+        }],
+        return_type: Type::Primitive(PrimitiveType::Void),
+        effects: Vec::new(),
+    };
+    let callable = Callable::function(DeclarationId(77));
+    let units = vec![MonomorphizedBody {
+        instance: Instance::concrete(callable),
+        body: lower_typed_errors(&body),
+    }];
+    let mut layouts = tn_codegen_llvm::Layouts::default();
+    layouts.inlines.insert(callable);
+    let ir = tn_codegen_llvm::compile_program_to_llvm_ir(
+        "inline_hint",
+        &units,
+        &layouts,
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("inline function emits valid LLVM");
+    assert!(ir.contains("inlinehint"), "{ir}");
+}
+
+#[test]
+fn lowers_atomic_load_store_rmw_cmpxchg_and_fence_to_llvm() {
+    let i32_type = Type::Primitive(PrimitiveType::I32);
+    let bool_type = Type::Primitive(PrimitiveType::Bool);
+    let pointer_type = Type::RawPointer {
+        mutable: true,
+        pointee: Box::new(i32_type.clone()),
+    };
+    let order = |value| {
+        Operand::Constant(Constant::Integer {
+            value,
+            ty: Type::Primitive(PrimitiveType::U8),
+        })
+    };
+    let local_result = |name: &str, ty: Type| local(name, ty, false);
+    let body = Body {
+        declaration: DeclarationId(78),
+        member: None,
+        locals: vec![
+            local("value", pointer_type.clone(), true),
+            local("delta", i32_type.clone(), true),
+            local("expected", pointer_type.clone(), true),
+            local_result("loaded", i32_type.clone()),
+            local_result("added", i32_type.clone()),
+            local_result("stored", i32_type.clone()),
+            local_result("exchanged", bool_type.clone()),
+            local_result("fenced", bool_type.clone()),
+        ],
+        blocks: vec![BasicBlock {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(LocalId(3)),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "atomic_i32_load".into(),
+                            operands: vec![Operand::Copy(Place::local(LocalId(0))), order(1)],
+                            ty: i32_type.clone(),
+                        }),
+                    ),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(LocalId(4)),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "atomic_i32_fetch_add".into(),
+                            operands: vec![
+                                Operand::Copy(Place::local(LocalId(0))),
+                                Operand::Copy(Place::local(LocalId(1))),
+                                order(0),
+                            ],
+                            ty: i32_type.clone(),
+                        }),
+                    ),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(LocalId(5)),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "atomic_i32_store".into(),
+                            operands: vec![
+                                Operand::Copy(Place::local(LocalId(0))),
+                                Operand::Copy(Place::local(LocalId(1))),
+                                order(2),
+                            ],
+                            ty: i32_type.clone(),
+                        }),
+                    ),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(LocalId(6)),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "atomic_i32_compare_exchange".into(),
+                            operands: vec![
+                                Operand::Copy(Place::local(LocalId(0))),
+                                Operand::Copy(Place::local(LocalId(2))),
+                                Operand::Copy(Place::local(LocalId(1))),
+                                order(3),
+                                order(1),
+                            ],
+                            ty: bool_type.clone(),
+                        }),
+                    ),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(LocalId(7)),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "atomic_fence".into(),
+                            operands: vec![order(4)],
+                            ty: bool_type.clone(),
+                        }),
+                    ),
+                    span: span(),
+                },
+            ],
+            terminator: Terminator {
+                kind: TerminatorKind::Return(Some(Operand::Move(Place::local(LocalId(6))))),
+                span: span(),
+            },
+        }],
+        return_type: bool_type,
+        effects: Vec::new(),
+    };
+    validate(&body).expect("atomic MIR");
+    let ir = tn_codegen_llvm::compile_to_llvm_ir(
+        "atomics",
+        &[lower_typed_errors(&body)],
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("atomic operations emit valid LLVM");
+    assert!(ir.contains("load atomic i32"), "{ir}");
+    assert!(ir.contains("atomicrmw add"), "{ir}");
+    assert!(ir.contains("store atomic i32"), "{ir}");
+    assert!(ir.contains("cmpxchg"), "{ir}");
+    assert!(ir.contains("fence seq_cst"), "{ir}");
 }
 
 #[test]

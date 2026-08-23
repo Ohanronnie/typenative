@@ -107,6 +107,14 @@ pub(crate) fn expand_source(file: &str, source: &str, tokens: &[Token]) -> Expan
         };
     }
 
+    synthesize_clone_methods(file, source, &significant, &mut edits, &mut diagnostics);
+    if !diagnostics.is_empty() {
+        return Expansion {
+            source: source.to_owned(),
+            diagnostics,
+        };
+    }
+
     index = 0;
     depth = 0;
     while index < significant.len() {
@@ -292,6 +300,558 @@ pub(crate) fn expand_source(file: &str, source: &str, tokens: &[Token]) -> Expan
         source: expanded,
         diagnostics,
     }
+}
+
+#[allow(clippy::too_many_lines)]
+fn synthesize_clone_methods(
+    file: &str,
+    source: &str,
+    tokens: &[&Token],
+    edits: &mut Vec<ExpansionEdit>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut index = 0;
+    let mut depth = 0_u32;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if depth == 0
+            && token.kind == TokenKind::At
+            && tokens
+                .get(index + 1)
+                .is_some_and(|name| &source[name.range.clone()] == "Clone")
+        {
+            let attribute_end = attribute_end(tokens, index);
+            let Some(target_start) = next_declaration(tokens, attribute_end) else {
+                index = attribute_end;
+                continue;
+            };
+            let target_kind = tokens[target_start].kind;
+            if target_kind == TokenKind::Enum || target_kind == TokenKind::Class {
+                let Some(open_index) = tokens[target_start..]
+                    .iter()
+                    .position(|candidate| candidate.kind == TokenKind::LeftBrace)
+                    .map(|offset| target_start + offset)
+                else {
+                    index = attribute_end;
+                    continue;
+                };
+                let Some((open_index, close_index)) = balanced_body(tokens, open_index) else {
+                    index = attribute_end;
+                    continue;
+                };
+                let body = &source[tokens[open_index].range.end..tokens[close_index].range.start];
+                if member_names(file, body).contains("clone") {
+                    diagnostics.push(macro_diagnostic(
+                        "MACRO_NAME_COLLISION",
+                        "@Clone would synthesize a `clone` method that already exists",
+                        &span_for(file, source, token.range.start..tokens[index + 1].range.end),
+                        "remove the explicit clone method or remove @Clone",
+                    ));
+                    index = attribute_end;
+                    continue;
+                }
+                let Some(name_token) = tokens.get(target_start + 1) else {
+                    index = attribute_end;
+                    continue;
+                };
+                let type_end = tokens[target_start..open_index]
+                    .iter()
+                    .find(|candidate| {
+                        matches!(
+                            candidate.kind,
+                            TokenKind::Extends | TokenKind::Implements | TokenKind::Where
+                        )
+                    })
+                    .map_or(tokens[open_index].range.start, |candidate| {
+                        candidate.range.start
+                    });
+                let result_type = source[name_token.range.start..type_end].trim();
+                let replacement = if target_kind == TokenKind::Enum {
+                    clone_enum_method(source, tokens, result_type, open_index, close_index)
+                } else if tokens
+                    .get(target_start.saturating_sub(1))
+                    .is_some_and(|candidate| candidate.kind == TokenKind::Final)
+                {
+                    Some(clone_class_method(
+                        source,
+                        tokens,
+                        result_type,
+                        open_index,
+                        close_index,
+                    ))
+                } else {
+                    None
+                };
+                if let Some(replacement) = replacement {
+                    edits.push(ExpansionEdit {
+                        range: tokens[close_index].range.start..tokens[close_index].range.start,
+                        replacement,
+                    });
+                }
+                index = attribute_end;
+                continue;
+            }
+            if target_kind != TokenKind::Struct {
+                index = attribute_end;
+                continue;
+            }
+            let Some(open_index) = tokens[target_start..]
+                .iter()
+                .position(|candidate| candidate.kind == TokenKind::LeftBrace)
+                .map(|offset| target_start + offset)
+            else {
+                index = attribute_end;
+                continue;
+            };
+            let Some((open_index, close_index)) = balanced_body(tokens, open_index) else {
+                index = attribute_end;
+                continue;
+            };
+            let body = &source[tokens[open_index].range.end..tokens[close_index].range.start];
+            if member_names(file, body).contains("clone") {
+                diagnostics.push(macro_diagnostic(
+                    "MACRO_NAME_COLLISION",
+                    "@Clone would synthesize a `clone` method that already exists",
+                    &span_for(file, source, token.range.start..tokens[index + 1].range.end),
+                    "remove the explicit clone method or remove @Clone",
+                ));
+                index = attribute_end;
+                continue;
+            }
+            let Some(name_token) = tokens.get(target_start + 1) else {
+                index = attribute_end;
+                continue;
+            };
+            let type_end = tokens[target_start..open_index]
+                .iter()
+                .find(|candidate| {
+                    matches!(
+                        candidate.kind,
+                        TokenKind::Extends | TokenKind::Implements | TokenKind::Where
+                    )
+                })
+                .map_or(tokens[open_index].range.start, |candidate| {
+                    candidate.range.start
+                });
+            let result_type = source[name_token.range.start..type_end].trim();
+            let fields = clone_struct_fields(source, tokens, open_index, close_index);
+            if fields.is_empty() {
+                edits.push(ExpansionEdit {
+                    range: tokens[close_index].range.start..tokens[close_index].range.start,
+                    replacement: format!(
+                        "\n  public clone(): {result_type} {{\n    return {{}};\n  }}\n"
+                    ),
+                });
+            } else {
+                let initializers = fields
+                    .iter()
+                    .map(|(name, ty)| {
+                        let value = if clone_field_is_copy(ty) {
+                            format!("this.{name}")
+                        } else {
+                            format!("this.{name}.clone()")
+                        };
+                        format!("{name}: {value}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                edits.push(ExpansionEdit {
+                    range: tokens[close_index].range.start..tokens[close_index].range.start,
+                    replacement: format!(
+                        "\n  public clone(): {result_type} {{\n    return {{ {initializers}, }};\n  }}\n"
+                    ),
+                });
+            }
+            index = attribute_end;
+            continue;
+        }
+        match token.kind {
+            TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightBrace => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        index += 1;
+    }
+}
+
+fn attribute_end(tokens: &[&Token], start: usize) -> usize {
+    let mut cursor = start + 2;
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| token.kind == TokenKind::LeftParen)
+    {
+        let mut depth = 1_u32;
+        cursor += 1;
+        while let Some(token) = tokens.get(cursor) {
+            match token.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        cursor += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+    }
+    cursor
+}
+
+fn clone_struct_fields(
+    source: &str,
+    tokens: &[&Token],
+    open_index: usize,
+    close_index: usize,
+) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    let mut index = open_index + 1;
+    let mut depth = 0_u32;
+    let mut paren_depth = 0_u32;
+    while index < close_index {
+        let token = tokens[index];
+        if depth == 0
+            && paren_depth == 0
+            && token.kind == TokenKind::Colon
+            && index > open_index + 1
+            && tokens[index - 1].kind == TokenKind::Identifier
+        {
+            let name = source[tokens[index - 1].range.clone()].to_owned();
+            let type_start = tokens[index].range.end;
+            let mut type_end = type_start;
+            let mut cursor = index + 1;
+            let mut type_depth = 0_u32;
+            while cursor < close_index {
+                let candidate = tokens[cursor];
+                match candidate.kind {
+                    TokenKind::LeftBracket | TokenKind::LeftParen | TokenKind::Less => {
+                        type_depth += 1;
+                    }
+                    TokenKind::RightBracket | TokenKind::RightParen | TokenKind::Greater => {
+                        type_depth = type_depth.saturating_sub(1);
+                    }
+                    TokenKind::Semicolon if type_depth == 0 => {
+                        type_end = candidate.range.start;
+                        break;
+                    }
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            let ty = source[type_start..type_end].trim().to_owned();
+            if !ty.is_empty() {
+                fields.push((name, ty));
+            }
+        }
+        match token.kind {
+            TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightBrace => depth = depth.saturating_sub(1),
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+            _ => {}
+        }
+        index += 1;
+    }
+    fields
+}
+
+fn clone_field_is_copy(ty: &str) -> bool {
+    let normalized = ty.split_whitespace().collect::<String>();
+    if let Some(inner) = normalized.strip_suffix("|undefined") {
+        return clone_field_is_copy(inner);
+    }
+    normalized.starts_with('&')
+        || normalized.starts_with("*const")
+        || normalized.starts_with("*mut")
+        || matches!(
+            normalized.as_str(),
+            "bool"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "number"
+                | "f32"
+                | "f64"
+                | "char"
+        )
+}
+
+fn clone_class_method(
+    source: &str,
+    tokens: &[&Token],
+    result_type: &str,
+    open_index: usize,
+    close_index: usize,
+) -> String {
+    let fields = clone_struct_fields(source, tokens, open_index, close_index);
+    let initializers = fields
+        .iter()
+        .map(|(name, ty)| {
+            if clone_field_is_copy(ty) {
+                format!("this.{name}")
+            } else {
+                format!("this.{name}.clone()")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = if initializers.is_empty() {
+        String::new()
+    } else {
+        format!("{initializers},")
+    };
+    format!(
+        "\n  public clone(): {result_type} {{\n    return new {result_type}({arguments});\n  }}\n"
+    )
+}
+
+type CloneEnumVariant = (Option<String>, String);
+type CloneEnumVariants = Vec<(String, Vec<CloneEnumVariant>)>;
+
+fn clone_enum_method(
+    source: &str,
+    tokens: &[&Token],
+    result_type: &str,
+    open_index: usize,
+    close_index: usize,
+) -> Option<String> {
+    let variants = clone_enum_variants(source, tokens, open_index, close_index);
+    if variants.is_empty() {
+        return None;
+    }
+    let arms = variants
+        .into_iter()
+        .map(|(name, fields)| {
+            if fields.is_empty() {
+                return format!("case {result_type}.{name}: {result_type}.{name},");
+            }
+            let bindings = fields
+                .iter()
+                .enumerate()
+                .map(|(index, (field_name, _))| {
+                    field_name
+                        .clone()
+                        .unwrap_or_else(|| format!("field{index}"))
+                })
+                .collect::<Vec<_>>();
+            let pattern = if fields.iter().all(|(field_name, _)| field_name.is_some()) {
+                let fields = bindings
+                    .iter()
+                    .map(|name| format!("{name}: {name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {fields} }}")
+            } else {
+                format!("({})", bindings.join(", "))
+            };
+            let values = fields
+                .iter()
+                .zip(&bindings)
+                .map(|((_, ty), binding)| {
+                    if clone_field_is_copy(ty) {
+                        binding.clone()
+                    } else {
+                        format!("{binding}.clone()")
+                    }
+                })
+                .collect::<Vec<_>>();
+            let constructor = if fields.iter().all(|(field_name, _)| field_name.is_some()) {
+                let fields = bindings
+                    .iter()
+                    .zip(values)
+                    .map(|(name, value)| format!("{name}: {value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {fields}, }}")
+            } else {
+                format!("({},)", values.join(", "))
+            };
+            format!("case {result_type}.{name} {pattern}: {result_type}.{name} {constructor},")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!(
+        "\n  public clone(): {result_type} {{\n    return switch(this) {{ {arms} }};\n  }}\n"
+    ))
+}
+
+fn clone_enum_variants(
+    source: &str,
+    tokens: &[&Token],
+    open_index: usize,
+    close_index: usize,
+) -> CloneEnumVariants {
+    let mut variants = Vec::new();
+    let mut cursor = open_index + 1;
+    while cursor < close_index {
+        if tokens[cursor].kind == TokenKind::Comma {
+            cursor += 1;
+            continue;
+        }
+        let Some(name_token) = tokens.get(cursor) else {
+            break;
+        };
+        if name_token.kind != TokenKind::Identifier {
+            cursor += 1;
+            continue;
+        }
+        let name = source[name_token.range.clone()].to_owned();
+        cursor += 1;
+        let mut fields = Vec::new();
+        if tokens
+            .get(cursor)
+            .is_some_and(|token| token.kind == TokenKind::LeftParen)
+        {
+            let Some(field_close) =
+                matching_delimiter(tokens, cursor, TokenKind::LeftParen, TokenKind::RightParen)
+            else {
+                break;
+            };
+            for (start, end) in comma_ranges(tokens, cursor + 1, field_close) {
+                if let (Some(first), Some(last)) =
+                    (tokens.get(start), tokens.get(end.saturating_sub(1)))
+                {
+                    let ty = source[first.range.start..last.range.end].trim().to_owned();
+                    if !ty.is_empty() {
+                        fields.push((None, ty));
+                    }
+                }
+            }
+            cursor = field_close + 1;
+        } else if tokens
+            .get(cursor)
+            .is_some_and(|token| token.kind == TokenKind::LeftBrace)
+        {
+            let Some(field_close) =
+                matching_delimiter(tokens, cursor, TokenKind::LeftBrace, TokenKind::RightBrace)
+            else {
+                break;
+            };
+            for (start, end) in comma_or_semicolon_ranges(tokens, cursor + 1, field_close) {
+                let Some(colon) =
+                    (start..end).find(|index| tokens[*index].kind == TokenKind::Colon)
+                else {
+                    continue;
+                };
+                let Some(name_token) = tokens.get(start) else {
+                    continue;
+                };
+                let Some(type_start) = tokens.get(colon + 1) else {
+                    continue;
+                };
+                let Some(type_end) = tokens.get(end.saturating_sub(1)) else {
+                    continue;
+                };
+                fields.push((
+                    Some(source[name_token.range.clone()].to_owned()),
+                    source[type_start.range.start..type_end.range.end]
+                        .trim()
+                        .to_owned(),
+                ));
+            }
+            cursor = field_close + 1;
+        }
+        while cursor < close_index && tokens[cursor].kind != TokenKind::Comma {
+            cursor += 1;
+        }
+        variants.push((name, fields));
+    }
+    variants
+}
+
+fn comma_ranges(tokens: &[&Token], start: usize, end: usize) -> Vec<(usize, usize)> {
+    separated_ranges(tokens, start, end, TokenKind::Comma)
+}
+
+fn comma_or_semicolon_ranges(tokens: &[&Token], start: usize, end: usize) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut cursor = start;
+    let mut depth = 0_u32;
+    for (index, token) in tokens.iter().enumerate().take(end).skip(start) {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                depth = depth.saturating_sub(1);
+            }
+            TokenKind::Comma | TokenKind::Semicolon if depth == 0 => {
+                if cursor < index {
+                    ranges.push((cursor, index));
+                }
+                cursor = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if cursor < end {
+        ranges.push((cursor, end));
+    }
+    ranges
+}
+
+fn separated_ranges(
+    tokens: &[&Token],
+    start: usize,
+    end: usize,
+    separator: TokenKind,
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut cursor = start;
+    let mut depth = 0_u32;
+    for (index, token) in tokens.iter().enumerate().take(end).skip(start) {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                depth = depth.saturating_sub(1);
+            }
+            kind if kind == separator && depth == 0 => {
+                if cursor < index {
+                    ranges.push((cursor, index));
+                }
+                cursor = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if cursor < end {
+        ranges.push((cursor, end));
+    }
+    ranges
+}
+
+fn matching_delimiter(
+    tokens: &[&Token],
+    start: usize,
+    open: TokenKind,
+    close: TokenKind,
+) -> Option<usize> {
+    if tokens.get(start).map(|token| token.kind) != Some(open) {
+        return None;
+    }
+    let mut depth = 0_u32;
+    for (index, token) in tokens.iter().enumerate().skip(start) {
+        match token.kind {
+            kind if kind == open => depth += 1,
+            kind if kind == close => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[allow(clippy::result_large_err, clippy::too_many_lines)]
@@ -881,5 +1441,38 @@ struct Counter { private value: i32; }
                 .iter()
                 .any(|diagnostic| diagnostic.condition.as_str() == "MACRO_NAME_COLLISION")
         );
+    }
+
+    #[test]
+    fn synthesizes_a_real_clone_method_for_structs() {
+        let expanded = expanded("@Clone struct User { public id: u64; public text: string; }\n");
+        assert!(
+            expanded.diagnostics.is_empty(),
+            "{:?}",
+            expanded.diagnostics
+        );
+        assert!(expanded.source.contains("public clone(): User"));
+        assert!(expanded.source.contains("id: this.id"));
+        assert!(expanded.source.contains("text: this.text.clone()"));
+    }
+
+    #[test]
+    fn synthesizes_clone_methods_for_enums_and_final_classes() {
+        let enum_expanded = expanded("@Clone enum Value { Number(i32), Text(string), Empty, }\n");
+        assert!(
+            enum_expanded.diagnostics.is_empty(),
+            "{:?}",
+            enum_expanded.diagnostics
+        );
+        assert!(enum_expanded.source.contains("public clone(): Value"));
+        let class_expanded = expanded(
+            "@Clone final class User { public value: i32; public constructor(value: i32) { this.value = value; } }\n",
+        );
+        assert!(
+            class_expanded.diagnostics.is_empty(),
+            "{:?}",
+            class_expanded.diagnostics
+        );
+        assert!(class_expanded.source.contains("public clone(): User"));
     }
 }

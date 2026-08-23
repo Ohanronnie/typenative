@@ -1,9 +1,10 @@
+import { c_size } from "std/ffi";
 import { sleep } from "std/thread";
 import { Duration, Instant, Date } from "std/time";
 
 declare extern "C" {
-  function tn_io_write_all(fd: i32, bytes: * const u8, length: usize): i32;
-  function strlen(bytes: * const u8): usize;
+  function tn_io_write_all(fd: i32, bytes: * const u8, length: c_size): i32;
+  function tn_string_length(bytes: * const u8): c_size;
 }
 function writeReport(): i32 {
   const epochDate = Date.fromEpochMilliseconds(0i64);
@@ -13,7 +14,7 @@ function writeReport(): i32 {
   unsafe {
     const epochPointer = epoch as * const u8;
     const currentPointer = current as * const u8;
-    let status = tn_io_write_all(1i32, epochPointer, strlen(epochPointer));
+    let status = tn_io_write_all(1i32, epochPointer, tn_string_length(epochPointer));
     if (status !== 0i32) {
       return status;
     }
@@ -21,7 +22,7 @@ function writeReport(): i32 {
     if (status !== 0i32) {
       return status;
     }
-    status = tn_io_write_all(1i32, currentPointer, strlen(currentPointer));
+    status = tn_io_write_all(1i32, currentPointer, tn_string_length(currentPointer));
     if (status !== 0i32) {
       return status;
     }
