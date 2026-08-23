@@ -69,6 +69,13 @@ build_redis() {
 }
 build_redis debug "$work/redis-debug"
 build_redis optimized "$work/redis-optimized"
+if [ -z "$sanitizer" ]; then
+  "$tn" build "$root/validation/redis/allocation.tn" --profile optimized \
+    --out "$work/redis-allocation"
+  "$work/redis-allocation"
+  printf '%s\n' 'redis-million-ping-runtime-allocations=0'
+  printf '%s\n' 'redis-borrowed-get-runtime-allocations=0'
+fi
 
 case "$sanitizer" in
   address-undefined)

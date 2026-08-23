@@ -7031,10 +7031,19 @@ impl<'ctx> Generator<'ctx> {
             FunctionGenerator::new(self, &unit.body, function)
                 .and_then(|generator| generator.lower())
                 .map_err(|error| {
+                    let unresolved_locals = unit
+                        .body
+                        .locals
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, local)| matches!(local.ty, Type::Error))
+                        .map(|(index, local)| format!("{index}:{:?}@{:?}", local.name, local.span))
+                        .collect::<Vec<_>>();
                     CodegenError::Unsupported(format!(
-                        "while lowering {} ({:?}): {error}",
+                        "while lowering {} ({:?}, unresolved locals {:?}): {error}",
                         function.get_name().to_string_lossy(),
-                        unit.instance
+                        unit.instance,
+                        unresolved_locals,
                     ))
                 })?;
         }
@@ -7828,6 +7837,11 @@ impl<'ctx> Generator<'ctx> {
         let Some(layout) = self.layouts.nominals.get(&declaration) else {
             return Ok(self.context.ptr_type(AddressSpace::default()).into());
         };
+        let arguments = arguments
+            .iter()
+            .filter(|argument| !matches!(argument, Type::Lifetime(_)))
+            .cloned()
+            .collect::<Vec<_>>();
         if layout.type_parameters.len() != arguments.len() {
             return Err(CodegenError::Unsupported(format!(
                 "nominal layout {:?} expects {} type arguments, found {}",
@@ -7840,7 +7854,7 @@ impl<'ctx> Generator<'ctx> {
             .type_parameters
             .iter()
             .cloned()
-            .zip(arguments.iter().cloned())
+            .zip(arguments)
             .collect::<BTreeMap<_, _>>();
         match &layout.kind {
             NominalKind::Class { .. } => Ok(self.context.ptr_type(AddressSpace::default()).into()),
@@ -8009,6 +8023,11 @@ impl<'ctx> Generator<'ctx> {
                 "class object layout requested for non-class type: {ty:?}"
             )));
         };
+        let arguments = arguments
+            .iter()
+            .filter(|argument| !matches!(argument, Type::Lifetime(_)))
+            .cloned()
+            .collect::<Vec<_>>();
         if layout.type_parameters.len() != arguments.len() {
             return Err(CodegenError::Unsupported(format!(
                 "class layout {:?} expects {} type arguments, found {}",
@@ -8021,7 +8040,7 @@ impl<'ctx> Generator<'ctx> {
             .type_parameters
             .iter()
             .cloned()
-            .zip(arguments.iter().cloned())
+            .zip(arguments)
             .collect::<BTreeMap<_, _>>();
         let mut fields = vec![self.context.ptr_type(AddressSpace::default()).into()];
         for field in self.class_field_types(*declaration, &substitutions)? {
@@ -11054,6 +11073,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             "nominal drop layout is not registered: {ty:?}"
                         ))
                     })?;
+                let arguments = arguments
+                    .iter()
+                    .filter(|argument| !matches!(argument, Type::Lifetime(_)))
+                    .cloned()
+                    .collect::<Vec<_>>();
                 if layout.type_parameters.len() != arguments.len() {
                     return Err(CodegenError::Unsupported(format!(
                         "nominal drop layout {:?} expects {} type arguments, found {}",
@@ -11066,7 +11090,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .type_parameters
                     .iter()
                     .cloned()
-                    .zip(arguments.iter().cloned())
+                    .zip(arguments)
                     .collect::<BTreeMap<_, _>>();
                 self.lower_explicit_drop(ty, pointer)?;
                 match layout.kind {
@@ -13033,9 +13057,83 @@ fn body_signature(body: &Body) -> FunctionType {
 }
 
 fn signature_matches(emitted: &FunctionType, requested: &FunctionType) -> bool {
-    emitted.parameters.ends_with(&requested.parameters)
-        && emitted.result == requested.result
+    emitted.parameters.len() >= requested.parameters.len()
+        && emitted.parameters[emitted.parameters.len() - requested.parameters.len()..]
+            .iter()
+            .zip(&requested.parameters)
+            .all(|(emitted, requested)| abi_type_matches(emitted, requested))
+        && abi_type_matches(&emitted.result, &requested.result)
         && emitted.effects == requested.effects
+}
+
+fn abi_type_matches(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (
+            Type::Reference {
+                mutable: left_mutable,
+                referent: left,
+                ..
+            },
+            Type::Reference {
+                mutable: right_mutable,
+                referent: right,
+                ..
+            },
+        ) => left_mutable == right_mutable && abi_type_matches(left, right),
+        (Type::Nominal(left_id, left), Type::Nominal(right_id, right))
+        | (Type::DynamicInterface(left_id, left), Type::DynamicInterface(right_id, right)) => {
+            if left_id != right_id {
+                return false;
+            }
+            let left = left
+                .iter()
+                .filter(|argument| !matches!(argument, Type::Lifetime(_)))
+                .collect::<Vec<_>>();
+            let right = right
+                .iter()
+                .filter(|argument| !matches!(argument, Type::Lifetime(_)))
+                .collect::<Vec<_>>();
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| abi_type_matches(left, right))
+        }
+        (Type::Optional(left), Type::Optional(right)) | (Type::Slice(left), Type::Slice(right)) => {
+            abi_type_matches(left, right)
+        }
+        (
+            Type::RawPointer {
+                mutable: left_mutable,
+                pointee: left,
+            },
+            Type::RawPointer {
+                mutable: right_mutable,
+                pointee: right,
+            },
+        ) => left_mutable == right_mutable && abi_type_matches(left, right),
+        (Type::Array(left, left_length), Type::Array(right, right_length)) => {
+            left_length == right_length && abi_type_matches(left, right)
+        }
+        (Type::Tuple(left), Type::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| abi_type_matches(left, right))
+        }
+        (
+            Type::Promise {
+                result: left,
+                effects: left_effects,
+            },
+            Type::Promise {
+                result: right,
+                effects: right_effects,
+            },
+        ) => left_effects == right_effects && abi_type_matches(left, right),
+        _ => left == right,
+    }
 }
 
 fn stable_hash(value: &str) -> u64 {

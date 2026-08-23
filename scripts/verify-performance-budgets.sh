@@ -60,6 +60,7 @@ json_report="$evidence/json.json"
 redis_report="$evidence/redis.json"
 http_report="$evidence/http.json"
 allocation_binary="$evidence/allocation"
+redis_allocation_binary="$evidence/redis-allocation"
 
 run_logged() {
   label=$1
@@ -117,13 +118,26 @@ else
   allocation_status=$?
 fi
 
-python3 - "$budget" "$json_report" "$redis_report" "$http_report" "$allocation_status" "$evidence/summary.json" <<'PY'
+run_logged redis-allocation-build env -u TYPENATIVE_RUNTIME_OBJECT \
+  TYPENATIVE_RUNTIME_ROOT="$root" \
+  TYPENATIVE_TN_BIN="$tn_bin" \
+  "$guard" "$tn_bin" build "$root/validation/redis/allocation.tn" \
+  --profile optimized --emit executable --out "$redis_allocation_binary"
+
+redis_allocation_status=0
+if "$redis_allocation_binary" >"$evidence/redis-allocation.log" 2>&1; then
+  redis_allocation_status=0
+else
+  redis_allocation_status=$?
+fi
+
+python3 - "$budget" "$json_report" "$redis_report" "$http_report" "$allocation_status" "$redis_allocation_status" "$evidence/summary.json" <<'PY'
 import json
 import math
 import statistics
 import sys
 
-budget_path, json_path, redis_path, http_path, allocation_text, summary_path = sys.argv[1:]
+budget_path, json_path, redis_path, http_path, allocation_text, redis_allocation_text, summary_path = sys.argv[1:]
 with open(budget_path, encoding="utf-8") as stream:
     budget = json.load(stream)
 with open(json_path, encoding="utf-8") as stream:
@@ -236,6 +250,15 @@ for key, item in redis_items.items():
 native_summary = redis_items["native"]["summary"]
 addon_summary = redis_items["addon"]["summary"]
 javascript_summary = redis_items["javascript"]["summary"]
+rust_summary = redis_items["rust"]["summary"]
+require(native_summary["pipelinedPingPerSecond"]["median"] >= rust_summary["pipelinedPingPerSecond"]["median"] * redis_workload["minimumNativeRustPipelinedRatio"], "Redis native pipelined throughput is below 95% of Rust")
+require(addon_summary["pipelinedPingPerSecond"]["median"] >= rust_summary["pipelinedPingPerSecond"]["median"] * redis_workload["minimumAddonRustPipelinedRatio"], "Redis addon pipelined throughput is below 90% of Rust")
+require(native_summary["randomSetPerSecond"]["median"] >= rust_summary["randomSetPerSecond"]["median"] * redis_workload["minimumNativeRustSetRatio"], "Redis native SET throughput is below 95% of Rust")
+require(native_summary["randomGetPerSecond"]["median"] >= rust_summary["randomGetPerSecond"]["median"] * redis_workload["minimumNativeRustGetRatio"], "Redis native GET throughput is below 95% of Rust")
+require(native_summary["nonPipelinedPingLatencyMicroseconds"]["median"] <= rust_summary["nonPipelinedPingLatencyMicroseconds"]["median"] * redis_workload["maximumNativeRustLatencyRatio"], "Redis native non-pipelined latency exceeds Rust by more than 5%")
+native_rust_ratio = redis_report["comparisons"]["nativeVersusRustPipelinedPing"]["ratio"]
+require(native_rust_ratio["confidenceInterval95"][0] >= redis_workload["minimumNativeRustPipelinedRatio"], "Redis native/Rust paired throughput ratio does not establish the 5% margin at 95% confidence")
+require(redis_items["native"]["artifactBytes"] < redis_items["rust"]["artifactBytes"], "Redis native binary is not smaller than Rust")
 require(native_summary["pipelinedPingPerSecond"]["median"] >= javascript_summary["pipelinedPingPerSecond"]["median"], "Redis native pipelined median is below handwritten Node")
 native_difference = redis_report["comparisons"]["nativeVersusHandwrittenPipelinedPing"]["difference"]
 require(native_difference["confidenceInterval95"][1] >= 0, "Redis native is significantly slower than handwritten Node at 95% confidence")
@@ -277,6 +300,8 @@ for timing_name, limit in budget["compiler"]["maximumSeconds"].items():
 
 allocation_status = int(allocation_text)
 require(allocation_status <= budget["allocation"]["maximumCount"], f"allocation count {allocation_status} exceeds budget")
+redis_allocation_status = int(redis_allocation_text)
+require(redis_allocation_status == 0, f"Redis PING allocation proof returned {redis_allocation_status}")
 
 for key, limit in budget["artifacts"]["redis"]["maximumBytes"].items():
     require(redis_items[key]["artifactBytes"] <= limit, f"Redis {key} binary-size budget exceeded")
@@ -290,12 +315,13 @@ summary = {
     "http": http_evidence,
     "compilerTimings": http_report["compilerTimings"],
     "allocationCount": allocation_status,
+    "redisPingAllocationCount": redis_allocation_status,
     "confidenceMethod": "95% Student-t interval with nine shuffled samples; t(0.975, n-1) approximated as 2.306 for nine samples",
 }
 with open(summary_path, "w", encoding="utf-8") as stream:
     json.dump(summary, stream, indent=2)
     stream.write("\n")
-print(json.dumps({"json": json_evidence, "redis": redis_evidence, "http": http_evidence, "allocationCount": allocation_status}, separators=(",", ":")))
+print(json.dumps({"json": json_evidence, "redis": redis_evidence, "http": http_evidence, "allocationCount": allocation_status, "redisPingAllocationCount": redis_allocation_status}, separators=(",", ":")))
 PY
 
 current_sha256=$(shasum -a 256 "$protected" | awk '{print $1}')

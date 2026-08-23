@@ -638,7 +638,7 @@ fn valid_intrinsic_operation(
     let bundled = |relative: &str| program.graph.is_bundled_module(module, relative);
     match operation.as_str() {
         "checked_u16" => bundled("env.tn"),
-        "string_from_raw" => bundled("string.tn"),
+        "string_from_raw" => bundled("string.tn") || bundled("bytes.tn"),
         "platform_sockaddr_family" | "byte_address" => bundled("runtime.tn"),
         "size_of" => {
             bundled("alloc.tn")
@@ -1041,7 +1041,8 @@ fn check_local(
                 return end + usize::from(end < tokens.len());
             }
         }
-        if let Some(initializer) = tokens.get(equal + 1)
+        if equal + 2 == end
+            && let Some(initializer) = tokens.get(equal + 1)
             && let Some(ty) = infer_atom(initializer, module, variables)
         {
             variables.insert(name, ty);

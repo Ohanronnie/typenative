@@ -1,4 +1,5 @@
 import { AllocError, rawAlloc, rawFree, storeRaw, u64ToUsize, usizeToU64 } from "std/alloc";
+import { HashedUtf8View, Utf8View } from "std/bytes";
 import { AsyncIterable, Drop, Equal, Hash, IntoIterator, Iterable, Iterator, Ord, Ordering } from "std/core";
 import { c_size } from "std/ffi";
 
@@ -1011,7 +1012,7 @@ function tableWriteByte(pointer: * mut u8, index: usize, value: u8): void {
     storeRaw<u8>(slot, value);
   }
 }
-@Drop class TypedTable<K extends Equal<K > & Hash, V> {
+@Drop final class TypedTable<K extends Equal<K > & Hash, V> {
   private keys: * mut K;
   private values: * mut V;
   private keyInitialized: * mut u8;
@@ -1097,6 +1098,32 @@ function tableWriteByte(pointer: * mut u8, index: usize, value: u8): void {
     }
     return tombstone;
   }
+  private slotForUtf8<lifetime a>(key: & Utf8View<a>, hash: u64): usize {
+    let index = this.startIndex(hash);
+    let tombstone = this.capacity;
+    let probes: usize = 0usize;
+    while (probes !== this.capacity) {
+      const state = tableReadState(this.states, index);
+      if (state === 0u8) {
+        return tombstone !== this.capacity?tombstone: index;
+      }
+      if (state === 2u8) {
+        if (tombstone === this.capacity) {
+          tombstone = index;
+        }
+      } else {
+        unsafe {
+          const stored = borrowElement<string>(this.keys as * const string, index);
+          if (key.equalsText(stored.asStr())) {
+            return index;
+          }
+        }
+      }
+      index =(index + 1usize) % this.capacity;
+      probes = probes + 1usize;
+    }
+    return tombstone;
+  }
   private mut resize(target: usize): void {
     const oldKeys = this.keys;
     const oldValues = this.values;
@@ -1166,8 +1193,12 @@ function tableWriteByte(pointer: * mut u8, index: usize, value: u8): void {
     this.resize(this.capacity * 2usize);
   }
   public mut insert(key: K, value: V): bool {
+    const hash = tableHash<K>( & key);
+    return this.insertPrehashed(move key, move value, hash);
+  }
+  public mut insertPrehashed(key: K, value: V, hash: u64): bool {
     this.ensureInsertCapacity();
-    let slot = this.slotFor( & key, tableHash<K>( & key));
+    let slot = this.slotFor( & key, hash);
     if (tableReadState(this.states, slot) === 1u8) {
       unsafe {
         storeElement<K>(this.keys, slot, this.keyInitialized, move key);
@@ -1196,12 +1227,56 @@ function tableWriteByte(pointer: * mut u8, index: usize, value: u8): void {
       return borrowElement<V>(this.values as * const V, slot);
     }
   }
+  public getUtf8<lifetime a>(key: & Utf8View<a >): & V | undefined {
+    const slot = this.slotForUtf8(key, key.hash());
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+      return undefined;
+    }
+    unsafe {
+      return borrowElement<V>(this.values as * const V, slot);
+    }
+  }
+  public getHashedUtf8<lifetime a>(key: & HashedUtf8View<a >): & V | undefined {
+    const slot = this.slotForUtf8( & key.text, key.hash());
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+      return undefined;
+    }
+    unsafe {
+      return borrowElement<V>(this.values as * const V, slot);
+    }
+  }
   public contains(key: & K): bool {
     const slot = this.slotFor(key, tableHash<K>(key));
     return slot !== this.capacity && tableReadState(this.states, slot) === 1u8;
   }
   public mut remove(key: & K): V | undefined {
     const slot = this.slotFor(key, tableHash<K>(key));
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+      return undefined;
+    }
+    tableWriteByte(this.states, slot, 2u8);
+    this.length = this.length - 1usize;
+    unsafe {
+      dropElement<K>(this.keys, slot, this.keyInitialized);
+      const removedValue = moveElement<V>(this.values, slot, this.valueInitialized);
+      return move removedValue;
+    }
+  }
+  public mut removeUtf8<lifetime a>(key: & Utf8View<a >): V | undefined {
+    const slot = this.slotForUtf8(key, key.hash());
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+      return undefined;
+    }
+    tableWriteByte(this.states, slot, 2u8);
+    this.length = this.length - 1usize;
+    unsafe {
+      dropElement<K>(this.keys, slot, this.keyInitialized);
+      const removedValue = moveElement<V>(this.values, slot, this.valueInitialized);
+      return move removedValue;
+    }
+  }
+  public mut removeHashedUtf8<lifetime a>(key: & HashedUtf8View<a >): V | undefined {
+    const slot = this.slotForUtf8( & key.text, key.hash());
     if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
       return undefined;
     }
@@ -1346,6 +1421,63 @@ export class Map<K extends Equal<K > & Hash, V> {
   }
   move intoIterator(): MapIterator<K, V> {
     return new MapIterator<K, V>(move this);
+  }
+  mut drop(): void {
+  }
+}
+@Drop export final class StringMap<V> {
+  private table: TypedTable<string, V>;
+  public readonly length: usize;
+  public readonly capacity: usize;
+  public constructor(options: MapOptions) {
+    const table = new TypedTable<string, V>(options.capacity, false);
+    const length = table.length;
+    const capacity = table.capacity;
+    this.table = move table;
+    this.length = length;
+    this.capacity = capacity;
+  }
+  public mut set(key: string, value: V): bool {
+    const inserted = this.table.insert(move key, move value);
+    this.length = this.table.length;
+    this.capacity = this.table.capacity;
+    return inserted;
+  }
+  public mut setBorrowed<lifetime a>(key: & HashedUtf8View<a>, value: V): bool {
+    const ownedKey = key.toOwned();
+    const hash = key.hash();
+    const inserted = this.table.insertPrehashed(move ownedKey, move value, hash);
+    this.length = this.table.length;
+    this.capacity = this.table.capacity;
+    return inserted;
+  }
+  public get<lifetime a>(key: & Utf8View<a >): & V | undefined {
+    return this.table.getUtf8(key);
+  }
+  public getHashed<lifetime a>(key: & HashedUtf8View<a >): & V | undefined {
+    return this.table.getHashedUtf8(key);
+  }
+  public mut remove<lifetime a>(key: & Utf8View<a >): V | undefined {
+    const removed = this.table.removeUtf8(key);
+    this.length = this.table.length;
+    return removed;
+  }
+  public mut removeHashed<lifetime a>(key: & HashedUtf8View<a >): V | undefined {
+    const removed = this.table.removeHashedUtf8(key);
+    this.length = this.table.length;
+    return removed;
+  }
+  public mut clear(): void {
+    this.table.clear();
+    this.length = this.table.length;
+  }
+  public mut reserve(minimumCapacity: usize): void throws AllocError {
+    this.table.reserve(minimumCapacity);
+    this.capacity = this.table.capacity;
+  }
+  public mut shrinkToFit(): void throws AllocError {
+    this.table.shrinkToFit();
+    this.capacity = this.table.capacity;
   }
   mut drop(): void {
   }

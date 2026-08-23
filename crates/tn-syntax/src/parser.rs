@@ -766,8 +766,8 @@ impl Parser<'_, '_> {
         self.start(SyntaxKind::GENERIC_ARGUMENT_LIST);
         self.expect(TokenKind::Less);
         loop {
-            if self.eat(TokenKind::Static) {
-                // Static lifetime argument.
+            if self.eat(TokenKind::Static) || self.eat(TokenKind::Scope) {
+                // Explicit lifetime argument.
             } else {
                 self.ty();
             }
@@ -798,11 +798,16 @@ impl Parser<'_, '_> {
             Some(TokenKind::Amp) => {
                 self.bump();
                 if self.at(TokenKind::Identifier)
-                    && matches!(self.nth(1), Some(TokenKind::Identifier | TokenKind::Mut))
+                    && matches!(
+                        self.nth(1),
+                        Some(TokenKind::Identifier | TokenKind::LeftBracket | TokenKind::Mut)
+                    )
                 {
                     self.bump();
                 }
-                self.eat(TokenKind::Static);
+                if !self.eat(TokenKind::Static) {
+                    self.eat(TokenKind::Scope);
+                }
                 self.eat(TokenKind::Mut);
                 self.ty();
             }
@@ -1678,6 +1683,22 @@ function main(): void {
   console.log(value);
 }
 "#,
+        );
+    }
+
+    #[test]
+    fn parses_named_lifetimes_on_slice_references() {
+        assert_parses(
+            "struct View<lifetime a> { public bytes: &a [u8]; }\n\
+             function retain<lifetime a>(bytes: &a [u8]): View<a> { return { bytes: bytes }; }\n",
+        );
+    }
+
+    #[test]
+    fn parses_scope_lifetimes_on_references_and_nominals() {
+        assert_parses(
+            "struct View<lifetime a> { public value: &a i32; }\n\
+             function inspect(value: &scope i32, view: View<scope>): void { value; view; }\n",
         );
     }
 

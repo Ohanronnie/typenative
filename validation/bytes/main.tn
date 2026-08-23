@@ -1,26 +1,119 @@
-import { BytesMut, SliceError } from "std/bytes";
+import { borrow, BytesMut, SliceError } from "std/bytes";
+import { StringMap } from "std/collections";
+
 function main(): i32 {
   let bytes = new BytesMut({
-    capacity: 4usize,
+    capacity: 4usize
   });
   bytes.push(97u8);
   bytes.push(98u8);
   bytes.push(99u8);
-  try {
-    const valid = try bytes.slice(1usize, 3usize);
-    if (valid[0usize] !== 98u8 || valid[1usize] !== 99u8) {
+  {
+    const root = borrow( & bytes);
+    if (root.length() !== 3usize || root.get(0usize)! !== 97u8) {
       return 1i32;
     }
-  } catch (error: SliceError) {
-    return 1i32;
-  }
-  try {
-    const invalid = try bytes.slice(1usize, 4usize);
-    return 3i32;
-  } catch (error: SliceError) {
-    if (error.start !== 1usize || error.end !== 4usize || error.length !== 3usize) {
+    if (root.get(3usize) !== undefined) {
       return 2i32;
     }
-    return 42i32;
+    const empty = root.view(1usize, 1usize)!;
+    if (empty.length() !== 0usize || empty.get(0usize) !== undefined) {
+      return 3i32;
+    }
+    const tail = root.view(1usize, 3usize)!;
+    const nested = tail.view(0usize, 1usize)!;
+    const repeated = root.view(1usize, 2usize)!;
+    if (nested.get(0usize)! !== 98u8 || repeated.get(0usize)! !== 98u8) {
+      return 4i32;
+    }
+    if (root.view(2usize, 4usize) !== undefined) {
+      return 5i32;
+    }
+    const text = tail.utf8()!;
+    const hashedText = tail.hashedUtf8()!;
+    const asciiKeyText = tail.asciiKeyUtf8()!;
+    if (!text.equalsText("bc") || !text.equalsAsciiIgnoreCase("BC")) {
+      return 6i32;
+    }
+    if (!hashedText.equalsText("bc") || hashedText.hash() !== text.hash()) {
+      return 15i32;
+    }
+    if (asciiKeyText.key() !== 144115188075873090u64 || !asciiKeyText.view().equalsText("bc")) {
+      return 18i32;
+    }
+    const owned: string = text.toOwned();
+    if (owned !== "bc") {
+      return 7i32;
+    }
+    let values = new StringMap<string>({
+      capacity: 8usize
+    });
+    values.setBorrowed( & hashedText, string.from("found"));
+    const found = values.get( & text);
+    if (found === undefined || found!.byteLength() !== 5usize) {
+      return 8i32;
+    }
+    const hashedFound = values.getHashed( & hashedText);
+    if (hashedFound === undefined || hashedFound!.byteLength() !== 5usize) {
+      return 16i32;
+    }
   }
+  bytes.discardPrefix(1usize);
+  if (bytes.length !== 2usize || bytes.get(0usize)! !== 98u8) {
+    return 9i32;
+  }
+  let invalid = new BytesMut({
+    capacity: 1usize
+  });
+  invalid.push(255u8);
+  {
+    const invalidView = borrow( & invalid);
+    if (invalidView.utf8() !== undefined) {
+      return 10i32;
+    }
+    if (invalidView.hashedUtf8() !== undefined) {
+      return 17i32;
+    }
+    if (invalidView.asciiKeyUtf8() !== undefined) {
+      return 19i32;
+    }
+  }
+  let multibyte = new BytesMut({
+    capacity: 2usize
+  });
+  multibyte.push(195u8);
+  multibyte.push(169u8);
+  {
+    const multibyteView = borrow( & multibyte);
+    if (multibyteView.utf8() === undefined) {
+      return 23i32;
+    }
+    const multibyteText = multibyteView.asciiKeyUtf8();
+    if (multibyteText === undefined) {
+      return 20i32;
+    }
+    if (multibyteText!.key() !== 0u64) {
+      return 21i32;
+    }
+    if (multibyteView.hashedUtf8() === undefined) {
+      return 22i32;
+    }
+  }
+  try {
+    const valid = try bytes.slice(0usize, 2usize);
+    if (valid[0usize] !== 98u8 || valid[1usize] !== 99u8) {
+      return 11i32;
+    }
+  } catch (error: SliceError) {
+    return 12i32;
+  }
+  try {
+    const invalidSlice = try bytes.slice(1usize, 3usize);
+    return 13i32;
+  } catch (error: SliceError) {
+    if (error.start !== 1usize || error.end !== 3usize || error.length !== 2usize) {
+      return 14i32;
+    }
+  }
+  return 42i32;
 }

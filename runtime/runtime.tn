@@ -803,6 +803,7 @@ export function utf8Validate(bytes: * const u8, length: usize): i32 {
           return 0i32;
         }
         value =(value << 6u32) |((next as u32) & 63u32);
+        index = index + 1usize;
       }
       if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32)) {
         return 0i32;
@@ -811,6 +812,92 @@ export function utf8Validate(bytes: * const u8, length: usize): i32 {
         return 0i32;
       }
     }
+    return 1i32;
+  }
+}
+@Export("tn_utf8_validate_and_hash")
+export function utf8ValidateAndHash(bytes: * const u8, length: usize, hashOutput: * mut u64): i32 {
+  unsafe {
+    if ((length > 0usize && isNullIntrinsic<u8>(bytes)) || isNullIntrinsic<u64>(hashOutput as * const u64)) {
+      return 0i32;
+    }
+    const prime = 4294967291u64;
+    let hash = 2166136261u64;
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const first = byteAt(bytes, offset);
+      hash =(hash +((first as u64) & 255u64) +(offset as u64)) % prime;
+      offset = offset + 1usize;
+      let continuation: usize = 0usize;
+      let value: u32 = 0u32;
+      if (first<128u8) {
+        continue;
+      } else if (first >= 194u8 && first <= 223u8) {
+        continuation = 1usize;
+        value =(first as u32) & 31u32;
+      } else if (first >= 224u8 && first <= 239u8) {
+        continuation = 2usize;
+        value =(first as u32) & 15u32;
+      } else if (first >= 240u8 && first <= 244u8) {
+        continuation = 3usize;
+        value =(first as u32) & 7u32;
+      } else {
+        return 0i32;
+      }
+      if (continuation > length - offset) {
+        return 0i32;
+      }
+      let index: usize = 0usize;
+      while (index !== continuation) {
+        const next = byteAt(bytes, offset);
+        hash =(hash +((next as u64) & 255u64) +(offset as u64)) % prime;
+        offset = offset + 1usize;
+        if ((next & 192u8) !== 128u8) {
+          return 0i32;
+        }
+        value =(value << 6u32) |((next as u32) & 63u32);
+        index = index + 1usize;
+      }
+      if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32)) {
+        return 0i32;
+      }
+      if ((continuation === 2usize && value<2048u32) ||(continuation === 3usize && value<65536u32)) {
+        return 0i32;
+      }
+    }
+    storeRawIntrinsic<u64>(hashOutput, hash +((length as u64) % prime));
+    return 1i32;
+  }
+}
+@Export("tn_utf8_validate_and_ascii_key")
+export function utf8ValidateAndAsciiKey(bytes: * const u8, length: usize, keyOutput: * mut u64): i32 {
+  unsafe {
+    if ((length > 0usize && isNullIntrinsic<u8>(bytes)) || isNullIntrinsic<u64>(keyOutput as * const u64)) {
+      return 0i32;
+    }
+    let key: u64 = 0u64;
+    let offset: usize = 0usize;
+    while (offset !== length) {
+      const first = byteAt(bytes, offset);
+      if (first >= 128u8) {
+        storeRawIntrinsic<u64>(keyOutput, 0u64);
+        return utf8Validate(bytes, length);
+      }
+      if (length <= 7usize) {
+        let folded = first;
+        if (folded >= 97u8 && folded <= 122u8) {
+          folded = folded - 32u8;
+        }
+        key = key |(((folded as u64) & 255u64) <<((offset as u64) * 8u64));
+      }
+      offset = offset + 1usize;
+    }
+    if (length <= 7usize) {
+      key = key |((length as u64) << 56u64);
+    } else {
+      key = 0u64;
+    }
+    storeRawIntrinsic<u64>(keyOutput, key);
     return 1i32;
   }
 }
@@ -1001,6 +1088,77 @@ export function bytesSliceMut(bytes: * mut u8, length: usize, start: usize, end:
     return bytesSlice(bytes as * const u8, length, start, end);
   }
 }
+@Export("tn_bytes_find_crlf")
+export function bytesFindCrlf(bytes: * const u8, length: usize, start: usize): usize {
+  unsafe {
+    if (start >= length || isNullIntrinsic<u8>(bytes)) {
+      return 18446744073709551615usize;
+    }
+    let index = start;
+    while (index + 1usize < length) {
+      if (byteAt(bytes, index) === 13u8 && byteAt(bytes, index + 1usize) === 10u8) {
+        return index;
+      }
+      index += 1usize;
+    }
+    return 18446744073709551615usize;
+  }
+}
+@Export("tn_bytes_has_crlf_at")
+export function bytesHasCrlfAt(bytes: * const u8, length: usize, index: usize): i32 {
+  unsafe {
+    if (index >= length || length - index<2usize || isNullIntrinsic<u8>(bytes)) {
+      return 0i32;
+    }
+    return(byteAt(bytes, index) === 13u8 && byteAt(bytes, index + 1usize) === 10u8)?1i32: 0i32;
+  }
+}
+@Export("tn_bytes_parse_unsigned_line")
+export function bytesParseUnsignedLine(bytes: * const u8, length: usize, start: usize, marker: u8, value: * mut usize, next: * mut usize): i32 {
+  unsafe {
+    if (start >= length || isNullIntrinsic<u8>(bytes)) {
+      return 1i32;
+    }
+    if (byteAt(bytes, start) !== marker) {
+      return 2i32;
+    }
+    const end = bytesFindCrlf(bytes, length, start + 1usize);
+    if (end === 18446744073709551615usize) {
+      return 1i32;
+    }
+    const digits = bytesSlice(bytes, length, start + 1usize, end);
+    let errorOffset: usize = 0usize;
+    if (parseAscii(digits, end - start - 1usize, value,( & mut errorOffset)as * mut usize) !== 0i32) {
+      return 3i32;
+    }
+    storeRawIntrinsic<usize>(next, end + 2usize);
+    return 0i32;
+  }
+}
+function asciiLowerByte(value: u8): u8 {
+  return(value >= 65u8 && value <= 90u8)?value + 32u8: value;
+}
+@Export("tn_bytes_equal_ascii_ignore_case")
+export function bytesEqualAsciiIgnoreCase(left: * const u8, leftLength: usize, right: * const u8): i32 {
+  unsafe {
+    const rightLength = stringLength(right);
+    if (leftLength !== rightLength ||(leftLength > 0usize &&(isNullIntrinsic<u8>(left) || isNullIntrinsic<u8>(right)))) {
+      return 0i32;
+    }
+    let index: usize = 0usize;
+    while (index<leftLength) {
+      if (asciiLowerByte(byteAt(left, index)) !== asciiLowerByte(byteAt(right, index))) {
+        return 0i32;
+      }
+      index += 1usize;
+    }
+    return 1i32;
+  }
+}
+@Export("tn_bytes_equal_string")
+export function bytesEqualString(left: * const u8, leftLength: usize, right: * const u8): i32 {
+  return stringEquals(left, leftLength, right, stringLength(right));
+}
 @Export("tn_bytes_append_ascii")
 export function bytesAppendAscii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize {
   unsafe {
@@ -1011,6 +1169,10 @@ export function bytesAppendAscii(buffer: * mut u8, capacity: usize, length: usiz
     memcpy(destination as * mut u8, text, textLength);
     return length + textLength;
   }
+}
+@Export("tn_bytes_try_append_string")
+export function bytesTryAppendString(buffer: * mut u8, capacity: usize, length: usize, text: * const u8): usize {
+  return bytesAppendAscii(buffer, capacity, length, text, stringLength(text));
 }
 @Export("tn_bytes_append_safe_ascii")
 export function bytesAppendSafeAscii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize {
@@ -1082,30 +1244,26 @@ export function bytesAppendUsize(buffer: * mut u8, capacity: usize, length: usiz
     if (length >= capacity) {
       return 18446744073709551615usize;
     }
-    const scratch = runtimeAlloc(32usize);
     let magnitude = value as u64;
     let count: usize = 0usize;
     if (magnitude === 0u64) {
-      setByte(scratch, 0usize, 48u8);
       count = 1usize;
     } else {
       while (magnitude !== 0u64) {
-        setByte(scratch, count,((magnitude % 10u64)as u8) + 48u8);
         magnitude = magnitude / 10u64;
         count = count + 1usize;
       }
     }
     if (count > capacity - length - 1usize) {
-      runtimeFree(scratch);
       return 18446744073709551615usize;
     }
-    let index: usize = 0usize;
-    while (index !== count) {
-      const source = byteAt(scratch as * const u8, count - index - 1usize);
-      setByte(buffer, length + index, source);
-      index = index + 1usize;
+    magnitude = value as u64;
+    let writeOffset = length + count;
+    while (writeOffset !== length) {
+      writeOffset = writeOffset - 1usize;
+      setByte(buffer, writeOffset,((magnitude % 10u64)as u8) + 48u8);
+      magnitude = magnitude / 10u64;
     }
-    runtimeFree(scratch);
     return length + count;
   }
 }
@@ -1224,6 +1382,23 @@ export function stringHashSlots(value: * const u8): u64 {
       index = index + 1u64;
     }
     return hash +(length % prime);
+  }
+}
+@Export("tn_bytes_hash")
+export function bytesHash(value: * const u8, length: usize): u64 {
+  unsafe {
+    if (isNullIntrinsic<u8>(value)) {
+      return 0u64;
+    }
+    const prime = 4294967291u64;
+    const byteLength = length as u64;
+    let hash = 2166136261u64;
+    let index: u64 = 0u64;
+    while (index !== byteLength) {
+      hash =(hash +(byteAt(value, index as usize)as u64) + index) % prime;
+      index = index + 1u64;
+    }
+    return hash +(byteLength % prime);
   }
 }
 @Export("tn_string_equals_slots")

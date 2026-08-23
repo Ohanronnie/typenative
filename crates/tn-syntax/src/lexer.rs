@@ -111,6 +111,8 @@ pub enum TokenKind {
     Readonly,
     #[token("return")]
     Return,
+    #[token("scope")]
+    Scope,
     #[token("static")]
     Static,
     #[token("struct")]
@@ -1051,6 +1053,7 @@ mod tests {
             ("public", TokenKind::Public),
             ("readonly", TokenKind::Readonly),
             ("return", TokenKind::Return),
+            ("scope", TokenKind::Scope),
             ("static", TokenKind::Static),
             ("struct", TokenKind::Struct),
             ("super", TokenKind::Super),

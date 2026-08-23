@@ -571,10 +571,26 @@ function pairedComparison(leftSamples, rightSamples, metric) {
   const differences = leftSamples.map(
     (sample) => sample[metric] - rightBySample.get(sample.sample),
   );
+  const ratios = leftSamples.map(
+    (sample) => sample[metric] / rightBySample.get(sample.sample),
+  );
+  const ratio = statistics(ratios);
   return {
     metric,
-    direction: "left minus right; positive favors left throughput",
+    direction: metric.includes("Latency")
+      ? "left divided by right; lower favors left latency"
+      : "left divided by right; higher favors left throughput",
     difference: statistics(differences),
+    ratio,
+    fivePercentMargin: {
+      lower: 0.95,
+      upper: 1.05,
+      confidenceIntervalWithinMargin:
+        ratio.confidenceInterval95[0] >= 0.95 &&
+        ratio.confidenceInterval95[1] <= 1.05,
+      confidenceIntervalAtLeastEquivalent:
+        ratio.confidenceInterval95[0] >= 0.95,
+    },
   };
 }
 
@@ -781,6 +797,21 @@ const report = {
       addonResult.samples,
       rustResult.samples,
       "pipelinedPingPerSecond",
+    ),
+    nativeVersusRustNonPipelinedLatency: pairedComparison(
+      nativeResult.samples,
+      rustResult.samples,
+      "nonPipelinedPingLatencyMicroseconds",
+    ),
+    nativeVersusRustSet: pairedComparison(
+      nativeResult.samples,
+      rustResult.samples,
+      "randomSetPerSecond",
+    ),
+    nativeVersusRustGet: pairedComparison(
+      nativeResult.samples,
+      rustResult.samples,
+      "randomGetPerSecond",
     ),
   },
   implementations: results,

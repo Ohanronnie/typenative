@@ -499,7 +499,11 @@ pub fn check_ownership(body: &Body, facts: &OwnershipFacts) -> CheckResult {
                 "MIR_INVALID_BEFORE_BORROW_CHECK",
                 format!(
                     "MIR validation failed before ownership analysis: {}",
-                    errors[0]
+                    errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 ),
                 &span,
                 "the compiler produced invalid generic MIR",
@@ -629,6 +633,13 @@ fn analyze_blocks(body: &Body, facts: &OwnershipFacts) -> Vec<Diagnostic> {
             &block.terminator.span,
             &mut diagnostics,
         );
+        let returned_loans = call_result_loans(
+            body,
+            &block.terminator.kind,
+            &state.loans,
+            &block.terminator.span,
+        );
+        extend_unique(&mut state.loans, returned_loans);
         for successor in ownership_successors(&block.terminator.kind) {
             let Some(entry) = entries.get_mut(successor.0 as usize) else {
                 continue;
@@ -658,6 +669,78 @@ fn analyze_blocks(body: &Body, facts: &OwnershipFacts) -> Vec<Diagnostic> {
             && left.message == right.message
     });
     diagnostics
+}
+
+fn call_result_loans(
+    body: &Body,
+    terminator: &TerminatorKind,
+    loans: &[Loan],
+    origin: &SourceSpan,
+) -> Vec<Loan> {
+    let TerminatorKind::Call {
+        receiver,
+        arguments,
+        destination: Some(destination),
+        ..
+    } = terminator
+    else {
+        return Vec::new();
+    };
+    let Some(destination_type) = body
+        .locals
+        .get(destination.local.0 as usize)
+        .map(|local| &local.ty)
+    else {
+        return Vec::new();
+    };
+    if !contains_non_static_borrow(destination_type) {
+        return Vec::new();
+    }
+    receiver
+        .iter()
+        .chain(arguments)
+        .filter_map(operand_place)
+        .flat_map(|argument| {
+            loans
+                .iter()
+                .filter(move |loan| loan.destination == argument.local)
+                .map(move |loan| Loan {
+                    destination: destination.local,
+                    kind: loan.kind,
+                    place: loan.place.clone(),
+                    origin: origin.clone(),
+                })
+        })
+        .collect()
+}
+
+fn contains_non_static_borrow(ty: &Type) -> bool {
+    match ty {
+        Type::Reference {
+            lifetime, referent, ..
+        } => lifetime != "static" || contains_non_static_borrow(referent),
+        Type::Lifetime(lifetime) => lifetime != "static",
+        Type::Nominal(_, arguments)
+        | Type::DynamicInterface(_, arguments)
+        | Type::Tuple(arguments)
+        | Type::Template(arguments) => arguments.iter().any(contains_non_static_borrow),
+        Type::Optional(inner)
+        | Type::Array(inner, _)
+        | Type::Slice(inner)
+        | Type::RawPointer { pointee: inner, .. } => contains_non_static_borrow(inner),
+        Type::Promise { result, .. } => contains_non_static_borrow(result),
+        Type::Function(function) => {
+            function.parameters.iter().any(contains_non_static_borrow)
+                || contains_non_static_borrow(&function.result)
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::Generic(_)
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => false,
+    }
 }
 
 fn extend_unique<T: PartialEq>(destination: &mut Vec<T>, values: impl IntoIterator<Item = T>) {
@@ -926,7 +1009,7 @@ fn visit_terminator(
             if let Some(value) = value {
                 visit_operand(body, value, facts, loans, moved, span, diagnostics);
                 if let Some(returned) = operand_place(value)
-                    && matches!(body.return_type, Type::Reference { .. })
+                    && contains_non_static_borrow(&body.return_type)
                     && let Some(loan) = loans.iter().find(|loan| loan.destination == returned.local)
                     && !body
                         .locals

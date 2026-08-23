@@ -6133,7 +6133,7 @@ fn builtin_iterable_item(ty: &Type) -> Option<Type> {
 
 fn substitute_mir_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
     match ty {
-        Type::Generic(name) => substitutions
+        Type::Generic(name) | Type::Lifetime(name) => substitutions
             .get(name)
             .cloned()
             .unwrap_or_else(|| ty.clone()),
@@ -6176,7 +6176,13 @@ fn substitute_mir_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Typ
             referent,
         } => Type::Reference {
             mutable: *mutable,
-            lifetime: lifetime.clone(),
+            lifetime: substitutions
+                .get(lifetime)
+                .and_then(|replacement| match replacement {
+                    Type::Lifetime(lifetime) => Some(lifetime.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| lifetime.clone()),
             referent: Box::new(substitute_mir_type(referent, substitutions)),
         },
         Type::RawPointer { mutable, pointee } => Type::RawPointer {
@@ -6202,7 +6208,6 @@ fn substitute_mir_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Typ
         Type::Primitive(_)
         | Type::String
         | Type::Str
-        | Type::Lifetime(_)
         | Type::ErrorUnion(_)
         | Type::Error
         | Type::Unknown => ty.clone(),
@@ -6215,7 +6220,7 @@ fn infer_mir_substitutions(
     substitutions: &mut BTreeMap<String, Type>,
 ) {
     match (template, concrete) {
-        (Type::Generic(name), concrete) => {
+        (Type::Generic(name) | Type::Lifetime(name), concrete) => {
             substitutions
                 .entry(name.clone())
                 .or_insert_with(|| concrete.clone());
@@ -6223,14 +6228,27 @@ fn infer_mir_substitutions(
         (Type::Optional(left), Type::Optional(right))
         | (Type::Array(left, _), Type::Array(right, _))
         | (Type::Slice(left), Type::Slice(right))
-        | (
-            Type::Reference { referent: left, .. },
-            Type::Reference {
-                referent: right, ..
-            },
-        )
         | (Type::RawPointer { pointee: left, .. }, Type::RawPointer { pointee: right, .. })
         | (Type::Promise { result: left, .. }, Type::Promise { result: right, .. }) => {
+            infer_mir_substitutions(left, right, substitutions);
+        }
+        (
+            Type::Reference {
+                lifetime: left_lifetime,
+                referent: left,
+                ..
+            },
+            Type::Reference {
+                lifetime: right_lifetime,
+                referent: right,
+                ..
+            },
+        ) => {
+            if left_lifetime != "scope" && left_lifetime != "static" {
+                substitutions
+                    .entry(left_lifetime.clone())
+                    .or_insert_with(|| Type::Lifetime(right_lifetime.clone()));
+            }
             infer_mir_substitutions(left, right, substitutions);
         }
         (Type::Tuple(left), Type::Tuple(right))
@@ -6570,6 +6588,9 @@ impl MirTypeParser<'_> {
                 let lifetime = if self.kind() == Some(TokenKind::Static) {
                     self.index += 1;
                     "static".into()
+                } else if self.kind() == Some(TokenKind::Scope) {
+                    self.index += 1;
+                    "scope".into()
                 } else if self
                     .text()
                     .is_some_and(|name| self.generics.get(name) == Some(&Namespace::Lifetime))
@@ -6690,8 +6711,10 @@ impl MirTypeParser<'_> {
             return arguments;
         }
         while self.kind().is_some() && self.kind() != Some(TokenKind::Greater) {
-            if self.eat(TokenKind::Static) {
-                arguments.push(Type::Lifetime("static".into()));
+            if matches!(self.kind(), Some(TokenKind::Static | TokenKind::Scope)) {
+                let lifetime = self.text().unwrap_or("scope").to_owned();
+                self.index += 1;
+                arguments.push(Type::Lifetime(lifetime));
             } else if let Some(argument) = self.parse_type() {
                 arguments.push(argument);
             }

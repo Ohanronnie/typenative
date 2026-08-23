@@ -335,6 +335,36 @@ their referent. Object and array destructuring uses the same rules: copied
 inputs copy eligible fields, owned inputs move fields, borrowed inputs create
 corresponding borrows, and partial moves remain visible to drop analysis.
 
+Named lifetime parameters express a borrow carried inside a returned aggregate.
+`scope` names the current non-escaping borrow at a call site, while `static`
+names process-lifetime data. Lifetime arguments have no runtime representation;
+the ownership checker retains the source loan until the aggregate's last use.
+
+`std/bytes` exposes `ByteView<a>` and `Utf8View<a>` for allocation-free parsing
+over `BytesMut`. `borrow(&buffer)` creates a whole-buffer view, `view(start,
+end)` and `subview(start, end)` create checked nested views, and `utf8()`
+validates without copying. Mutation, reserve, or prefix compaction of the owner
+is rejected while a derived view remains live. `Utf8View.toOwned()` is the
+explicit persistence boundary. `hashedUtf8()` produces a validated view with a
+reusable hash, and `asciiKeyUtf8()` adds a collision-free folded key for short
+ASCII identifiers while retaining complete UTF-8 validation. `StringMap<V>`
+accepts owned keys on `set`, borrowed UTF-8 keys on `get` and `remove`, and
+prehashed borrowed keys on `setBorrowed`, `getHashed`, and `removeHashed`.
+
+```tn
+import { borrow, BytesMut } from "std/bytes";
+import { StringMap } from "std/collections";
+
+function lookup<lifetime a>(
+  buffer: &BytesMut,
+  values: &a StringMap<string>,
+): &a string | undefined {
+  const bytes = borrow(buffer);
+  const key = bytes.view(0usize, bytes.length())!.utf8()!;
+  return values.get(&key);
+}
+```
+
 `@Drop` marks compiler-owned deterministic destruction. A destructor cannot
 throw, suspend, move fields, or be called directly. Locals, temporaries,
 partially initialized aggregates, mutex guards, and async state are destroyed

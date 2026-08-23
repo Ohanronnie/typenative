@@ -1,88 +1,115 @@
 import { Arc } from "std/alloc";
 import { run, TaskGroup } from "std/async";
-import { Map } from "std/collections";
+import { appendAscii as appendBytesAscii, appendUnsignedDecimal as appendBytesUnsignedDecimal, BytesMut, push as pushByte } from "std/bytes";
+import { StringMap } from "std/collections";
 import { error as consoleError } from "std/console";
 import { Endpoint, NetworkError, TcpListener, TcpStream } from "std/net";
 import { Mutex } from "std/sync";
-import { Command, RedisError, Reply, RespConnection, } from "./resp";
+import { ParsedCommand, RedisError, RespConnection } from "./resp";
 
-@Sealed final class Database {
-  private state: Map<string, string>;
+@Sealed export final class Database {
+  private state: StringMap<string>;
   public constructor(capacity: usize) {
-    this.state = new Map<string, string>({
-      capacity: capacity,
+    this.state = new StringMap<string>({
+      capacity: capacity
     });
   }
-  public mut execute(command: Command): Reply {
-    if (command.name === "PING") {
-      return Reply.Simple(string.from("PONG"));
+  public mut execute<lifetime a>(command: & ParsedCommand<a>, output: & mut BytesMut,): void {
+    const nameKey = command.nameKey();
+    if (nameKey === 288230377348024656u64) {
+      appendBytesAscii(output, "+PONG\r\n");
+      return;
     }
-    if (command.name === "SET") {
-      const key = command.arguments.removeAt(0usize);
-      const value = command.arguments.removeAt(0usize);
-      if (key === undefined || value === undefined) {
-        return Reply.Error(string.from("ERR SET requires a key and value"));
+    this.executeNamed(nameKey, command, output);
+  }
+  public mut executeNamed<lifetime a>(nameKey: u64, command: & ParsedCommand<a>, output: & mut BytesMut,): void {
+    if (nameKey === 216172782119306579u64) {
+      if (command.count<3usize) {
+        appendBytesAscii(output, "-ERR SET requires a key and value\r\n");
+        return;
       }
-      const setKey = key!;
-      const setValue = value!;
-      this.state.set(move setKey, move setValue);
-      return Reply.Simple(string.from("OK"));
+      const setKeyView = command.hashedPart(1usize)!;
+      const setValueView = command.part(2usize)!;
+      const setValue: string = setValueView.toOwned();
+      this.state.setBorrowed( & setKeyView, move setValue);
+      appendBytesAscii(output, "+OK\r\n");
+      return;
     }
-    if (command.name === "GET") {
-      const key = command.arguments.borrow(0usize);
-      if (key === undefined) {
-        return Reply.Error(string.from("ERR GET requires a key"));
+    if (nameKey === 216172782119306567u64) {
+      if (command.count<2usize) {
+        appendBytesAscii(output, "-ERR GET requires a key\r\n");
+        return;
       }
-      const getKey = key!;
-      const value = this.state.get(getKey);
-      if (value === undefined) {
-        return Reply.Missing;
+      const getKey = command.hashedPart(1usize)!;
+      const getValue = this.state.getHashed( & getKey);
+      if (getValue === undefined) {
+        appendBytesAscii(output, "$-1\r\n");
+        return;
       }
-      return Reply.Bulk(value!.clone());
+      pushByte(output, 36u8);
+      appendBytesUnsignedDecimal(output, getValue!.byteLength());
+      appendBytesAscii(output, "\r\n");
+      appendBytesAscii(output, getValue!.asStr());
+      appendBytesAscii(output, "\r\n");
+      return;
     }
-    if (command.name === "DEL") {
-      const key = command.arguments.borrow(0usize);
-      if (key === undefined) {
-        return Reply.Error(string.from("ERR DEL requires a key"));
+    if (nameKey === 216172782118782276u64) {
+      if (command.count<2usize) {
+        appendBytesAscii(output, "-ERR DEL requires a key\r\n");
+        return;
       }
-      const deleteKey = key!;
-      const removed = this.state.remove(deleteKey);
-      if (removed !== undefined) {
-        return Reply.Integer(1);
+      const deleteKey = command.hashedPart(1usize)!;
+      const removed = this.state.removeHashed( & deleteKey);
+      if (removed === undefined) {
+        appendBytesAscii(output, ":0\r\n");
+      } else {
+        appendBytesAscii(output, ":1\r\n");
       }
-      return Reply.Integer(0);
+      return;
     }
-    return Reply.Error(string.from("ERR unknown command"));
+    appendBytesAscii(output, "-ERR unknown command\r\n");
   }
 }
-function executeLocked(database: & Mutex<Database>, command: Command): Reply {
+function executeLocked<lifetime a>(database: & Mutex<Database>, command: & ParsedCommand<a>, output: & mut BytesMut,): void {
+  const nameKey = command.nameKey();
+  if (nameKey === 288230377348024656u64) {
+    appendBytesAscii(output, "+PONG\r\n");
+    return;
+  }
   using locked = database.lock();
-  const value = locked.getMut();
-  return value.execute(move command);
+  locked.getMut().executeNamed(nameKey, command, output);
 }
 async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,): Promise<void, RedisError> {
   await using connection = new RespConnection(move stream);
+  let output = new BytesMut({
+    capacity: 8192usize
+  });
   try {
-    while (true) {
-      const command = try await connection.readCommand();
-      if (command === undefined) {
-        connection.close();
-        return;
-      }
-      const reply = executeLocked(database.get(), command!);
-      connection.bufferReply(reply);
-      let batchSize: usize = 1usize;
+    while (try await connection.readCommandAvailable()) {
+      let offset: usize = 0usize;
+      let batchSize: usize = 0usize;
       while (batchSize<1024usize) {
-        const buffered = try connection.readBufferedCommand();
-        if (buffered === undefined) {
+        let nextOffset = offset;
+        let complete = false;
+        {
+          const command = try connection.readBufferedCommand(offset);
+          if (command !== undefined) {
+            nextOffset = command!.consumed;
+            executeLocked(database.get(), & command!, & mut output);
+            complete = true;
+          }
+        }
+        if (!complete) {
           break;
         }
-        const bufferedReply = executeLocked(database.get(), buffered!);
-        connection.bufferReply(bufferedReply);
-        batchSize = batchSize + 1usize;
+        offset = nextOffset;
+        batchSize += 1usize;
       }
-      try await connection.flushReplies();
+      connection.consume(offset);
+      try await connection.flush( & mut output);
     }
+    connection.close();
+    return;
   } catch (error: RedisError) {
     connection.close();
     throw error;
@@ -99,7 +126,7 @@ async function serveClientTask(stream: TcpStream, database: Arc<Mutex<Database> 
 export async function serve(endpoint: Endpoint, capacity: usize,): Promise<void, NetworkError> {
   await using listener = try new TcpListener(endpoint);
   using clients = new TaskGroup<RedisError>();
-  const database = new Arc(new Mutex(new Database(capacity),),);
+  const database = new Arc(new Mutex(new Database(capacity)));
   while (true) {
     const stream = try await listener.accept();
     if (!clients.spawn(serveClientTask(move stream, database.clone()))) {
@@ -109,10 +136,10 @@ export async function serve(endpoint: Endpoint, capacity: usize,): Promise<void,
 }
 export async function servePort(port: u16, capacity: usize,): Promise<void, NetworkError> {
   await using listener = try new TcpListener({
-    host: "127.0.0.1", port: port
+    host: "127.0.0.1", port: port,
   });
   using clients = new TaskGroup<RedisError>();
-  const database = new Arc(new Mutex(new Database(capacity),),);
+  const database = new Arc(new Mutex(new Database(capacity)));
   while (true) {
     const stream = try await listener.accept();
     if (!clients.spawn(serveClientTask(move stream, database.clone()))) {
@@ -131,6 +158,6 @@ async function runServer(endpoint: Endpoint, capacity: usize,): Promise<i32, nev
 }
 export function main(): i32 {
   return run(runServer({
-    host: "127.0.0.1", port: 6379u16
-  }, 4096));
+    host: "127.0.0.1", port: 6379u16,
+  }, 4096,),);
 }

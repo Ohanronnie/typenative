@@ -70,7 +70,12 @@
       },
       "maximumTypeNativeRssGrowthKiB": 1024,
       "maximumNativeInitialRssKiB": 3072,
-      "minimumAddonRssGrowthAdvantage": 20
+      "minimumAddonRssGrowthAdvantage": 20,
+      "minimumNativeRustPipelinedRatio": 0.95,
+      "minimumAddonRustPipelinedRatio": 0.9,
+      "minimumNativeRustSetRatio": 0.95,
+      "minimumNativeRustGetRatio": 0.95,
+      "maximumNativeRustLatencyRatio": 1.05
     },
     "http": {
       "fixtureBytes": 1048544,

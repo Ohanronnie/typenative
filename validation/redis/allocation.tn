@@ -1,0 +1,76 @@
+import { BytesMut } from "std/bytes";
+import { Database } from "./redis-server";
+import { parseCommand, RedisError } from "./resp";
+
+declare extern "C" {
+  function tn_runtime_reset_allocation_count(): void;
+  function tn_runtime_allocation_count_i32(): i32;
+  function tn_runtime_free_count(): u64;
+}
+function measure(): i32 throws RedisError {
+  let input = new BytesMut({
+    capacity: 16usize
+  });
+  input.appendAscii("*1\r\n$4\r\nPING\r\n");
+  let output = new BytesMut({
+    capacity: 64usize
+  });
+  let database = new Database(8usize);
+  let setupInput = new BytesMut({
+    capacity: 32usize
+  });
+  setupInput.appendAscii("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n");
+  {
+    const setupCommand = try parseCommand( & setupInput, 0usize)!;
+    database.execute( & setupCommand, & mut output);
+  }
+  output.length = 0usize;
+  let getInput = new BytesMut({
+    capacity: 24usize
+  });
+  getInput.appendAscii("*2\r\n$3\r\nGET\r\n$1\r\nk\r\n");
+  unsafe {
+    tn_runtime_reset_allocation_count();
+  }
+  let iteration: usize = 0usize;
+  while (iteration<1000000usize){{const command = try parseCommand( & input, 0usize)!;
+  database.execute( & command, & mut output);
+  if (output.length !== 7usize) {
+    return 2147483647i32;
+    }}output.length = 0usize;
+    iteration += 1usize;
+  }
+  unsafe {
+    if (tn_runtime_allocation_count_i32() !== 0i32) {
+      return 1i32;
+    }
+    if (tn_runtime_free_count() !== 0u64) {
+      return 2i32;
+    }
+    tn_runtime_reset_allocation_count();
+  }
+  iteration = 0usize;
+  while (iteration<100000usize){{const command = try parseCommand( & getInput, 0usize)!;
+  database.execute( & command, & mut output);
+  if (output.length !== 7usize) {
+    return 2147483647i32;
+    }}output.length = 0usize;
+    iteration += 1usize;
+  }
+  unsafe {
+    if (tn_runtime_allocation_count_i32() !== 0i32) {
+      return 3i32;
+    }
+    if (tn_runtime_free_count() !== 0u64) {
+      return 4i32;
+    }
+    return 0i32;
+  }
+}
+function main(): i32 {
+  try {
+    return try measure();
+  } catch (error: RedisError) {
+    return 2147483647i32;
+  }
+}

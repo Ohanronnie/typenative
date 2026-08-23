@@ -1,26 +1,37 @@
 import { isNull } from "std/alloc";
 import { runI32, TaskGroup } from "std/async";
+import { BytesMut } from "std/bytes";
 import { error as consoleError } from "std/console";
 import { ParseIntegerError } from "std/core";
 import { lookup, lookupU16 } from "std/env";
 import { Endpoint, NetworkError, TcpListener, TcpStream } from "std/net";
-import { Command, RedisError, Reply, RespConnection } from "../redis/resp";
+import { RedisError, RespConnection } from "../redis/resp";
 
 async function serveClient(stream: TcpStream): Promise<void, RedisError> {
   await using connection = new RespConnection(move stream);
-  const command = try await connection.readCommand();
-  if (command === undefined) {
+  if (!(try await connection.readCommandAvailable())) {
     return;
   }
-  let reply = Reply.Error(string.from("ERR unknown forge command"));
-  if (command!.name === "PING") {
-    reply = Reply.Simple(string.from("PONG"));
-  } else if (command!.name === "BUILD") {
-    reply = Reply.Simple(string.from("QUEUED"));
-  } else if (command!.name === "STATUS") {
-    reply = Reply.Simple(string.from("READY"));
+  let output = new BytesMut({
+    capacity: 128usize
+  });
+  let consumed: usize = 0usize;
+  {
+    const command = try connection.readBufferedCommand(0usize)!;
+    consumed = command.consumed;
+    const name = command.part(0usize)!;
+    if (name.equalsAsciiIgnoreCase("PING")) {
+      output.appendAscii("+PONG\r\n");
+    } else if (name.equalsAsciiIgnoreCase("BUILD")) {
+      output.appendAscii("+QUEUED\r\n");
+    } else if (name.equalsAsciiIgnoreCase("STATUS")) {
+      output.appendAscii("+READY\r\n");
+    } else {
+      output.appendAscii("-ERR unknown forge command\r\n");
+    }
   }
-  try await connection.writeReply(reply);
+  connection.consume(consumed);
+  try await connection.flush( & mut output);
 }
 async function serveClientTask(stream: TcpStream): Promise<void, never> {
   try {

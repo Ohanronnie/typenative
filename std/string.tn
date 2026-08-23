@@ -68,6 +68,11 @@ struct OwnedString {
       return sliceFromRawParts<u8>(pointer, tn_string_length(pointer));
     }
   }
+  public byteLength(): usize {
+    unsafe {
+      return tn_string_length(this as * const u8);
+    }
+  }
 }
 declare extern "C" {
   function tn_utf8_decode(bytes: * const u8, length: c_size, offset: c_size, codepoint: * mut u32, next: * mut c_size): i32;

@@ -530,6 +530,9 @@ fn parse_primary_type(
             let lifetime = if cursor.kind() == Some(TokenKind::Static) {
                 cursor.bump();
                 "static".to_owned()
+            } else if cursor.kind() == Some(TokenKind::Scope) {
+                cursor.bump();
+                "scope".to_owned()
             } else if cursor
                 .text()
                 .is_some_and(|name| cursor.generics.get(name) == Some(&Namespace::Lifetime))
@@ -748,9 +751,10 @@ fn parse_generic_arguments(
     let mut arguments = Vec::new();
     cursor.eat(TokenKind::Less);
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::Greater) {
-        if cursor.kind() == Some(TokenKind::Static) {
+        if matches!(cursor.kind(), Some(TokenKind::Static | TokenKind::Scope)) {
+            let lifetime = cursor.text().unwrap_or("scope").to_owned();
             cursor.bump();
-            arguments.push(Type::Lifetime("static".into()));
+            arguments.push(Type::Lifetime(lifetime));
         } else {
             arguments.push(parse_type(cursor, resolver, diagnostics));
         }

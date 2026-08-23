@@ -5,18 +5,34 @@ import { c_size, c_ssize } from "std/ffi";
 declare extern "C" {
   function tn_string_length(bytes: * const u8): c_size;
   function tn_utf8_validate(bytes: * const u8, length: c_size): i32;
+  function tn_utf8_validate_and_hash(bytes: * const u8, length: c_size, hash: * mut u64): i32;
+  function tn_utf8_validate_and_ascii_key(bytes: * const u8, length: c_size, key: * mut u64): i32;
   function tn_bytes_copy(source: * const u8, length: c_size, destination: * mut u8): c_size;
   function tn_bytes_read_u8(bytes: * const u8, length: c_size, index: c_size, value: * mut u8): i32;
   function tn_bytes_read_u8_mut(bytes: * const u8, length: c_size, index: c_size, value: * mut u8): i32;
   function tn_bytes_write_u8(bytes: * mut u8, length: c_size, index: c_size, value: u8): i32;
   function tn_bytes_slice(bytes: * const u8, length: c_size, start: c_size, end: c_size): * const u8;
   function tn_bytes_slice_mut(bytes: * mut u8, length: c_size, start: c_size, end: c_size): * const u8;
+  function tn_bytes_find_crlf(bytes: * const u8, length: c_size, start: c_size): c_size;
+  function tn_bytes_has_crlf_at(bytes: * const u8, length: c_size, index: c_size): i32;
+  function tn_bytes_parse_unsigned_line(bytes: * const u8, length: c_size, start: c_size, marker: u8, value: * mut c_size, next: * mut c_size): i32;
+  function tn_bytes_equal_ascii_ignore_case(left: * const u8, leftLength: c_size, right: * const u8): i32;
+  function tn_bytes_equal_string(left: * const u8, leftLength: c_size, right: * const u8): i32;
   function tn_bytes_move_at(bytes: * mut u8, length: c_size, sourceOffset: c_size, destinationOffset: c_size, count: c_size): i32;
   function tn_bytes_append_ascii(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8, textLength: c_size): c_size;
+  function tn_bytes_try_append_string(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8): c_size;
   function tn_bytes_append_safe_ascii(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8, textLength: c_size): c_size;
   function tn_bytes_append_bytes(buffer: * mut u8, capacity: c_size, length: c_size, source: * const u8, sourceLength: c_size): c_size;
   function tn_bytes_append_decimal(buffer: * mut u8, capacity: c_size, length: c_size, value: c_ssize): c_size;
   function tn_bytes_append_usize(buffer: * mut u8, capacity: c_size, length: c_size, value: c_size): c_size;
+  function tn_bytes_hash(bytes: * const u8, length: c_size): u64;
+  function tn_parse_ascii(bytes: * const u8, length: c_size, value: * mut c_size, offset: * mut c_size): i32;
+  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
+  function tn_string_equals(left: * const u8, leftLength: c_size, right: * const u8, rightLength: c_size): i32;
+}
+@Intrinsic("string_from_raw")
+function stringFromRaw(pointer: * mut u8, length: usize): string {
+  return "";
 }
 function strPointer(text: & str): * const u8 {
   unsafe {
@@ -137,6 +153,284 @@ function sliceError(start: usize, end: usize, length: usize): SliceError {
     appendAscii( & mut this, text);
   }
 }
+@Copy export struct ByteView<lifetime a> {
+  private data: * const u8;
+  private count: usize;
+  public length(): usize {
+    return this.count;
+  }
+  public get(index: usize): u8 | undefined {
+    if (index >= this.length()) {
+      return undefined;
+    }
+    let value: u8 = 0u8;
+    {
+      const output = & mut value;
+      unsafe {
+        tn_bytes_read_u8(this.data, this.count, index, output as * mut u8);
+      }
+    }
+    return value;
+  }
+  public subview(start: usize, end: usize): ByteView<a > throws SliceError {
+    if (start > end || end > this.length()) {
+      throw sliceError(start, end, this.length());
+    }
+    unsafe {
+      return {
+        data: tn_bytes_slice(this.data, this.count, start, end), count: end - start,
+      };
+    }
+  }
+  public view(start: usize, end: usize): ByteView<a > | undefined {
+    if (start > end || end > this.length()) {
+      return undefined;
+    }
+    unsafe {
+      return {
+        data: tn_bytes_slice(this.data, this.count, start, end), count: end - start,
+      };
+    }
+  }
+  public findCrlf(start: usize): usize | undefined {
+    let found: usize = 18446744073709551615usize;
+    unsafe {
+      found = tn_bytes_find_crlf(this.data, this.count, start);
+    }
+    if (found === 18446744073709551615usize) {
+      return undefined;
+    }
+    return found;
+  }
+  public hasCrlfAt(index: usize): bool {
+    unsafe {
+      return tn_bytes_has_crlf_at(this.data, this.count, index) !== 0i32;
+    }
+  }
+  public parseUnsignedLine(start: usize, marker: u8): ParsedUnsignedLine {
+    let value: usize = 0usize;
+    let next: usize = 0usize;
+    let code: i32 = 0i32;
+    {
+      const valueOutput = & mut value;
+      const nextOutput = & mut next;
+      unsafe {
+        code = tn_bytes_parse_unsigned_line(this.data, this.count, start, marker, valueOutput as * mut usize, nextOutput as * mut usize);
+      }
+    }
+    let status = ByteLineStatus.InvalidNumber;
+    if (code === 0i32) {
+      status = ByteLineStatus.Complete;
+    } else if (code === 1i32) {
+      status = ByteLineStatus.Incomplete;
+    } else if (code === 2i32) {
+      status = ByteLineStatus.InvalidMarker;
+    }
+    return {
+      status: status, value: value, next: next
+    };
+  }
+  public isValidUtf8(): bool {
+    unsafe {
+      return tn_utf8_validate(this.pointer(), this.length()) !== 0i32;
+    }
+  }
+  public equalsAsciiIgnoreCase(text: & str): bool {
+    unsafe {
+      return tn_bytes_equal_ascii_ignore_case(this.data, this.count, text as * const u8) !== 0i32;
+    }
+  }
+  public equalsText(text: & str): bool {
+    unsafe {
+      return tn_bytes_equal_string(this.data, this.count, text as * const u8) !== 0i32;
+    }
+  }
+  public hash(): u64 {
+    unsafe {
+      return tn_bytes_hash(this.pointer(), this.length());
+    }
+  }
+  public parseUnsigned(): usize | undefined {
+    let parsed: usize = 0usize;
+    let offset: usize = 0usize;
+    let status: i32 = 0i32;
+    {
+      const output = & mut parsed;
+      const errorOutput = & mut offset;
+      unsafe {
+        status = tn_parse_ascii(this.pointer(), this.length(), output as * mut usize, errorOutput as * mut usize);
+      }
+    }
+    if (status !== 0i32) {
+      return undefined;
+    }
+    return parsed;
+  }
+  public utf8(): Utf8View<a > | undefined {
+    if (!this.isValidUtf8()) {
+      return undefined;
+    }
+    return {
+      data: this.data, count: this.count
+    };
+  }
+  public hashedUtf8(): HashedUtf8View<a > | undefined {
+    let hash: u64 = 0u64;
+    {
+      const output = & mut hash;
+      unsafe {
+        if (tn_utf8_validate_and_hash(this.data, this.count, output as * mut u64) === 0i32) {
+          return undefined;
+        }
+      }
+    }
+    return {
+      text: {
+        data: this.data, count: this.count
+      }, hashValue: hash
+    };
+  }
+  public asciiKeyUtf8(): AsciiKeyUtf8View<a > | undefined {
+    let key: u64 = 0u64;
+    {
+      const output = & mut key;
+      unsafe {
+        if (tn_utf8_validate_and_ascii_key(this.data, this.count, output as * mut u64) === 0i32) {
+          return undefined;
+        }
+      }
+    }
+    return {
+      text: {
+        data: this.data, count: this.count
+      }, keyValue: key
+    };
+  }
+  public toOwnedUtf8(): string | undefined {
+    if (!this.isValidUtf8()) {
+      return undefined;
+    }
+    return copyToOwned(this.pointer(), this.length());
+  }
+  private pointer(): * const u8 {
+    return this.data;
+  }
+}
+@Copy export enum ByteLineStatus {
+  Complete, Incomplete, InvalidMarker, InvalidNumber,
+}
+@Copy export struct ParsedUnsignedLine {
+  public readonly status: ByteLineStatus;
+  public readonly value: usize;
+  public readonly next: usize;
+  public isIncomplete(): bool {
+    return switch(this.status) {
+      case ByteLineStatus.Incomplete: true, default: false,
+    };
+  }
+  public hasInvalidMarker(): bool {
+    return switch(this.status) {
+      case ByteLineStatus.InvalidMarker: true, default: false,
+    };
+  }
+  public hasInvalidNumber(): bool {
+    return switch(this.status) {
+      case ByteLineStatus.InvalidNumber: true, default: false,
+    };
+  }
+}
+@Copy export struct Utf8View<lifetime a> {
+  private data: * const u8;
+  private count: usize;
+  public length(): usize {
+    return this.count;
+  }
+  public get(index: usize): u8 | undefined {
+    if (index >= this.count) {
+      return undefined;
+    }
+    let value: u8 = 0u8;
+    {
+      const output = & mut value;
+      unsafe {
+        tn_bytes_read_u8(this.data, this.count, index, output as * mut u8);
+      }
+    }
+    return value;
+  }
+  public subview(start: usize, end: usize): ByteView<a > throws SliceError {
+    if (start > end || end > this.count) {
+      throw sliceError(start, end, this.count);
+    }
+    unsafe {
+      return {
+        data: tn_bytes_slice(this.data, this.count, start, end), count: end - start,
+      };
+    }
+  }
+  public equalsAsciiIgnoreCase(text: & str): bool {
+    unsafe {
+      return tn_bytes_equal_ascii_ignore_case(this.data, this.count, text as * const u8) !== 0i32;
+    }
+  }
+  public equalsText(text: & str): bool {
+    unsafe {
+      return tn_bytes_equal_string(this.data, this.count, text as * const u8) !== 0i32;
+    }
+  }
+  public hash(): u64 {
+    unsafe {
+      return tn_bytes_hash(this.data, this.count);
+    }
+  }
+  public hashed(): HashedUtf8View<a> {
+    return {
+      text: this, hashValue: this.hash()
+    };
+  }
+  public toOwned(): string {
+    return copyToOwned(this.data, this.count);
+  }
+}
+@Copy export struct HashedUtf8View<lifetime a> {
+  public readonly text: Utf8View<a>;
+  private hashValue: u64;
+  public view(): Utf8View<a> {
+    return this.text;
+  }
+  public hash(): u64 {
+    return this.hashValue;
+  }
+  public equalsText(text: & str): bool {
+    return this.text.equalsText(text);
+  }
+  public toOwned(): string {
+    return this.text.toOwned();
+  }
+}
+@Copy export struct AsciiKeyUtf8View<lifetime a> {
+  public readonly text: Utf8View<a>;
+  private keyValue: u64;
+  public view(): Utf8View<a> {
+    return this.text;
+  }
+  public key(): u64 {
+    return this.keyValue;
+  }
+}
+function copyToOwned(pointer: * const u8, length: usize): string {
+  unsafe {
+    const result = tn_string_from_bytes(pointer, length);
+    return stringFromRaw(result, length);
+  }
+}
+export function borrow<lifetime a>(buffer: & a BytesMut): ByteView<a> {
+  unsafe {
+    return {
+      data: buffer.pointer as * const u8, count: buffer.length
+    };
+  }
+}
 export struct Cursor {
   private bytes: &[u8];
   private offset: usize;
@@ -251,8 +545,15 @@ export function tryReserve(bytes: & mut BytesMut, capacity: usize): bool {
   return true;
 }
 export function appendAscii(bytes: & mut BytesMut, text: & str): void {
-  let textLength: usize = 0usize;
   const textPointer = strPointer(text);
+  unsafe {
+    const appended = tn_bytes_try_append_string(bytes.pointer, bytes.capacity, bytes.length, textPointer);
+    if (appended !== 18446744073709551615usize) {
+      bytes.length = appended;
+      return;
+    }
+  }
+  let textLength: usize = 0usize;
   unsafe {
     textLength = tn_string_length(textPointer);
   }

@@ -1,153 +1,124 @@
 # Active compiler and Redis performance evidence
 
 Evidence date: 2026-08-23. Platform: Darwin arm64, LLVM 22.1.8, Node.js
-v24.14.0. All compiler commands used the Rust-bootstrap `tn` executable through
-`scripts/tn-guarded.sh`; no self-hosted source or product was read by a compiler
-or executed.
+v24.14.0. Every compiler command used the active Rust-bootstrap `tn` through
+`scripts/tn-guarded.sh`; no frozen self-host source or product was compiled,
+read by a compiler, executed, or benchmarked.
 
 ## Method
 
-The Redis comparison uses two warmups and nine measured samples per
-implementation. Both phases use a deterministic Fisher-Yates shuffle with seed
-`324508639`. Every sample starts a fresh server and runs the same RESP2
-correctness suite before timing. The measured workload is 100,000 pipelined
-PINGs, 10,000 non-pipelined PINGs, 10,000 deterministic random SETs, and 10,000
-deterministic random GETs. The pre-timing response checksum is
-`3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad`
-for all 27 measured processes.
+The Redis comparison runs two warmups and nine measured samples for the
+TypeNative executable, TypeNative addon, Rust executable, and handwritten Node
+server. Warmups and samples use a deterministic Fisher-Yates shuffle with seed
+`324508639`. Each fresh server passes the same RESP2 correctness and response
+checksum suite before timing. A sample contains 100,000 pipelined PINGs, 10,000
+non-pipelined PINGs, 10,000 deterministic random SETs, and 10,000 deterministic
+random GETs.
 
-Intervals are two-sided 95% Student-t intervals over nine samples. Dispersion is
-the median absolute deviation (MAD). CPU and syscall counters come from
-`PROC_PIDTASKINFO`; Mach absolute CPU ticks are converted with
-`mach_timebase_info`.
+Intervals are two-sided 95% Student-t intervals over nine paired samples. The
+equivalence gate requires the lower bound of the paired native/Rust PING ratio
+to be at least 0.95. CPU, syscall, and context-switch counters come from
+`PROC_PIDTASKINFO`.
 
 ## Reproduced baseline
 
-| Implementation      | Startup median (ms) | Pipelined PING median (/s) | Pipelined mean 95% CI (/s) | Non-pipelined (/s) | SET (/s) | GET (/s) | RSS growth median (KiB) |
-| ------------------- | ------------------: | -------------------------: | -------------------------: | -----------------: | -------: | -------: | ----------------------: |
-| TypeNative native   |              26.484 |                    556,411 |            546,073–563,770 |             29,642 |   28,212 |   26,841 |                      16 |
-| TypeNative addon    |              79.159 |                    617,976 |            603,414–620,453 |             28,201 |   27,597 |   27,254 |                      16 |
-| Handwritten Node.js |              80.559 |                    656,759 |            644,056–667,901 |             22,630 |   20,735 |   21,120 |                   7,280 |
+| Implementation    | Startup (ms) | PING (/s) | SET (/s) | GET (/s) | Initial RSS (KiB) | RSS growth (KiB) | Artifact (bytes) |
+| ----------------- | -----------: | --------: | -------: | -------: | ----------------: | ---------------: | ---------------: |
+| TypeNative native |       26.662 | 1,017,679 |   26,358 |   27,848 |             2,272 |                0 |          116,064 |
+| TypeNative addon  |       78.827 | 1,042,205 |   29,240 |   29,080 |            44,752 |                0 |          140,184 |
+| Rust native       |       26.637 | 1,833,144 |   30,624 |   30,075 |             2,016 |               16 |          447,752 |
+| Handwritten Node  |       81.122 |   656,625 |   23,173 |   23,062 |            51,072 |            4,784 |              n/a |
 
-The native and addon pipelined intervals were both wholly below the handwritten
-Node interval. All other acceptance metrics already passed.
+The baseline parser created owned part and argument arrays, copied every RESP
+payload into a string, uppercased the command into another string, constructed
+owned command/reply values, cloned GET values for encoding, and executed about
+10.05 runtime allocations per PING. LLVM IR and runtime counters confirmed that
+the allocation/free calls survived optimization.
 
-## Profile-selected optimization
+## Borrowed architecture
 
-The baseline native PING sample collected 3,310 worker-thread samples. Of those,
-1,725 stopped in `send`, 310 in runtime free paths, 213 in runtime allocation,
-102 in async destruction, 81 in `recv`, and 43 in prefix-compaction `memmove`.
-One reply was encoded into a new buffer and sent for every command, even when a
-single read contained a full pipeline.
+The active compiler now carries named lifetime arguments through parsing,
+semantic types, MIR substitution, ownership analysis, ABI matching, and
+monomorphization. `scope` ties returned aggregate views to the current source
+loan. Returning a view of a local owner, mutating or compacting a borrowed
+buffer, or using a view after compaction is rejected causally by ownership
+tests. Lifetime arguments have no runtime layout.
 
-`RespConnection` now owns a reusable output buffer. The server drains up to
-1,024 already-buffered commands, preserves execution and response order, encodes
-their replies into that buffer, and flushes once. It never waits for another
-command to fill a batch. Fragmented input and non-pipelined latency therefore
-retain their prior behavior.
+`ByteView<a>` is a private pointer/length view that can only be created from a
+borrowed owner or another checked view. `Utf8View<a>` proves validation without
+ownership. `HashedUtf8View<a>` and `AsciiKeyUtf8View<a>` retain reusable hash or
+case-folded key evidence beside the safe UTF-8 view. `StringMap<V>` owns keys on
+insertion and accepts borrowed or prehashed UTF-8 views for lookup, removal, and
+the explicit persistent insertion boundary.
 
-A fixed one-million-PING run isolates the server-side effect:
+The RESP parser returns `ParsedCommand<scope>`. It validates every part, keeps
+compact ranges for arbitrary arguments up to the 1,024-part limit, and caches
+the common command/key evidence without arrays or copies. Dispatch writes into
+the retained output buffer. PING uses a static response, GET and DEL borrow
+their keys, GET borrows the stored value, and SET alone creates persistent owned
+key/value storage.
 
-| Metric                  |   Baseline |    Batched | Change |
-| ----------------------- | ---------: | ---------: | -----: |
-| Throughput (/s)         |    549,508 |  2,258,190 |  +311% |
-| Unix syscalls           |  1,004,007 |      8,007 | -99.2% |
-| User CPU (s)            |      0.920 |      0.379 | -58.8% |
-| System CPU (s)          |      0.816 |     0.0277 | -96.6% |
-| Runtime allocations     | 18,013,057 | 10,050,060 | -44.2% |
-| Allocations per command |     18.013 |     10.050 | -44.2% |
-| Context switches        |     15,337 |      2,183 | -85.8% |
-
-The fixed workload rebuilds the pre-change active Redis sources from `HEAD` in a
-temporary tree containing only `benchmarks/redis-comparison/native.tn` and
-`validation/redis/**`. It uses the same active compiler, runtime, and standard
-library as the changed build. Runtime allocation totals are read from the
-existing `tn_runtime_allocation_count` instrumentation with LLDB after the
-workload.
+General runtime changes fuse CRLF/unsigned-line parsing, UTF-8 proof generation
+with hashing or a short ASCII key, case-insensitive comparison, managed-string
+append, and exact CRLF checks. Unsigned decimal reply encoding now writes digits
+backwards in place instead of allocating a scratch buffer.
 
 ## Accepted result
 
-| Implementation      | Startup median (ms) | Pipelined PING median (/s) | MAD (/s) |    Mean 95% CI (/s) | Non-pipelined (/s) | SET (/s) | GET (/s) | Initial RSS median (KiB) | RSS growth median (KiB) |
-| ------------------- | ------------------: | -------------------------: | -------: | ------------------: | -----------------: | -------: | -------: | -----------------------: | ----------------------: |
-| TypeNative native   |              26.752 |                  1,027,485 |    7,790 | 1,017,712–1,034,973 |             29,079 |   28,415 |   27,354 |                    2,176 |                       0 |
-| TypeNative addon    |              79.493 |                  1,039,353 |   11,883 | 1,016,759–1,050,442 |             30,184 |   27,679 |   27,781 |                   44,832 |                      16 |
-| Handwritten Node.js |              80.511 |                    657,655 |    6,831 |     631,267–662,226 |             22,128 |   20,103 |   20,594 |                   51,184 |                   4,784 |
+| Implementation    | Startup (ms) | PING (/s) | Latency (µs) | SET (/s) | GET (/s) | Initial RSS (KiB) | RSS growth (KiB) | Artifact (bytes) |
+| ----------------- | -----------: | --------: | -----------: | -------: | -------: | ----------------: | ---------------: | ---------------: |
+| TypeNative native |       26.531 | 1,863,402 |       34.014 |   27,824 |   28,439 |             2,112 |                0 |           99,648 |
+| TypeNative addon  |       79.084 | 1,860,992 |       33.681 |   28,517 |   28,600 |            44,688 |                0 |          137,976 |
+| Rust native       |       26.569 | 1,914,387 |       32.780 |   28,752 |   29,878 |             2,000 |               16 |          447,752 |
+| Handwritten Node  |       80.492 |   685,369 |       42.132 |   22,024 |   22,422 |            51,024 |            4,736 |              n/a |
 
-The paired native-minus-Node pipelined improvement is 381,150/s at the median;
-its 95% interval is +365,949 to +393,243/s. The addon-minus-Node interval is
-+365,550 to +408,158/s. Native and addon therefore exceed the Node median and
-neither can be classified as slower at 95% confidence.
+Native/Rust median ratios are 97.34% for pipelined PING, 103.76% for latency
+(lower is better), 96.77% for SET, and 95.19% for GET. The paired PING ratio
+median is 97.88%; its 95% confidence interval is 95.39–100.32%, establishing
+equivalence within the required 5% margin. Native PING improved 83.1% from the
+reproduced baseline while the executable became 14.1% smaller.
 
-Median measured server resource counters for the complete timed workload are:
+The addon reaches 97.21% of Rust PING throughput and remains faster than
+handwritten Node for PING, SET, and GET. Its maximum measured RSS growth was 48
+KiB versus Node's 5,056 KiB, more than the required 20× separation.
 
-| Implementation      | User CPU (ms) | System CPU (ms) | Unix syscalls | Context switches | Artifact bytes |
-| ------------------- | ------------: | --------------: | ------------: | ---------------: | -------------: |
-| TypeNative native   |         108.2 |           241.9 |        60,200 |           43,434 |        116,064 |
-| TypeNative addon    |         105.8 |           246.2 |        60,200 |           43,995 |        140,184 |
-| Handwritten Node.js |         391.1 |           428.3 |       220,881 |           71,530 |            n/a |
+Median complete-workload resource counters are:
 
-## Remaining-cost investigation
+| Implementation    | User CPU (ms) | System CPU (ms) | Unix syscalls | Context switches |
+| ----------------- | ------------: | --------------: | ------------: | ---------------: |
+| TypeNative native |          51.2 |           233.4 |        60,200 |           48,516 |
+| TypeNative addon  |          49.5 |           231.3 |        60,200 |           48,230 |
+| Rust native       |          18.8 |           224.7 |        60,800 |           46,188 |
+| Handwritten Node  |         376.2 |           385.8 |       220,872 |           71,929 |
 
-- Socket I/O: after batching, the PING worker sample contains 179 `send` and 247
-  `recv` stops; allocation/free paths are now larger than write calls. The
-  benchmark syscall medians confirm a 3.7x advantage over handwritten Node.
-- RESP parsing, UTF-8, strings, and bounds: the optimized PING sample still shows
-  `tn_string_from_bytes`, `tn_utf8_validate`, `tn_bytes_read_u8`, uppercase
-  conversion, and string free paths. These checks remain intact. They account
-  for much of the remaining 10.05 allocations per command.
-- Hash-map lookup: a separate pipelined SET/GET sample processed 6,266,000
-  commands. Its leading map cost was 499 `tn_string_equals_slots` samples and
-  359 `memcmp` samples; `tn_string_hash_slots` appeared 15 times. SET and GET
-  nevertheless remain faster than handwritten Node in the shuffled acceptance
-  run, so no map-specific change is justified by the acceptance target.
-- Buffer growth and copying: input prefix compaction appears as 149
-  `tn_bytes_move_at` samples in the PING profile and 123 platform `memmove`
-  samples in the SET/GET profile. Output growth is amortized by the retained
-  8-KiB reply buffer. Prefix-index parsing is the next candidate if a future
-  target requires more throughput.
-- Reference counting and drop glue: inspected optimized IR contains one ARC
-  retain/release pair, no RC retain/release pair, 105 runtime allocation calls,
-  121 runtime free calls, and 37 string-free calls. LLVM cannot remove the
-  remaining heap traffic across the external runtime allocation boundary.
-- Locking and scheduling: mutex operations are visible but do not lead either
-  PING profile. The fixed workload's context-switch reduction follows from one
-  async flush per batch instead of one async write per command.
-- Node bridge: the addon main thread remains in `uv_run`; the TypeNative worker
-  has the same allocation, parse, compaction, and socket shape as the native
-  executable. The exported async `serve` call crosses Node-API once at startup;
-  there is no per-command bridge crossing.
-- LLVM optimization: an independent `default<O2>` pass inspection reports 195
-  successful inlines and 62 `TooCostly` inline misses. GVN reports 1,256
-  clobbered loads and LICM reports 295 loop-invariant addresses invalidated by
-  possible stores. These are consistent with externally visible allocation,
-  buffer, and runtime calls rather than a missing global optimization switch.
-  The active pipeline already uses `default<O2>` and an aggressive target
-  machine.
-- Escape and dead allocation behavior: the optimized IR still contains the
-  allocation/free calls above, and allocation instrumentation confirms they
-  execute. They are not dead allocations hidden by the benchmark. Removing
-  command-string ownership would require a validated borrowed-command lifetime
-  design; it is not needed to meet the current targets.
+Compared with the reproduced native baseline, user CPU fell from 111.0 ms to
+51.2 ms and system CPU fell from 244.6 ms to 233.4 ms. The fixed socket workload
+keeps the same 60,200 syscall count; the performance gain comes from removing
+owned parser/dispatch work rather than moving cost into I/O.
 
-Instruments `xctrace` was attempted in both attach and launch modes with the
-Allocations template. This host denied target attachment in both modes and
-saved failed traces. Process sampling, `PROC_PIDTASKINFO`, runtime allocation
-instrumentation, LLDB, LLVM IR, and optimization records supply the reported
-evidence without weakening the workload or protocol.
+## Allocation and memory proof
 
-## Compiler phases
+`validation/redis/allocation.tn` initializes input/output buffers, persistent
+database state, and map capacity before resetting both runtime counters. The
+actual parser and `Database.execute` path then processes one million PINGs with
+exactly zero allocations and zero frees. A second reset followed by 100,000
+existing-key GETs also records zero allocations and zero frees, proving that
+lookup, stored-value encoding, and unsigned length encoding do not hide balanced
+heap traffic. The million-PING RSS sampler is flat after warmup in both debug
+and optimized profiles.
 
-| Product | Mode            | Wall (s) | Module check (ms) | Ownership (ms) | MIR/drop (ms) | Monomorphization (ms) | LLVM/link (ms) |
+SET retains only the allocations required for persistent owned key/value state
+and map growth. GET never clones the stored value.
+
+## Compiler timings
+
+| Product | Build           | Wall (s) | Module check (ms) | Ownership (ms) | MIR/drop (ms) | Monomorphization (ms) | LLVM/link (ms) |
 | ------- | --------------- | -------: | ----------------: | -------------: | ------------: | --------------------: | -------------: |
-| Addon   | clean           |    32.30 |             462.5 |            2.9 |       2,127.8 |                   6.0 |       25,746.3 |
-| Addon   | unchanged-input |    31.68 |             482.5 |            3.0 |       2,036.2 |                   3.4 |       25,276.8 |
-| Native  | clean           |    37.77 |             480.9 |            3.0 |       2,059.6 |                   3.2 |       31,227.5 |
-| Native  | unchanged-input |    37.59 |             474.4 |            2.9 |       2,109.5 |                   3.0 |       31,056.5 |
+| Addon   | clean           |    35.02 |             553.1 |            2.9 |       2,472.8 |                   2.2 |       27,296.9 |
+| Addon   | unchanged input |    35.22 |             581.2 |            3.0 |       2,509.4 |                   2.2 |       27,368.7 |
+| Native  | clean           |    43.01 |             564.0 |            2.9 |       2,523.2 |                   2.4 |       35,176.6 |
+| Native  | unchanged input |    42.36 |             562.8 |            2.9 |       2,523.1 |                   2.3 |       34,542.0 |
 
-Every measured active compiler invocation is below 38 seconds, well under the
-175-second alarm. The active compiler does not currently persist an incremental
-module cache, so the unchanged-input measurement records warm filesystem and
-existing-output behavior without claiming skipped compiler phases.
-
-Generated raw evidence is retained under
-`target/performance-evidence/redis-batching/`; the directory is ignored by Git.
+Every measured active compiler invocation is below 44 seconds, well below the
+175-second guard. Generated raw evidence remains under the ignored
+`target/performance-evidence/borrowed-redis/` directory until final cleanup.

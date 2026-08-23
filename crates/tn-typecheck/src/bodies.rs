@@ -89,8 +89,7 @@ pub fn check_bodies_with_ownership(
                             definition
                                 .generics
                                 .iter()
-                                .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
-                                .map(|parameter| Type::Generic(parameter.name.clone()))
+                                .map(generic_identity_type)
                                 .collect(),
                         )),
                         &callable,
@@ -112,8 +111,7 @@ pub fn check_bodies_with_ownership(
                             definition
                                 .generics
                                 .iter()
-                                .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
-                                .map(|parameter| Type::Generic(parameter.name.clone()))
+                                .map(generic_identity_type)
                                 .collect(),
                         )),
                         &callable,
@@ -134,8 +132,7 @@ pub fn check_bodies_with_ownership(
                             definition
                                 .generics
                                 .iter()
-                                .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
-                                .map(|parameter| Type::Generic(parameter.name.clone()))
+                                .map(generic_identity_type)
                                 .collect(),
                         )
                     });
@@ -161,8 +158,7 @@ pub fn check_bodies_with_ownership(
                     definition
                         .generics
                         .iter()
-                        .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
-                        .map(|parameter| Type::Generic(parameter.name.clone()))
+                        .map(generic_identity_type)
                         .collect(),
                 );
                 for method in methods {
@@ -2466,10 +2462,12 @@ impl BodyChecker<'_> {
                 ty = base.clone();
             }
         }
-        if let Some((mutable, lifetime)) = borrowed_receiver
-            && !matches!(ty, Type::Function(_))
-        {
-            ty = borrowed_field_type(self.ownership_facts, ty, mutable, lifetime);
+        if let Some((mutable, lifetime)) = borrowed_receiver {
+            if let Type::Function(function) = &mut ty {
+                *function.result = relate_elided_lifetime(&function.result, lifetime);
+            } else {
+                ty = borrowed_field_type(self.ownership_facts, ty, mutable, lifetime);
+            }
         }
         let callable = member.callable;
         let chain = optional || receiver.optional_chain_value.is_some();
@@ -2733,10 +2731,25 @@ impl BodyChecker<'_> {
         Some(match self.kind()? {
             TokenKind::Amp => {
                 self.bump();
+                let lifetime = if self.kind() == Some(TokenKind::Static) {
+                    self.bump();
+                    "static".into()
+                } else if self.kind() == Some(TokenKind::Scope) {
+                    self.bump();
+                    "scope".into()
+                } else if self.text().is_some_and(|name| {
+                    self.generic_namespace(name) == Some(tn_hir::Namespace::Lifetime)
+                }) {
+                    let lifetime = self.text()?.to_owned();
+                    self.bump();
+                    lifetime
+                } else {
+                    "scope".into()
+                };
                 let mutable = self.eat(TokenKind::Mut);
                 Type::Reference {
                     mutable,
-                    lifetime: "scope".into(),
+                    lifetime,
                     referent: Box::new(self.parse_local_primary_type()?),
                 }
             }
@@ -2785,22 +2798,12 @@ impl BodyChecker<'_> {
                         result: Box::new(result),
                         effects,
                     }
-                } else if self
-                    .function
-                    .generics
-                    .iter()
-                    .any(|parameter| parameter.name == name)
-                    || self
-                        .program
-                        .definition(self.owner)
-                        .is_some_and(|definition| {
-                            definition.generics.iter().any(|parameter| {
-                                parameter.namespace == tn_hir::Namespace::Type
-                                    && parameter.name == name
-                            })
-                        })
-                {
-                    Type::Generic(name)
+                } else if let Some(namespace) = self.generic_namespace(&name) {
+                    match namespace {
+                        tn_hir::Namespace::Lifetime => Type::Lifetime(name),
+                        tn_hir::Namespace::Type => Type::Generic(name),
+                        _ => Type::Error,
+                    }
                 } else {
                     let resolved = primitive(&name).or_else(|| self.resolve_type_name(&name))?;
                     match resolved {
@@ -2855,7 +2858,11 @@ impl BodyChecker<'_> {
             return arguments;
         }
         while self.kind().is_some() && self.kind() != Some(TokenKind::Greater) {
-            if let Some(argument) = self.parse_local_type() {
+            if matches!(self.kind(), Some(TokenKind::Static | TokenKind::Scope)) {
+                let lifetime = self.text().unwrap_or("scope").to_owned();
+                self.bump();
+                arguments.push(Type::Lifetime(lifetime));
+            } else if let Some(argument) = self.parse_local_type() {
                 arguments.push(argument);
             }
             if !self.eat(TokenKind::Comma) {
@@ -2864,6 +2871,25 @@ impl BodyChecker<'_> {
         }
         self.eat(TokenKind::Greater);
         arguments
+    }
+
+    fn generic_namespace(&self, name: &str) -> Option<tn_hir::Namespace> {
+        self.function
+            .generics
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .map(|parameter| parameter.namespace)
+            .or_else(|| {
+                self.program
+                    .definition(self.owner)
+                    .and_then(|definition| {
+                        definition
+                            .generics
+                            .iter()
+                            .find(|parameter| parameter.name == name)
+                    })
+                    .map(|parameter| parameter.namespace)
+            })
     }
 
     fn require_bool(&mut self, value: Option<ExpressionType>) {
@@ -3965,7 +3991,7 @@ fn is_string_like(ty: &Type) -> bool {
 
 fn infer_substitutions(parameter: &Type, argument: &Type, inferred: &mut BTreeMap<String, Type>) {
     match (parameter, argument) {
-        (Type::Generic(name), argument) => {
+        (Type::Generic(name) | Type::Lifetime(name), argument) => {
             inferred
                 .entry(name.clone())
                 .or_insert_with(|| argument.clone());
@@ -3992,14 +4018,24 @@ fn infer_substitutions(parameter: &Type, argument: &Type, inferred: &mut BTreeMa
         }
         (
             Type::Reference {
+                lifetime: parameter_lifetime,
                 referent: parameter,
                 ..
             },
             Type::Reference {
-                referent: argument, ..
+                lifetime: argument_lifetime,
+                referent: argument,
+                ..
             },
-        )
-        | (
+        ) => {
+            if parameter_lifetime != "scope" && parameter_lifetime != "static" {
+                inferred
+                    .entry(parameter_lifetime.clone())
+                    .or_insert_with(|| Type::Lifetime(argument_lifetime.clone()));
+            }
+            infer_substitutions(parameter, argument, inferred);
+        }
+        (
             Type::RawPointer {
                 pointee: parameter, ..
             },
@@ -4013,7 +4049,7 @@ fn infer_substitutions(parameter: &Type, argument: &Type, inferred: &mut BTreeMa
 
 fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
     match ty {
-        Type::Generic(name) => substitutions
+        Type::Generic(name) | Type::Lifetime(name) => substitutions
             .get(name)
             .cloned()
             .unwrap_or_else(|| ty.clone()),
@@ -4054,7 +4090,13 @@ fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
             referent,
         } => Type::Reference {
             mutable: *mutable,
-            lifetime: lifetime.clone(),
+            lifetime: substitutions
+                .get(lifetime)
+                .and_then(|replacement| match replacement {
+                    Type::Lifetime(lifetime) => Some(lifetime.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| lifetime.clone()),
             referent: Box::new(substitute_type(referent, substitutions)),
         },
         Type::RawPointer { mutable, pointee } => Type::RawPointer {
@@ -4080,7 +4122,6 @@ fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
         Type::Primitive(_)
         | Type::String
         | Type::Str
-        | Type::Lifetime(_)
         | Type::ErrorUnion(_)
         | Type::Error
         | Type::Unknown => ty.clone(),
@@ -4297,6 +4338,42 @@ fn borrowed_field_type(facts: &OwnershipFacts, ty: Type, mutable: bool, lifetime
             referent: Box::new(ty),
         },
         ty => ty,
+    }
+}
+
+fn relate_elided_lifetime(ty: &Type, receiver_lifetime: &str) -> Type {
+    match ty {
+        Type::Reference {
+            mutable,
+            lifetime,
+            referent,
+        } => Type::Reference {
+            mutable: *mutable,
+            lifetime: if lifetime == "scope" {
+                receiver_lifetime.to_owned()
+            } else {
+                lifetime.clone()
+            },
+            referent: Box::new(relate_elided_lifetime(referent, receiver_lifetime)),
+        },
+        Type::Nominal(id, arguments) => Type::Nominal(
+            *id,
+            arguments
+                .iter()
+                .map(|argument| relate_elided_lifetime(argument, receiver_lifetime))
+                .collect(),
+        ),
+        Type::Lifetime(lifetime) if lifetime == "scope" => {
+            Type::Lifetime(receiver_lifetime.to_owned())
+        }
+        Type::Optional(inner) => {
+            Type::Optional(Box::new(relate_elided_lifetime(inner, receiver_lifetime)))
+        }
+        Type::Promise { result, effects } => Type::Promise {
+            result: Box::new(relate_elided_lifetime(result, receiver_lifetime)),
+            effects: effects.clone(),
+        },
+        _ => ty.clone(),
     }
 }
 
@@ -5333,11 +5410,18 @@ fn specialize_nominal_member_type(program: &Program, owner: &Type, ty: &Type) ->
     let substitutions = definition
         .generics
         .iter()
-        .filter(|parameter| parameter.namespace == tn_hir::Namespace::Type)
         .zip(arguments)
         .map(|(parameter, argument)| (parameter.name.clone(), argument.clone()))
         .collect::<BTreeMap<_, _>>();
     substitute_type(ty, &substitutions)
+}
+
+fn generic_identity_type(parameter: &tn_hir::GenericParameter) -> Type {
+    match parameter.namespace {
+        tn_hir::Namespace::Lifetime => Type::Lifetime(parameter.name.clone()),
+        tn_hir::Namespace::Type => Type::Generic(parameter.name.clone()),
+        _ => Type::Error,
+    }
 }
 
 fn function_type(function: &Function) -> Type {

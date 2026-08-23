@@ -82,6 +82,18 @@ fn source_program_with_workspace_standard_library(source: &str) -> tn_hir::Progr
     tn_hir::lower_program(graph).expect("lower ownership source fixture")
 }
 
+fn ownership_conditions_with_workspace_standard_library(source: &str) -> Vec<String> {
+    let program = source_program_with_workspace_standard_library(source);
+    let facts = tn_typecheck::derive_ownership_facts(&program);
+    let checked = tn_typecheck::check_bodies_with_ownership(&program, &facts);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    tn_typecheck::lower_mir_with_ownership(&program, &checked.bodies, &facts)
+        .iter()
+        .flat_map(|body| tn_typecheck::check_ownership(body, &facts).diagnostics)
+        .map(|diagnostic| diagnostic.condition.as_str().to_owned())
+        .collect()
+}
+
 #[test]
 fn lowers_intrinsic_string_instance_calls_as_direct_methods() {
     let program = source_program_with_workspace_standard_library(
@@ -792,6 +804,85 @@ async function suspended(pending: Promise<void, never>): Promise<void, never> {
     assert!(diagnostics.contains(&"OWNERSHIP_MOVE_FROM_BORROW".into()));
     assert!(diagnostics.contains(&"OWNERSHIP_RETURNED_LOCAL_REFERENCE".into()));
     assert!(diagnostics.contains(&"OWNERSHIP_BORROW_ACROSS_SUSPEND".into()));
+}
+
+#[test]
+fn returned_lifetime_aggregate_keeps_the_source_loan_live() {
+    let diagnostics = ownership_conditions_with_workspace_standard_library(
+        r"
+struct View<lifetime a> { public value: &a i32; }
+function retain<lifetime a>(value: &a i32): View<a> {
+  return { value: value };
+}
+function consume<lifetime a>(view: &View<a>): void {
+  view.value;
+}
+function rejected(): void {
+  let value = 1i32;
+  const view = retain(&value);
+  value = 2i32;
+  consume(&view);
+}
+function accepted(): void {
+  let value = 1i32;
+  const view = retain(&value);
+  consume(&view);
+  value = 2i32;
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "OWNERSHIP_WRITE_DURING_BORROW")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn byte_views_prevent_compaction_until_the_last_use() {
+    let diagnostics = ownership_conditions_with_workspace_standard_library(
+        r#"
+import { borrow, ByteView, BytesMut } from "std/bytes";
+function consume<lifetime a>(view: &ByteView<a>): void {
+  view.get(0usize);
+}
+function rejected(): void {
+  let buffer = new BytesMut({ capacity: 8usize });
+  const view = borrow(&buffer);
+  buffer.discardPrefix(1usize);
+  consume(&view);
+}
+function accepted(): void {
+  let buffer = new BytesMut({ capacity: 8usize });
+  const view = borrow(&buffer);
+  consume(&view);
+  buffer.discardPrefix(1usize);
+}
+function escaped(): ByteView<scope> {
+  let buffer = new BytesMut({ capacity: 8usize });
+  return borrow(&buffer);
+}
+"#,
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "OWNERSHIP_WRITE_DURING_BORROW")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "OWNERSHIP_RETURNED_LOCAL_REFERENCE")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
 }
 
 #[test]
