@@ -48,11 +48,20 @@ time_stage() {
 }
 
 time_stage compiler scripts/verify-design.sh
+time_stage freeze scripts/verify-selfhost-freeze.sh
+time_stage freeze scripts/verify-ledger.sh docs/implementation-ledger.json docs/selfhost-debt.json
+time_stage freeze scripts/verify-active-boundary.sh
 time_stage compiler sh scripts/check-direct-llvm-backend.sh
 time_stage compiler scripts/check-toolchain.sh
 time_stage compiler scripts/check-native-sources.sh
+time_stage compiler scripts/verify-hostile-paths.sh
+time_stage compiler scripts/verify-strings.sh
+time_stage compiler scripts/verify-collections.sh
+time_stage compiler scripts/verify-channel.sh
+time_stage compiler scripts/verify-ownership.sh
+time_stage compiler scripts/verify-llvm-atomics.sh
 time_stage compiler cargo fmt --all -- --check
-time_stage compiler env TYPENATIVE_TN_BIN="$compiler" TYPENATIVE_RUNTIME_ROOT="$root" "$tn_guard" fmt --check runtime std validation benchmarks/http-log-analyzer
+time_stage compiler env TYPENATIVE_TN_BIN="$compiler" TYPENATIVE_RUNTIME_ROOT="$root" "$tn_guard" fmt --check runtime std validation benchmarks/json-parser benchmarks/redis-comparison benchmarks/http-log-analyzer benchmarks/performance
 time_stage compiler scripts/check-foreign-syntax.sh
 for source in "$root"/std/*.tn; do
   [ -f "$source" ] || continue
@@ -71,7 +80,6 @@ if [ -n "${TYPENATIVE_RUNTIME_SOURCE:-}" ]; then
 else
   case "$(uname -s):$(uname -m)" in
     Darwin:arm64) runtime_source=$root/runtime/platform/darwin-arm64.tn ;;
-    Linux:x86_64) runtime_source=$root/runtime/platform/linux-x86_64.tn ;;
     *) echo "unsupported host; set TYPENATIVE_RUNTIME_SOURCE" >&2; exit 2 ;;
   esac
 fi
@@ -98,17 +106,17 @@ time_log() {
 }
 
 printf '%s\n' 'verify-parallel: cli stdlib runtime time fs debug-info c-abi node redis-and-sanitizers'
-(time_log tests-cli env TN_BIN="$tn_guard" scripts/verify-cli.sh) & cli_pid=$!
-(time_log tests-stdlib env TN_BIN="$tn_guard" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) & stdlib_pid=$!
-(time_log tests-runtime env TN_BIN="$tn_guard" scripts/verify-runtime.sh) & runtime_pid=$!
-(time_log tests-time env TN_BIN="$tn_guard" scripts/verify-time.sh) & time_pid=$!
-(time_log tests-fs env TN_BIN="$tn_guard" scripts/verify-fs.sh) & fs_pid=$!
-(time_log tests-debug-info env TN_BIN="$tn_guard" scripts/verify-debug-info.sh) & debug_info_pid=$!
-(time_log tests-abi env TN_BIN="$tn_guard" scripts/verify-c-abi.sh) & c_abi_pid=$!
-(time_log tests-node env TN_BIN="$tn_guard" scripts/verify-node.sh) & node_pid=$!
+(time_log tests-cli env TN_BIN="$compiler" scripts/verify-cli.sh) & cli_pid=$!
+(time_log tests-stdlib env TN_BIN="$compiler" TN_SKIP_SOURCE_CHECKS=1 scripts/verify-stdlib.sh) & stdlib_pid=$!
+(time_log tests-runtime env TN_BIN="$compiler" scripts/verify-runtime.sh) & runtime_pid=$!
+(time_log tests-time env TN_BIN="$compiler" scripts/verify-time.sh) & time_pid=$!
+(time_log tests-fs env TN_BIN="$compiler" scripts/verify-fs.sh) & fs_pid=$!
+(time_log tests-debug-info env TN_BIN="$compiler" scripts/verify-debug-info.sh) & debug_info_pid=$!
+(time_log tests-abi env TN_BIN="$compiler" scripts/verify-c-abi.sh) & c_abi_pid=$!
+(time_log tests-node env TN_BIN="$compiler" scripts/verify-node.sh) & node_pid=$!
 run_redis_checks() {
-  (time_log benchmarks env TN_BIN="$tn_guard" scripts/verify-redis.sh)
-  (time_log sanitizers env TN_BIN="$tn_guard" scripts/run-sanitizers.sh)
+  (time_log benchmarks env TN_BIN="$compiler" scripts/verify-redis.sh)
+  (time_log sanitizers env TN_BIN="$compiler" scripts/run-sanitizers.sh)
 }
 
 (run_redis_checks) & redis_pid=$!
@@ -141,11 +149,21 @@ rm -r -- "$parallel_dir"
 trap - EXIT
 [ "$parallel_failed" -eq 0 ] || exit 1
 
+time_stage benchmarks env TN_BIN="$compiler" scripts/verify-performance-budgets.sh
+
 if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list 2>/dev/null | rg -q '^nightly'; then
-  time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run lexer -- -runs=10000 -max_len=4096 -timeout=5"
-  time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run parser -- -runs=10000 -max_len=4096 -timeout=5"
+  fuzz_targets='lexer parser formatter hir_mir node_bridge resp utf8 collections'
+  for fuzz_target in $fuzz_targets; do
+    corpus_dir="$root/fuzz/corpus/$fuzz_target"
+    if [ ! -d "$corpus_dir" ] || ! rg --files "$corpus_dir" | rg -q .; then
+      printf '%s\n' "fuzz corpus missing for $fuzz_target" >&2
+      exit 1
+    fi
+    time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run $fuzz_target -- -runs=10000 -max_len=4096 -timeout=5 -print_final_stats=1"
+  done
 else
-  printf '%s\n' 'fuzzing=unavailable (cargo-fuzz/nightly not installed)'
+  printf '%s\n' 'fuzzing=unavailable (cargo-fuzz/nightly not installed)' >&2
+  exit 1
 fi
 
 printf '%s\n' 'verification-matrix=pass'

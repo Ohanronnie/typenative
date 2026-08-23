@@ -15,6 +15,14 @@ if [ -z "$tn_bin" ] || [ ! -x "$tn_bin" ]; then
   echo "tn compiler not found; set TN_BIN" >&2
   exit 2
 fi
+tn_guard="$root/scripts/tn-guarded.sh"
+if [ "$tn_bin" = "$tn_guard" ]; then
+  tn_bin=${TYPENATIVE_TN_BIN:-}
+fi
+[ -x "$tn_bin" ] || { echo "tn compiler is not executable: $tn_bin" >&2; exit 2; }
+compiler=$tn_bin
+export TYPENATIVE_TN_BIN="$compiler"
+tn_bin="$tn_guard"
 case "$tn_bin" in
   */*) ;;
   *) echo "TN_BIN must resolve to an executable path" >&2; exit 2 ;;
@@ -25,25 +33,11 @@ trap 'rm -rf "$work"' EXIT
 runtime_object="$work/runtime.o"
 
 guarded() {
-  started=$(date +%s)
   if [ -s "$runtime_object" ]; then
-    if TYPENATIVE_RUNTIME_ROOT="$root" TYPENATIVE_RUNTIME_OBJECT="$runtime_object" perl -e 'alarm 175; exec @ARGV' -- "$@"; then
-      status=0
-    else
-      status=$?
-    fi
-  elif TYPENATIVE_RUNTIME_ROOT="$root" perl -e 'alarm 175; exec @ARGV' -- "$@"; then
-    status=0
+    TYPENATIVE_RUNTIME_ROOT="$root" TYPENATIVE_RUNTIME_OBJECT="$runtime_object" "$tn_guard" "$@"
   else
-    status=$?
+    TYPENATIVE_RUNTIME_ROOT="$root" "$tn_guard" "$@"
   fi
-  finished=$(date +%s)
-  elapsed=$((finished - started))
-  if [ "$elapsed" -ge 175 ]; then
-    echo "TypeNative compiler command reached the 175-second guard: $*" >&2
-    return 124
-  fi
-  return "$status"
 }
 
 if [ -n "${TYPENATIVE_RUNTIME_SOURCE:-}" ]; then
@@ -51,7 +45,6 @@ if [ -n "${TYPENATIVE_RUNTIME_SOURCE:-}" ]; then
 else
   case "$(uname -s):$(uname -m)" in
     Darwin:arm64) runtime_source=$root/runtime/platform/darwin-arm64.tn ;;
-    Linux:x86_64) runtime_source=$root/runtime/platform/linux-x86_64.tn ;;
     *) echo "unsupported host; set TYPENATIVE_RUNTIME_SOURCE" >&2; exit 2 ;;
   esac
 fi
@@ -98,3 +91,5 @@ for addon in "$work/exports.node" "$work/classes.node" "$work/classes-fallible.n
     exit 1
   fi
 done
+
+"$root/scripts/check-direct-llvm-backend.sh" "$work"

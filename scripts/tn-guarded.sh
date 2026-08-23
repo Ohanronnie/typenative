@@ -5,6 +5,9 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 compiler=${TYPENATIVE_TN_BIN:-}
 if [ "$#" -gt 0 ] && [ "$1" = "$0" ]; then
   shift
+elif [ "$#" -gt 0 ] && [ -f "$1" ] && [ -x "$1" ]; then
+  compiler=$1
+  shift
 fi
 if [ -z "$compiler" ]; then
   [ "$#" -gt 0 ] || { echo "TypeNative compiler path is required" >&2; exit 2; }

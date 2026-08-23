@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "checkpoint": "20d75142562839528b021ff9e7c6784dbc20483a",
+  "files": {
+    "compiler-tn/backend.tn": "5753160269916b446c76a34ff29a4a6f82aa52b54872c08d41d13d2dfcec5aaf",
+    "compiler-tn/borrow.tn": "c0c1b7134be8e27e1b8da0b081a857254540754bce426e69411b3afe0c08eb4d",
+    "compiler-tn/codegen.tn": "c1ffd624191502626f5c594697e0828b6c70a785d8c365de315f2665e2b00b45",
+    "compiler-tn/collections.tn": "b0c2f5023704471cd509c3b2221cac01e6e48f3470255f36e76bf989c66ba630",
+    "compiler-tn/diagnostics.tn": "972280d706b3a40a31e43b0bb59af8722afe852afb8501f7428779df3fa9f744",
+    "compiler-tn/direct_codegen.tn": "991f06482887e15e88890266b2a93aaa9c68356784ce52946d5c884f6242faea",
+    "compiler-tn/direct_ir.tn": "5956d494f6d59da7a3af7f40b380be45951ac74b5f3c054135d8c35df905ee72",
+    "compiler-tn/driver.tn": "bae9d9693f66a0d22074214502254a05431e6fc74deb22bbaa7bb0ceb6a6bb63",
+    "compiler-tn/formatter.tn": "acbde78bc67776e619afb1aabfb39820a70022fc237a6f905462c98e87b36d0c",
+    "compiler-tn/hir.tn": "f8e75cedada7cc7815fdec2b29507f5368b9e783c7deca5c594715760721207a",
+    "compiler-tn/lexer.tn": "1827349ffde8af10f068eebd03292c1f715380620062540c881c77de8b6df204",
+    "compiler-tn/llvm.tn": "1f69e15589c3d0cc8d79c8b1d9e1d34d8e7676495ebce4b9f3b95061a84e6a1a",
+    "compiler-tn/lowering.tn": "ccd864b16c8d675c50c2790e04c94422fde31ff0ca4c4a4e439da7e4a6d2ba58",
+    "compiler-tn/main.tn": "6372f125f9c182317393467e217fd06d9f9d50a79d1cec7c6b6f710680c93971",
+    "compiler-tn/mir.tn": "f1aaccab73dab3e7cca4bf65489a51f8feaaf5815051266eb9a0aad783497922",
+    "compiler-tn/parser.tn": "29f50f06e48b5a8ee36e3b7c36efa0263856dc5ac61372f0d45192dbe9546446",
+    "compiler-tn/semantic.tn": "5d941debcb0e6bcd07df957c6e407a8f3a6fcdc2ac0ea8717105caedc67ac920",
+    "compiler-tn/support.tn": "c6a4c65ca644c00a27035b390f053662bb15c7961960f5ed8053caf7e25867f7",
+    "compiler-tn/tooling.tn": "273296df674a9ad7e3f1aca99d32a940c3740f63e70cd557c2b91914a5844249",
+    "scripts/bootstrap-self-host.sh": "942237ad425e0e6bb88986032cb43196fc4f4d4d06322b11d806edd9484b01d8"
+  }
+}

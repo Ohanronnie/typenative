@@ -12,6 +12,14 @@ if [ ! -x "$tn" ]; then
   tn=$(command -v tn || true)
 fi
 [ -x "$tn" ] || { echo "tn compiler not found; set TN_BIN" >&2; exit 2; }
+tn_guard="$root/scripts/tn-guarded.sh"
+if [ "$tn" = "$tn_guard" ]; then
+  tn=${TYPENATIVE_TN_BIN:-}
+fi
+[ -x "$tn" ] || { echo "tn compiler is not executable: $tn" >&2; exit 2; }
+compiler=$tn
+export TYPENATIVE_TN_BIN="$compiler"
+tn="$tn_guard"
 
 empty=/tmp/typenative-fs-empty
 one=/tmp/typenative-fs-one-byte

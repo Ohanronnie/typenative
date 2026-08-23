@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "scope": "frozen-selfhost",
+  "checkpoint": "20d75142562839528b021ff9e7c6784dbc20483a",
+  "rows": [
+    {
+      "id": "SH-FROZEN-001",
+      "scope": "frozen-selfhost",
+      "severity": "critical",
+      "root_cause": "The historical self-host implementation retains token-scanning and legacy semantic shortcuts that are outside the active Rust compiler contract.",
+      "affected_files": ["compiler-tn/**"],
+      "red_regression": {
+        "command": "not-run-by-freeze-contract",
+        "expected": "remains historical debt until explicit resumption"
+      },
+      "verification_command": "scripts/verify-selfhost-freeze.sh",
+      "evidence": {
+        "source": "freeze manifest records the immutable source set",
+        "llvm": "not-applicable: frozen compiler is not executed",
+        "behavioral": "not-run-by-freeze-contract"
+      },
+      "disposition": "open"
+    },
+    {
+      "id": "SH-FROZEN-002",
+      "scope": "frozen-selfhost",
+      "severity": "critical",
+      "root_cause": "Historical self-host build and bootstrap paths are not evidence for active direct-LLVM products and are intentionally excluded from remediation execution.",
+      "affected_files": ["compiler-tn/**", "scripts/bootstrap-self-host.sh"],
+      "red_regression": {
+        "command": "not-run-by-freeze-contract",
+        "expected": "remains historical debt until explicit resumption"
+      },
+      "verification_command": "scripts/verify-selfhost-freeze.sh",
+      "evidence": {
+        "source": "freeze manifest records every frozen path and digest",
+        "llvm": "not-applicable: frozen compiler is not executed",
+        "behavioral": "not-run-by-freeze-contract"
+      },
+      "disposition": "open"
+    }
+  ]
+}

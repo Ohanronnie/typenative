@@ -12,6 +12,14 @@ if [ ! -x "$tn" ]; then
   tn=$(command -v tn || true)
 fi
 [ -x "$tn" ] || { echo "tn compiler not found; set TN_BIN or build with cargo" >&2; exit 2; }
+tn_guard="$root/scripts/tn-guarded.sh"
+if [ "$tn" = "$tn_guard" ]; then
+  tn=${TYPENATIVE_TN_BIN:-}
+fi
+[ -x "$tn" ] || { echo "tn compiler is not executable: $tn" >&2; exit 2; }
+compiler=$tn
+export TYPENATIVE_TN_BIN="$compiler"
+tn="$tn_guard"
 work=$(mktemp -d "${TMPDIR:-/tmp}/typenative-stdlib.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
@@ -58,6 +66,8 @@ for profile in debug optimized; do
   run_status 42 "$work/collections-$profile"
   "$tn" build "$root/validation/stdlib/alloc.tn" --profile "$profile" --out "$work/alloc-$profile" >/dev/null
   run_status 42 "$work/alloc-$profile"
+  "$tn" build "$root/validation/bytes/main.tn" --profile "$profile" --out "$work/bytes-$profile" >/dev/null
+  run_status 42 "$work/bytes-$profile"
   "$tn" build "$root/validation/io/main.tn" --profile "$profile" --out "$work/io-$profile" >/dev/null
   run_status 0 "$work/io-$profile"
 done

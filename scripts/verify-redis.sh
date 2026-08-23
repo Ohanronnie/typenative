@@ -18,13 +18,20 @@ if [ ! -x "$tn" ]; then
   tn=$(command -v tn || true)
 fi
 [ -x "$tn" ] || { echo "tn compiler not found; set TN_BIN or build with cargo" >&2; exit 2; }
+tn_guard="$root/scripts/tn-guarded.sh"
+if [ "$tn" = "$tn_guard" ]; then
+  tn=${TYPENATIVE_TN_BIN:-}
+fi
+[ -x "$tn" ] || { echo "tn compiler is not executable: $tn" >&2; exit 2; }
+compiler=$tn
+export TYPENATIVE_TN_BIN="$compiler"
+tn="$tn_guard"
 
 sanitizer=${REDIS_SANITIZER:-}
-link_argument=
 case "$sanitizer" in
   "") ;;
-  address-undefined) link_argument=-fsanitize=address,undefined ;;
-  thread) link_argument=-fsanitize=thread ;;
+  address-undefined) ;;
+  thread) ;;
   *)
     echo "REDIS_SANITIZER must be empty, address-undefined, or thread" >&2
     exit 2
@@ -46,11 +53,19 @@ port=${REDIS_PORT:-6389}
 build_redis() {
   profile=$1
   output=$2
-  if [ -n "$link_argument" ]; then
-    "$tn" build "$root/validation/redis/main-alt.tn" --profile "$profile" --out "$output" --link-argument="$link_argument"
-  else
-    "$tn" build "$root/validation/redis/main-alt.tn" --profile "$profile" --out "$output"
-  fi
+  case "$sanitizer" in
+    "")
+      "$tn" build "$root/validation/redis/main-alt.tn" --profile "$profile" --out "$output"
+      ;;
+    address-undefined)
+      "$tn" build "$root/validation/redis/main-alt.tn" --profile "$profile" --out "$output" \
+        --sanitize address --sanitize undefined
+      ;;
+    thread)
+      "$tn" build "$root/validation/redis/main-alt.tn" --profile "$profile" --out "$output" \
+        --sanitize thread
+      ;;
+  esac
 }
 build_redis debug "$work/redis-debug"
 build_redis optimized "$work/redis-optimized"

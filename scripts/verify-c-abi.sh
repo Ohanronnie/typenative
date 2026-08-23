@@ -24,6 +24,14 @@ if [ -z "$tn_bin" ] || [ ! -x "$tn_bin" ]; then
   echo "tn compiler not found; set TN_BIN" >&2
   exit 2
 fi
+tn_guard="$root/scripts/tn-guarded.sh"
+if [ "$tn_bin" = "$tn_guard" ]; then
+  tn_bin=${TYPENATIVE_TN_BIN:-}
+fi
+[ -x "$tn_bin" ] || { echo "tn compiler is not executable: $tn_bin" >&2; exit 2; }
+compiler=$tn_bin
+export TYPENATIVE_TN_BIN="$compiler"
+tn_bin="$tn_guard"
 work=$(mktemp -d "${TMPDIR:-/tmp}/typenative-c-abi.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
@@ -31,10 +39,6 @@ case "$(uname -s):$(uname -m)" in
   Darwin:arm64)
     library_suffix=.dylib
     nm_mode=darwin
-    ;;
-  Linux:x86_64)
-    library_suffix=.so
-    nm_mode=linux
     ;;
   *)
     echo "unsupported host for C ABI verification: $(uname -s) $(uname -m)" >&2

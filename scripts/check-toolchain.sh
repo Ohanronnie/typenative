@@ -27,7 +27,6 @@ fi
 prefix=$($llvm_config --prefix)
 case $(uname -s):$(uname -m) in
   Darwin:arm64) target=aarch64-apple-darwin ;;
-  Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
   *)
     echo "LLVM_TOOLCHAIN_UNSUPPORTED_HOST: $(uname -s) $(uname -m)" >&2
     exit 1

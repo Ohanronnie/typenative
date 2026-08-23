@@ -1,0 +1,389 @@
+{
+  "format": 1,
+  "authority": "specification",
+  "checkpoint": "20d75142562839528b021ff9e7c6784dbc20483a",
+  "protected_file": "benchmarks/json-parser/results.json",
+  "protected_file_sha256": "634c57f2f3b53be3bd51912b3321026a80f0099043b50f6dc0b53587d485634d",
+  "rows": [
+    {
+      "id": "TN-ATTR-001",
+      "scope": "active",
+      "severity": "high",
+      "root_cause": "Attributes are stored and validated as open strings, so bare Send and Sync are accepted without a registered semantic consumer.",
+      "affected_files": [
+        "crates/tn-hir/src/lib.rs",
+        "crates/tn-hir/src/module_graph.rs",
+        "crates/tn-typecheck/src/source_rules.rs",
+        "crates/tn-typecheck/src/ownership.rs"
+      ],
+      "red_regression": {
+        "command": "cargo test -p tn-typecheck --test signatures bare_send_and_sync_attributes_are_rejected",
+        "expected": "fails because bare @Send and @Sync are accepted"
+      },
+      "verification_command": "cargo test -p tn-typecheck --test signatures bare_send_and_sync_attributes_are_rejected && cargo test -p tn-typecheck --test signatures send_and_sync_implementations_require_an_explicit_unsafe_boundary",
+      "evidence": {
+        "source": "tn-hir carries a closed AttributeKind registry; source validation rejects unknown bare Send/Sync attributes, while ownership accepts only explicit unsafe conformance and otherwise derives the marker structurally.",
+        "llvm": "not-applicable: declaration validation has no LLVM product",
+        "behavioral": "Both signature regressions pass: bare @Send/@Sync are rejected and explicit unsafe conformance is required while safe structural implementations remain accepted."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-ABI-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "C ABI validation accepts language strings, wide or target-sized language integers, and arbitrary raw pointers instead of the specification's closed C boundary set.",
+      "affected_files": [
+        "crates/tn-typecheck/src/source_rules.rs",
+        "crates/tn-driver/src/build.rs"
+      ],
+      "red_regression": {
+        "command": "cargo test -p tn-typecheck --test signatures c_abi_rejects_language_only_and_wide_types",
+        "expected": "fails because string and i128 foreign parameters are accepted"
+      },
+      "verification_command": "cargo test -p tn-typecheck --test signatures lowers_canonical_foreign_declarations_and_rejects_non_c_abis && cargo test -p tn-typecheck --test signatures c_abi_rejects_language_only_and_wide_types",
+      "evidence": {
+        "source": "tn-typecheck::is_c_abi_type admits only valid C scalars, raw pointers/function pointers, and recursively valid @Layout(\"C\") aggregates; foreign declarations reject language strings, language-wide integers, references, classes, effects, unsupported callbacks, and variadics.",
+        "llvm": "The accepted canonical foreign declaration is exercised by the typecheck regression; rejected boundary types produce no LLVM, so no LLVM evidence applies to those negative cases.",
+        "behavioral": "cargo test -p tn-typecheck --test signatures lowers_canonical_foreign_declarations_and_rejects_non_c_abis and c_abi_rejects_language_only_and_wide_types pass. scripts/verify-c-abi.sh passes layout and call behavior."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-INTRINSIC-001",
+      "scope": "active",
+      "severity": "high",
+      "root_cause": "Intrinsic authorization uses path suffixes and still names frozen self-host support files instead of resolved bundled module identity and declaration identity.",
+      "affected_files": [
+        "crates/tn-typecheck/src/source_rules.rs",
+        "crates/tn-hir/src/module_graph.rs"
+      ],
+      "red_regression": {
+        "command": "cargo test -p tn-typecheck --test signatures intrinsic_authorization_rejects_project_path_suffixes",
+        "expected": "fails because a project module with a matching suffix can be authorized"
+      },
+      "verification_command": "cargo test -p tn-typecheck --test signatures intrinsic_authorization_rejects_project_path_suffixes",
+      "evidence": {
+        "source": "Intrinsic checks resolve the bundled standard-library module identity and declaration identity before allowing a registered intrinsic; a project path with a matching suffix is not authorized.",
+        "llvm": "not-applicable: rejected declarations produce no LLVM",
+        "behavioral": "cargo test -p tn-typecheck --test signatures intrinsic_authorization_rejects_project_path_suffixes passes with TYPE_INVALID_ATTRIBUTE_TARGET for the forged project module."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-DROP-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "@Drop target validation does not enforce one private mutable non-throwing non-async drop method with a void result and no forbidden moves or direct calls.",
+      "affected_files": [
+        "crates/tn-typecheck/src/source_rules.rs",
+        "crates/tn-typecheck/src/signatures.rs",
+        "crates/tn-hir/src/lib.rs"
+      ],
+      "red_regression": {
+        "command": "cargo test -p tn-typecheck --test signatures drop_requires_exact_private_mutable_nonthrowing_method",
+        "expected": "fails because missing, public, static, throwing, and async destructors are not rejected by one exact rule"
+      },
+      "verification_command": "cargo test -p tn-typecheck --test signatures drop_requires_exact_private_mutable_nonthrowing_method",
+      "evidence": {
+        "source": "Source-rule validation requires exactly one private mutable drop(): void method and rejects public/protected/static/generic/throwing/async/direct-call and field-moving destructor forms; HIR records the validated destructor target.",
+        "llvm": "not-applicable: invalid destructor declarations are rejected before LLVM; valid drop glue is covered by scripts/verify-ownership.sh.",
+        "behavioral": "cargo test -p tn-typecheck --test signatures drop_requires_exact_private_mutable_nonthrowing_method passes across missing, duplicate, visibility, mutability, generic, throwing, async, direct-call, and field-move cases."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-OWN-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Promise ownership classification checks the result type but ignores all declared error alternatives when deriving Send, Sync, and drop facts.",
+      "affected_files": ["crates/tn-typecheck/src/ownership.rs"],
+      "red_regression": {
+        "command": "cargo test -p tn-typecheck --test ownership promise_error_alternatives_participate_in_thread_safety",
+        "expected": "fails because a non-thread-safe error alternative is ignored"
+      },
+      "verification_command": "cargo test -p tn-typecheck --test ownership promise_error_alternatives_participate_in_thread_safety",
+      "evidence": {
+        "source": "OwnershipFacts::is_send and is_sync recursively require both Promise result and every declared error effect; structural marker derivation applies the same rule.",
+        "llvm": "not-applicable: ownership fact derivation precedes code generation",
+        "behavioral": "cargo test -p tn-typecheck --test ownership promise_error_alternatives_participate_in_thread_safety passes: Promise<i32, UnsafeError> is neither Send nor Sync while Promise<i32, never> is both."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-OWN-002",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Owning allocation wrappers release raw storage or shared control blocks without typed destruction of the value, and shared counts do not model last-owner control-block reclamation.",
+      "affected_files": [
+        "crates/tn-typecheck/src/mir_lower.rs",
+        "crates/tn-codegen-llvm/src/lib.rs",
+        "std/alloc.tn",
+        "runtime/runtime.tn",
+        "validation/stdlib/alloc.tn"
+      ],
+      "red_regression": {
+        "command": "scripts/verify-ownership.sh",
+        "expected": "fails because Box, Rc, Arc, and Weak cleanup has no joint typed-drop and exact free-count evidence"
+      },
+      "verification_command": "scripts/verify-ownership.sh",
+      "evidence": {
+        "source": "std/alloc.tn calls the compiler-owned dropValue<T> intrinsic before Box storage release and before the final Rc/Arc control-block release. runtime/runtime.tn separates strong, external weak, and implicit weak ownership, checks allocation/count overflow, and exposes an explicit final control-block destroy operation.",
+        "llvm": "The guarded ownership LLVM product contains tn_string_free, tn_ref_retain, tn_ref_release, tn_ref_destroy, and drop.string calls for the generic string payload; the source scan rejects Box freeing its payload storage without the preceding dropValue call.",
+        "behavioral": "scripts/verify-ownership.sh exits 0. validation/stdlib/alloc.tn exits 42 after measured free-count checks for Box<string> (2 frees), Arc<string> with clone/downgrade/upgrade (5 frees including class objects), and Rc<string> with clone (2 frees)."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-INLINE-001",
+      "scope": "active",
+      "severity": "medium",
+      "root_cause": "Inline is accepted by source validation but is not carried through HIR and LLVM function attributes.",
+      "affected_files": [
+        "crates/tn-hir/src/lib.rs",
+        "crates/tn-driver/src/build.rs",
+        "crates/tn-codegen-llvm/src/lib.rs"
+      ],
+      "red_regression": {
+        "command": "cargo test -p tn-codegen-llvm --test lowering carries_inline_attribute_to_direct_llvm_function",
+        "expected": "fails because the generated LLVM function has no inlinehint attribute"
+      },
+      "verification_command": "cargo test -p tn-codegen-llvm --test lowering carries_inline_attribute_to_direct_llvm_function",
+      "evidence": {
+        "source": "Inline is a registered HIR attribute carried into Layouts::inlines and applied to direct body and wrapper declarations by the active LLVM backend.",
+        "llvm": "cargo test -p tn-codegen-llvm --test lowering carries_inline_attribute_to_direct_llvm_function passes and asserts inlinehint in verified emitted LLVM.",
+        "behavioral": "The direct LLVM lowering regression passes without generated-C or self-host involvement."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-ATOMIC-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Runtime atomic APIs are ordinary load/add/store functions and do not emit atomic LLVM operations or memory-order semantics.",
+      "affected_files": [
+        "runtime/runtime.tn",
+        "std/core.tn",
+        "std/thread.tn",
+        "crates/tn-codegen-llvm/src/lib.rs",
+        "crates/tn-codegen-llvm/tests/lowering.rs",
+        "validation/sync/atomics.tn",
+        "scripts/verify-llvm-atomics.sh"
+      ],
+      "red_regression": {
+        "command": "scripts/tn-guarded.sh check runtime/runtime.tn && cargo test -p tn-codegen-llvm --test atomic",
+        "expected": "fails because the active atomic path has no real atomic operation evidence"
+      },
+      "verification_command": "cargo test -p tn-codegen-llvm --test atomic && scripts/verify-llvm-atomics.sh",
+      "evidence": {
+        "source": "std/core.tn exposes private AtomicI32, AtomicU64, and AtomicUsize storage with explicit MemoryOrder methods; std/thread.tn routes the unsafe worker entry through the pointer-preserving pthread bridge. The Rust LLVM backend maps the intrinsic operations to validated atomic load/store, atomicrmw add, cmpxchg, and fence builders with order checks.",
+        "llvm": "cargo test -p tn-codegen-llvm --test lowering lowers_atomic_load_store_rmw_cmpxchg_and_fence_to_llvm passes and asserts load atomic, store atomic, atomicrmw add, cmpxchg, and fence seq_cst. The guarded validation/sync/atomics.tn product contains load atomic i32, store atomic i32, atomicrmw add, cmpxchg, !dbg source locations, and a direct tn_thread_spawn_raw_pointer declaration.",
+        "behavioral": "scripts/verify-llvm-atomics.sh passes a four-worker regression with 250000 fetchAdd operations per worker, verifies the final value is 1000000, then checks store, load, compareExchange, and SeqCst behavior."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-STRING-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Ordinary TypeNative string operations recover length with strlen, which truncates values at embedded NUL bytes.",
+      "affected_files": [
+        "runtime/runtime.tn",
+        "std/string.tn",
+        "std/fmt.tn",
+        "std/path.tn",
+        "std/bytes.tn",
+        "std/ffi.tn",
+        "crates/tn-codegen-llvm/src/lib.rs",
+        "validation/string/main.tn",
+        "validation/string/embedded-nul.tn",
+        "validation/string/cstring.tn",
+        "validation/node/exports.tn",
+        "validation/node/check.mjs",
+        "scripts/verify-strings.sh"
+      ],
+      "red_regression": {
+        "command": "scripts/tn-guarded.sh build validation/strings/embedded-nul.tn --profile debug --out /tmp/typenative-embedded-nul",
+        "expected": "fails because the embedded-NUL equality/hash/format round trip is not length-aware"
+      },
+      "verification_command": "scripts/verify-strings.sh",
+      "evidence": {
+        "source": "runtime/runtime.tn stores an explicit length in every TypeNative string header, compares and hashes using that length, and no longer declares or calls strlen. std/string.tn and std/bytes.tn use the length-aware runtime path for clone, byte views, UTF-8 validation, append, and slices; std/ffi.tn reports the first interior NUL offset.",
+        "llvm": "The guarded embedded-NUL product contains tn_string_length, tn_string_equals, typed hash witnesses, and tn_string_from_bytes with debug locations, while scripts/verify-strings.sh rejects @strlen imports/calls in the emitted LLVM and active TypeNative source.",
+        "behavioral": "scripts/verify-strings.sh passes validation/string/main.tn, validation/string/embedded-nul.tn, and validation/string/cstring.tn. The regressions preserve a\\0b through equality, clone, uppercase, byte access, typed Map hashing/lookup, BytesMut append, invalid UTF-8 rejection, and exact CString interior-NUL offset 1. scripts/verify-node.sh also passes an echoString Node round trip for a\\0b."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-PROCESS-001",
+      "scope": "active",
+      "severity": "high",
+      "root_cause": "The active process API previously accepted one flattened command string and Child.drop signaled a live child instead of retaining explicit termination ownership.",
+      "affected_files": [
+        "std/process.tn",
+        "runtime/runtime.tn",
+        "validation/process/main.tn",
+        "scripts/verify-hostile-paths.sh"
+      ],
+      "red_regression": {
+        "command": "scripts/verify-hostile-paths.sh",
+        "expected": "fails because argv boundaries and Child.drop behavior are not proven"
+      },
+      "verification_command": "scripts/verify-hostile-paths.sh",
+      "evidence": {
+        "source": "std/process.tn now stores owned argv elements in private Command state, keeps Child process/waited state private, makes Child.drop inert, and exposes explicit kill; runtime/runtime.tn copies argv pointers and calls fork/execvp without a shell.",
+        "llvm": "The guarded build emits a direct call to tn_process_spawn_argv(ptr, i64); the active process path contains no tn_process_spawn(, system(, or popen( call.",
+        "behavioral": "scripts/verify-hostile-paths.sh exits 0 and compares exact output for spaces, apostrophes, semicolons, dollar signs, tabs, and embedded newlines; the executable returns 42 after wait and drop cleanup."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-NODE-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Node addon builds still render generated C wrappers and invoke clang instead of emitting the typed bridge directly through the active LLVM backend.",
+      "affected_files": [
+        "crates/tn-node-api/src/lib.rs",
+        "crates/tn-driver/src/build.rs",
+        "crates/tn-codegen-llvm/src/lib.rs"
+      ],
+      "red_regression": {
+        "command": "scripts/check-direct-llvm-backend.sh",
+        "expected": "fails because the Node product path contains generated C compilation"
+      },
+      "verification_command": "scripts/check-direct-llvm-backend.sh && scripts/verify-node.sh",
+      "evidence": {
+        "source": "tn-node-api produces a typed BridgePlan; tn-driver sends it to emit_node_bridge_to_file_with_sanitizers and the LLVM backend emits Node-API callbacks, cleanup, declarations, and finalizers directly without generated C source or a C compiler subprocess.",
+        "llvm": "scripts/check-direct-llvm-backend.sh passes its repository-wide scan; TN_NODE_BRIDGE_IR contains direct Node-API declarations, compiler-owned sanitizer hooks, and !dbg locations sourced from the TypeNative entry file.",
+        "behavioral": "scripts/verify-node.sh passes exports, strings/Bytes/Arrays/optionals, classes, typed errors, async completion, forced GC, declarations, and direct-LLVM scans."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-CHANNEL-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "The generic Channel surface is backed by an i32-specific byte-copy runtime entry point and retains a public ChannelI32 shortcut.",
+      "affected_files": ["runtime/runtime.tn", "std/sync.tn"],
+      "red_regression": {
+        "command": "cargo test -p tn-typecheck --test signatures generic_channel_uses_its_element_layout",
+        "expected": "fails because the current public API still exposes the i32-only channel path"
+      },
+      "verification_command": "scripts/verify-channel.sh",
+      "evidence": {
+        "source": "std/sync.tn exposes only generic Channel<T>; send moves T through storeElement, receive moves T through moveElement, and destruction calls dropInitializedElements over the runtime-owned initialized bitmap. runtime/runtime.tn reserves and commits slots under the channel mutex and frees storage plus the bitmap only after destruction.",
+        "llvm": "The guarded channel LLVM product contains tn_channel_send_index_begin and tn_channel_receive_index_begin, store.element and move.element lowering, and drop.elements glue; it contains no tn_channel_send( or tn_channel_receive( byte-copy call.",
+        "behavioral": "scripts/verify-channel.sh exits 0. validation/sync/channel.tn builds and exits 42 after moving strings into and out of a bounded channel, closing and draining it, and destroying a queued string through typed drop glue. The verifier also rejects ChannelI32, channelI32, sendI32, and receiveI32 in active sources."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-COLLECTION-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Map lookup and rehashing use byte comparisons and runtime special cases instead of typed Hash and Equal protocols with ownership-aware moves.",
+      "affected_files": [
+        "runtime/runtime.tn",
+        "std/collections.tn",
+        "crates/tn-typecheck/src/mir_lower.rs",
+        "crates/tn-codegen-llvm/src/lib.rs",
+        "validation/collections/ownership.tn",
+        "scripts/verify-collections.sh"
+      ],
+      "red_regression": {
+        "command": "scripts/verify-collections.sh",
+        "expected": "fails because custom collisions, protocol dispatch, and exactly-once destruction are not jointly proven"
+      },
+      "verification_command": "scripts/verify-collections.sh",
+      "evidence": {
+        "source": "std/collections.tn uses a typed open-addressed table with bounded occupancy, initialized-slot bitmaps, Hash/Equal protocol dispatch, typed move/store/drop operations, tombstones, insertion-order sequence numbers, and the same table implementation for Map, Set, OrderedMap, and OrderedSet. Replacement moves the incoming key and value through storeElement so both prior fields are destroyed exactly once; removal uses dropElement for the key and moveElement for the returned value.",
+        "llvm": "The guarded collection LLVM products contain tn_builtin_hash_ and tn_builtin_equal_ witnesses, typed getelementptr-based slot access, store.element.drop, drop.element.address, and drop.element.initialized.address. The verifier rejects tn_map_, memcmp, and string-only slot shortcuts.",
+        "behavioral": "scripts/verify-collections.sh exits 0. The guarded validation set exits 42 for primitive, ordered, collision-heavy custom protocol, and ownership cases. validation/collections/ownership.tn measures exact free counts across replacement (12), removal (11), clear (12), reserve plus shrink (24), and early iterator cleanup (15), while checking typed values and capacity state."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-SAN-001",
+      "scope": "active",
+      "severity": "critical",
+      "root_cause": "Sanitizer coverage was configured only at link time, so TypeNative-generated application, runtime, and bridge LLVM had no compiler-owned instrumentation proof.",
+      "affected_files": [
+        "crates/tn-codegen-llvm/src/lib.rs",
+        "crates/tn-driver/src/project.rs",
+        "crates/tn-driver/src/build.rs",
+        "crates/tn-cli/src/main.rs",
+        "scripts/run-sanitizers.sh",
+        "scripts/verify-redis.sh",
+        "scripts/verify-all.sh"
+      ],
+      "red_regression": {
+        "command": "scripts/run-sanitizers.sh",
+        "expected": "fails because TypeNative-generated sanitizer hooks and a required TSan run are not established"
+      },
+      "verification_command": "scripts/run-sanitizers.sh",
+      "evidence": {
+        "source": "tn build --sanitize address --sanitize undefined and --sanitize thread are routed through the active Rust driver; support and startup objects clear the shared unsanitized runtime object and compile with the selected sanitizer set.",
+        "llvm": "scripts/run-sanitizers.sh emits validation/string/embedded-nul.tn and validation/sync/atomics.tn to LLVM, requiring __asan_*, llvm.ubsantrap, __tsan_*, !dbg, and the TypeNative source filename before execution.",
+        "behavioral": "scripts/run-sanitizers.sh passes ordinary TypeNative address/undefined smoke cases, the one-million-increment ThreadSanitizer witness, and REDIS_SANITIZER address-undefined and thread protocol/resource runs; unavailable TSan builds fail the script."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-FUZZ-001",
+      "scope": "active",
+      "severity": "high",
+      "root_cause": "The verification matrix reports missing cargo-fuzz or nightly prerequisites as unavailable instead of failing the required active fuzz evidence.",
+      "affected_files": ["scripts/verify-all.sh", "fuzz"],
+      "red_regression": {
+        "command": "scripts/verify-all.sh",
+        "expected": "fails because a missing fuzz prerequisite is currently reported without changing the result"
+      },
+      "verification_command": "scripts/verify-all.sh",
+      "evidence": {
+        "source": "fuzz/Cargo.toml now declares lexer, parser, formatter, HIR/MIR validation, Node bridge planning, RESP decoding, UTF-8/string operations, and collection state-machine targets. scripts/verify-all.sh fails when cargo-fuzz or nightly is unavailable, requires a non-empty retained corpus for every target, and runs each target with a fixed 10,000-input smoke budget without invoking frozen self-host tooling.",
+        "llvm": "not-applicable: fuzz prerequisite policy",
+        "behavioral": "cargo +nightly fuzz build passes, and all eight targets pass 10,000-run smoke executions with retained seed corpora."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-VERIFY-001",
+      "scope": "active",
+      "severity": "high",
+      "root_cause": "Active verification needs an explicit repository scan and guard policy proving frozen sources are neither executed nor included in active timing and checking commands.",
+      "affected_files": [
+        "scripts/verify-all.sh",
+        "scripts/measure-compiler-check.sh"
+      ],
+      "red_regression": {
+        "command": "scripts/verify-active-boundary.sh",
+        "expected": "fails while active timing still names compiler-tn"
+      },
+      "verification_command": "scripts/verify-active-boundary.sh && scripts/verify-selfhost-freeze.sh",
+      "evidence": {
+        "source": "scripts/verify-active-boundary.sh scans active scripts/crates/runtime/std/validation/tests/benchmarks for frozen self-host references and unguarded TypeNative invocations; scripts/verify-all.sh runs the freeze hash and active-boundary checks, excludes frozen commands from timings, and never calls bootstrap.",
+        "llvm": "not-applicable: repository policy verification",
+        "behavioral": "scripts/verify-active-boundary.sh and scripts/verify-selfhost-freeze.sh pass; the freeze verifier recomputes all 20 frozen hashes and rejects additions, removals, renames, or content changes."
+      },
+      "disposition": "implemented"
+    },
+    {
+      "id": "TN-PERF-001",
+      "scope": "active",
+      "severity": "medium",
+      "root_cause": "The active repository has no committed workload-specific CPU, allocation, memory, latency, throughput, startup, binary-size, and compiler-time budgets with reproducible samples.",
+      "affected_files": ["benchmarks", "scripts"],
+      "red_regression": {
+        "command": "scripts/verify-performance-budgets.sh",
+        "expected": "fails because committed budgets and repeated shuffled measurements are absent"
+      },
+      "verification_command": "scripts/verify-performance-budgets.sh",
+      "evidence": {
+        "source": "docs/performance-budgets.json commits workload-specific CPU/throughput, allocation, RSS, latency, startup, artifact-size, and compiler-time budgets for JSON, Redis, HTTP-log, and a typed collection allocation probe. scripts/verify-performance-budgets.sh requires macOS ARM64 and LLVM 22.1.8, keeps all fresh reports in a temporary evidence directory, validates the two warmups and nine shuffled Redis/JSON samples, computes 95% confidence intervals, and checks the protected benchmark hash before and after execution.",
+        "llvm": "not-applicable: performance policy requires measured artifacts",
+        "behavioral": "scripts/verify-performance-budgets.sh passes with JSON, Redis, HTTP-log, allocation, startup, RSS, artifact-size, and compiler-time evidence. The temporary report records JSON and Redis two-warmup/nine-sample shuffled plans, Redis confidence intervals, and allocation count 17 within the committed maximum of 64."
+      },
+      "disposition": "implemented"
+    }
+  ]
+}
