@@ -88,11 +88,11 @@ run_logged redis env -u TYPENATIVE_RUNTIME_OBJECT \
   BENCH_SAMPLES=9 \
   BENCH_WARMUPS=2 \
   BENCH_SHUFFLE_SEED=324508639 \
-  BENCH_PING_COUNT=2000 \
-  BENCH_NONPIPE_PING_COUNT=200 \
-  BENCH_OPERATION_COUNT=200 \
-  BENCH_CONCURRENT_CLIENTS=4 \
-  BENCH_LARGE_VALUE=2048 \
+  BENCH_PING_COUNT=100000 \
+  BENCH_NONPIPE_PING_COUNT=10000 \
+  BENCH_OPERATION_COUNT=10000 \
+  BENCH_CONCURRENT_CLIENTS=8 \
+  BENCH_LARGE_VALUE=12000 \
   TN_BIN="$tn_bin" \
   "$root/benchmarks/redis-comparison/run.sh"
 
@@ -204,6 +204,8 @@ require(redis_env["warmups"] == sampling["redis"]["warmups"], "Redis warmup coun
 require(redis_env["shuffleSeed"] == sampling["redis"]["shuffleSeed"], "Redis shuffle seed changed")
 require(len(redis_report["methodology"]["warmupPlan"]) == 6, "Redis warmup plan is not two rounds")
 require(len(redis_report["methodology"]["measuredPlan"]) == 27, "Redis measured plan is not nine samples per product")
+require(redis_report["correctness"]["checkedBeforeTiming"], "Redis correctness checksum was not checked before timing")
+require(len(redis_report["correctness"]["responseChecksumSha256"]) == 64, "Redis correctness checksum is malformed")
 redis_items = implementation_map(redis_report["implementations"])
 require(set(redis_items) == {"native", "addon", "javascript"}, "Redis products are incomplete")
 redis_evidence = {"samples": sampling["redis"]["samples"], "warmups": sampling["redis"]["warmups"], "products": {}}
@@ -214,7 +216,10 @@ for key, item in redis_items.items():
     require(summary["randomSetPerSecond"]["median"] >= redis_workload["minimumRandomSetPerSecond"][key], f"Redis {key} SET throughput budget exceeded")
     require(summary["randomGetPerSecond"]["median"] >= redis_workload["minimumRandomGetPerSecond"][key], f"Redis {key} GET throughput budget exceeded")
     require(summary["startupMilliseconds"]["median"] <= redis_workload["maximumStartupMilliseconds"][key], f"Redis {key} startup budget exceeded")
-    require(summary["nonPipelinedPingSeconds"]["median"] <= redis_workload["maximumNonPipelinedSeconds"][key], f"Redis {key} latency budget exceeded")
+    require(summary["nonPipelinedPingLatencyMicroseconds"]["median"] <= redis_workload["maximumNonPipelinedLatencyMicroseconds"][key], f"Redis {key} latency budget exceeded")
+    for metric in ("cpuUserNanoseconds", "cpuSystemNanoseconds", "machSystemCalls", "unixSystemCalls", "contextSwitches"):
+        require(summary[metric]["median"] >= 0, f"Redis {key} {metric} evidence is invalid")
+        require(len(summary[metric]["confidenceInterval95"]) == 2, f"Redis {key} {metric} confidence interval is missing")
     if key in ("native", "addon"):
         require(summary["rssGrowthKiB"]["max"] <= redis_workload["maximumTypeNativeRssGrowthKiB"], f"Redis {key} RSS growth budget exceeded")
     redis_evidence["products"][key] = {
@@ -225,6 +230,25 @@ for key, item in redis_items.items():
         "rssGrowthKiB": confidence([sample["rssGrowthKiB"] for sample in item["samples"]]),
         "artifactBytes": item["artifactBytes"],
     }
+
+native_summary = redis_items["native"]["summary"]
+addon_summary = redis_items["addon"]["summary"]
+javascript_summary = redis_items["javascript"]["summary"]
+require(native_summary["pipelinedPingPerSecond"]["median"] >= javascript_summary["pipelinedPingPerSecond"]["median"], "Redis native pipelined median is below handwritten Node")
+native_difference = redis_report["comparisons"]["nativeVersusHandwrittenPipelinedPing"]["difference"]
+require(native_difference["confidenceInterval95"][1] >= 0, "Redis native is significantly slower than handwritten Node at 95% confidence")
+require(native_summary["nonPipelinedPingPerSecond"]["median"] >= javascript_summary["nonPipelinedPingPerSecond"]["median"], "Redis native non-pipelined PING is below handwritten Node")
+require(native_summary["randomSetPerSecond"]["median"] > javascript_summary["randomSetPerSecond"]["median"], "Redis native SET is not faster than handwritten Node")
+require(native_summary["randomGetPerSecond"]["median"] > javascript_summary["randomGetPerSecond"]["median"], "Redis native GET is not faster than handwritten Node")
+require(native_summary["initialRssKiB"]["median"] <= redis_workload["maximumNativeInitialRssKiB"], "Redis native initial RSS exceeds 3 MiB")
+require(native_summary["rssGrowthKiB"]["median"] <= redis_workload["maximumTypeNativeRssGrowthKiB"], "Redis native median RSS growth exceeds 1 MiB")
+require(addon_summary["pipelinedPingPerSecond"]["median"] >= javascript_summary["pipelinedPingPerSecond"]["median"], "Redis addon pipelined median is below handwritten Node")
+require(addon_summary["nonPipelinedPingPerSecond"]["median"] > javascript_summary["nonPipelinedPingPerSecond"]["median"], "Redis addon non-pipelined PING is not faster than handwritten Node")
+require(addon_summary["randomSetPerSecond"]["median"] > javascript_summary["randomSetPerSecond"]["median"], "Redis addon SET is not faster than handwritten Node")
+require(addon_summary["randomGetPerSecond"]["median"] > javascript_summary["randomGetPerSecond"]["median"], "Redis addon GET is not faster than handwritten Node")
+addon_growth = max(0, addon_summary["rssGrowthKiB"]["median"])
+javascript_growth = max(0, javascript_summary["rssGrowthKiB"]["median"])
+require(addon_growth * redis_workload["minimumAddonRssGrowthAdvantage"] <= javascript_growth, "Redis addon RSS growth is not at least 20x below handwritten Node")
 
 http_workload = budget["workloads"]["http"]
 http_env = http_report["environment"]

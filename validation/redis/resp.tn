@@ -203,20 +203,31 @@ function writeAll(stream: & TcpStream, buffer: & BytesMut,): void throws RedisEr
 export class RespConnection {
   private stream: TcpStream;
   private input: BytesMut;
+  private output: BytesMut;
   public constructor(stream: TcpStream) {
     this.stream = move stream;
     this.input = new BytesMut({
       capacity: 4096,
     });
+    this.output = new BytesMut({
+      capacity: 8192,
+    });
+  }
+  public mut readBufferedCommand(): Command | undefined throws RedisError {
+    const parsed = try parseCommand( & this.input);
+    if (parsed === undefined) {
+      return undefined;
+    }
+    const complete = parsed!;
+    const consumed = complete.consumed;
+    const command = move complete.command;
+    this.input.discardPrefix(consumed);
+    return command;
   }
   public mut async readCommand(): Promise<Command | undefined, RedisError> {
     while (true) {
-      const parsed = try parseCommand( & this.input);
-      if (parsed !== undefined) {
-        const complete = parsed!;
-        const consumed = complete.consumed;
-        const command = move complete.command;
-        this.input.discardPrefix(consumed);
+      const command = try this.readBufferedCommand();
+      if (command !== undefined) {
         return command;
       }
       if (this.input.length > 536870912) {
@@ -240,12 +251,19 @@ export class RespConnection {
   public close(): void {
     this.stream.close();
   }
-  public async writeReply(reply: Reply,): Promise<void, RedisError> {
-    let output = new BytesMut({
-      capacity: 128,
-    });
-    encodeReply(reply, & mut output);
-    try writeAll( & this.stream, & output);
+  public mut bufferReply(reply: Reply): void {
+    encodeReply(reply, & mut this.output);
+  }
+  public mut async flushReplies(): Promise<void, RedisError> {
+    if (this.output.length === 0usize) {
+      return;
+    }
+    try writeAll( & this.stream, & this.output);
+    this.output.length = 0usize;
+  }
+  public mut async writeReply(reply: Reply,): Promise<void, RedisError> {
+    this.bufferReply(reply);
+    try await this.flushReplies();
   }
   public move async dispose(): Promise<void, never> {
     this.stream.close();

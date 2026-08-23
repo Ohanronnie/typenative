@@ -189,6 +189,19 @@ with socket.create_connection(("127.0.0.1", PORT), timeout=2) as sock:
     assert read_response(sock) == b"+OK\r\n"
     assert read_response(sock) == b"$2\r\nok\r\n"
 
+    ordered = b"".join(
+        frame("SET", f"batch-{index}", index)
+        + frame("GET", f"batch-{index}")
+        + frame("DEL", f"batch-{index}")
+        for index in range(256)
+    )
+    sock.sendall(ordered)
+    for index in range(256):
+        assert read_response(sock) == b"+OK\r\n"
+        value = str(index).encode()
+        assert read_response(sock) == b"$" + str(len(value)).encode() + b"\r\n" + value + b"\r\n"
+        assert read_response(sock) == b":1\r\n"
+
     fragmented = frame("PING")
     for byte in fragmented:
         sock.send(bytes([byte]))

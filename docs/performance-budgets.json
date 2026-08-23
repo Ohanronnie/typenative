@@ -33,11 +33,11 @@
       "maximumNativeWallMilliseconds": 100
     },
     "redis": {
-      "pipelinedPingCount": 2000,
-      "nonPipelinedPingCount": 200,
-      "operationCount": 200,
-      "concurrentClients": 4,
-      "largeValueBytes": 2048,
+      "pipelinedPingCount": 100000,
+      "nonPipelinedPingCount": 10000,
+      "operationCount": 10000,
+      "concurrentClients": 8,
+      "largeValueBytes": 12000,
       "minimumPipelinedPingPerSecond": {
         "native": 250000,
         "addon": 250000,
@@ -54,16 +54,18 @@
         "javascript": 10000
       },
       "maximumStartupMilliseconds": {
-        "native": 100,
+        "native": 30,
         "addon": 150,
         "javascript": 150
       },
-      "maximumNonPipelinedSeconds": {
-        "native": 0.05,
-        "addon": 0.05,
-        "javascript": 0.05
+      "maximumNonPipelinedLatencyMicroseconds": {
+        "native": 75,
+        "addon": 75,
+        "javascript": 75
       },
-      "maximumTypeNativeRssGrowthKiB": 1024
+      "maximumTypeNativeRssGrowthKiB": 1024,
+      "maximumNativeInitialRssKiB": 3072,
+      "minimumAddonRssGrowthAdvantage": 20
     },
     "http": {
       "fixtureBytes": 1048544,

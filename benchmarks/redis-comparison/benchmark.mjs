@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { arch, platform } from "node:os";
@@ -204,11 +205,46 @@ function rssKiB(pid) {
   return value;
 }
 
-function buildSeconds(name) {
+function processMetrics(pid) {
+  return JSON.parse(
+    execFileSync(
+      "python3",
+      [`${directory}../../scripts/process-metrics.py`, String(pid)],
+      { encoding: "utf8" },
+    ),
+  );
+}
+
+function metricDelta(after, before, name) {
+  const value = after[name] - before[name];
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`invalid ${name} process metric delta`);
+  return value;
+}
+
+function buildTiming(name) {
   const timing = readFileSync(`${directory}build/${name}.time`, "utf8");
   const match = /^real ([0-9.]+)$/m.exec(timing);
   if (match === null) throw new Error(`missing real time in ${name}.time`);
-  return Number.parseFloat(match[1]);
+  const realSeconds = Number.parseFloat(match[1]);
+  if (realSeconds > 175)
+    throw new Error(`${name} compiler invocation exceeded 175 seconds`);
+  const phaseText = readFileSync(`${directory}build/${name}.phases`, "utf8");
+  const phaseMicroseconds = {};
+  for (const phase of phaseText.matchAll(
+    /^tn-timing phase=([^ ]+) micros=([0-9]+)$/gm,
+  ))
+    phaseMicroseconds[phase[1]] = Number.parseInt(phase[2], 10);
+  for (const required of [
+    "module-check",
+    "ownership",
+    "mir-drop",
+    "monomorphization",
+    "llvm-link",
+  ])
+    if (phaseMicroseconds[required] === undefined)
+      throw new Error(`${name} is missing compiler phase ${required}`);
+  return { realSeconds, phaseMicroseconds };
 }
 
 async function validate(client, serverPort) {
@@ -302,6 +338,22 @@ async function validateMalformedFrame(serverPort) {
   });
 }
 
+async function correctnessChecksum(client) {
+  const checksum = createHash("sha256");
+  for (let index = 0; index < 128; index += 1) {
+    const key = `checksum-${index}`;
+    const value = `value-${(index * 17) % 251}`;
+    for (const response of [
+      await command(client, "SET", key, value),
+      await command(client, "GET", key),
+      await command(client, "DEL", key),
+      await command(client, "PING"),
+    ])
+      checksum.update(response);
+  }
+  return checksum.digest("hex");
+}
+
 function randomGenerator() {
   let state = randomSeed;
   return (limit) => {
@@ -371,15 +423,19 @@ async function benchmark(client, pid) {
     equal(await command(client, "PING"), "+PONG\r\n", "PING warmup");
 
   const initialRssKiB = rssKiB(pid);
+  const initialProcessMetrics = processMetrics(pid);
   const pipelinedPing = await measurePipelinedPing(client);
   const nonPipelinedPing = await measureNonPipelinedPing(client);
   const randomSetGet = await measureRandomSetGet(client);
   const finalRssKiB = rssKiB(pid);
+  const finalProcessMetrics = processMetrics(pid);
   return {
     pipelinedPingSeconds: pipelinedPing.seconds,
     pipelinedPingPerSecond: pipelinedPing.perSecond,
     nonPipelinedPingSeconds: nonPipelinedPing.seconds,
     nonPipelinedPingPerSecond: nonPipelinedPing.perSecond,
+    nonPipelinedPingLatencyMicroseconds:
+      (nonPipelinedPing.seconds * 1e6) / nonPipelinedPingCount,
     randomSetSeconds: randomSetGet.setSeconds,
     randomSetPerSecond: randomSetGet.setPerSecond,
     randomGetSeconds: randomSetGet.getSeconds,
@@ -387,6 +443,31 @@ async function benchmark(client, pid) {
     initialRssKiB,
     finalRssKiB,
     rssGrowthKiB: finalRssKiB - initialRssKiB,
+    cpuUserNanoseconds: metricDelta(
+      finalProcessMetrics,
+      initialProcessMetrics,
+      "total_user_nanoseconds",
+    ),
+    cpuSystemNanoseconds: metricDelta(
+      finalProcessMetrics,
+      initialProcessMetrics,
+      "total_system_nanoseconds",
+    ),
+    machSystemCalls: metricDelta(
+      finalProcessMetrics,
+      initialProcessMetrics,
+      "mach_syscalls",
+    ),
+    unixSystemCalls: metricDelta(
+      finalProcessMetrics,
+      initialProcessMetrics,
+      "unix_syscalls",
+    ),
+    contextSwitches: metricDelta(
+      finalProcessMetrics,
+      initialProcessMetrics,
+      "context_switches",
+    ),
   };
 }
 
@@ -408,6 +489,51 @@ function median(values) {
     : sorted[middle];
 }
 
+function standardDeviation(values) {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return Math.sqrt(
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+      (values.length - 1),
+  );
+}
+
+function tCritical95(count) {
+  const values = {
+    2: 12.706,
+    3: 4.303,
+    4: 3.182,
+    5: 2.776,
+    6: 2.571,
+    7: 2.447,
+    8: 2.365,
+    9: 2.306,
+    10: 2.262,
+  };
+  return values[count] ?? 1.96;
+}
+
+function statistics(values) {
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const deviation = standardDeviation(values);
+  const margin =
+    values.length < 2
+      ? 0
+      : (tCritical95(values.length) * deviation) / Math.sqrt(values.length);
+  const center = median(values);
+  return {
+    min: Math.min(...values),
+    median: center,
+    max: Math.max(...values),
+    mean,
+    standardDeviation: deviation,
+    medianAbsoluteDeviation: median(
+      values.map((value) => Math.abs(value - center)),
+    ),
+    confidenceInterval95: [mean - margin, mean + margin],
+  };
+}
+
 function summarize(samples) {
   const metricNames = [
     "startupMilliseconds",
@@ -415,6 +541,7 @@ function summarize(samples) {
     "pipelinedPingPerSecond",
     "nonPipelinedPingSeconds",
     "nonPipelinedPingPerSecond",
+    "nonPipelinedPingLatencyMicroseconds",
     "randomSetSeconds",
     "randomSetPerSecond",
     "randomGetSeconds",
@@ -422,20 +549,32 @@ function summarize(samples) {
     "initialRssKiB",
     "finalRssKiB",
     "rssGrowthKiB",
+    "cpuUserNanoseconds",
+    "cpuSystemNanoseconds",
+    "machSystemCalls",
+    "unixSystemCalls",
+    "contextSwitches",
   ];
   return Object.fromEntries(
-    metricNames.map((name) => {
-      const values = samples.map((sample) => sample[name]);
-      return [
-        name,
-        {
-          min: Math.min(...values),
-          median: median(values),
-          max: Math.max(...values),
-        },
-      ];
-    }),
+    metricNames.map((name) => [
+      name,
+      statistics(samples.map((sample) => sample[name])),
+    ]),
   );
+}
+
+function pairedComparison(leftSamples, rightSamples, metric) {
+  const rightBySample = new Map(
+    rightSamples.map((sample) => [sample.sample, sample[metric]]),
+  );
+  const differences = leftSamples.map(
+    (sample) => sample[metric] - rightBySample.get(sample.sample),
+  );
+  return {
+    metric,
+    direction: "left minus right; positive favors left throughput",
+    difference: statistics(differences),
+  };
 }
 
 const allImplementations = [
@@ -492,10 +631,12 @@ async function runSample(implementation, portOffset, sampleNumber) {
     try {
       await validate(client, serverPort);
       await validateMalformedFrame(serverPort);
+      const responseChecksumSha256 = await correctnessChecksum(client);
       result = {
         ...(sampleNumber === undefined ? {} : { sample: sampleNumber }),
         port: serverPort,
         startupMilliseconds,
+        responseChecksumSha256,
         ...(await benchmark(client, child.pid)),
       };
     } finally {
@@ -545,6 +686,18 @@ const results = allImplementations.map((implementation, index) => ({
   ),
   summary: summarize(measuredSamples[index]),
 }));
+const checksumSet = new Set(
+  results.flatMap((implementation) =>
+    implementation.samples.map((sample) => sample.responseChecksumSha256),
+  ),
+);
+if (checksumSet.size !== 1)
+  throw new Error(`response checksum mismatch: ${[...checksumSet].join(", ")}`);
+const addonResult = results.find((result) => result.name.includes(".node"));
+const nativeResult = results.find((result) => result.name.includes("native"));
+const handwrittenResult = results.find((result) =>
+  result.name.includes("handwritten"),
+);
 
 const report = {
   generatedAt: new Date().toISOString(),
@@ -582,8 +735,32 @@ const report = {
     executionOrder: "deterministic Fisher-Yates shuffle per phase",
   },
   compilation: {
-    addonSeconds: buildSeconds("build-addon"),
-    nativeSeconds: buildSeconds("build-native"),
+    incrementalDefinition:
+      "unchanged-input rebuild with the existing output artifact",
+    addon: {
+      clean: buildTiming("build-addon-clean"),
+      incremental: buildTiming("build-addon-incremental"),
+    },
+    native: {
+      clean: buildTiming("build-native-clean"),
+      incremental: buildTiming("build-native-incremental"),
+    },
+  },
+  correctness: {
+    responseChecksumSha256: [...checksumSet][0],
+    checkedBeforeTiming: true,
+  },
+  comparisons: {
+    nativeVersusHandwrittenPipelinedPing: pairedComparison(
+      nativeResult.samples,
+      handwrittenResult.samples,
+      "pipelinedPingPerSecond",
+    ),
+    addonVersusHandwrittenPipelinedPing: pairedComparison(
+      addonResult.samples,
+      handwrittenResult.samples,
+      "pipelinedPingPerSecond",
+    ),
   },
   implementations: results,
 };

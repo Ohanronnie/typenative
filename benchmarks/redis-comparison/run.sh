@@ -25,11 +25,22 @@ mkdir -p "$build"
 tn fmt --check "$benchmark/addon.tn" "$benchmark/native.tn"
 tn check "$benchmark/addon.tn"
 tn check "$benchmark/native.tn"
-/usr/bin/time -p -o "$build/build-addon.time" \
+rm -f -- "$build/redis.node" "$build/redis.d.ts" "$build/redis-native"
+/usr/bin/time -p -o "$build/build-addon-clean.time" \
   env TYPENATIVE_RUNTIME_ROOT="$root" "$guard" "$tn_bin" \
-  build "$benchmark/addon.tn" --profile optimized --emit node-addon --out "$build/redis.node"
-/usr/bin/time -p -o "$build/build-native.time" \
+  build "$benchmark/addon.tn" --profile optimized --emit node-addon --timings \
+  --out "$build/redis.node" 2>"$build/build-addon-clean.phases"
+/usr/bin/time -p -o "$build/build-addon-incremental.time" \
   env TYPENATIVE_RUNTIME_ROOT="$root" "$guard" "$tn_bin" \
-  build "$benchmark/native.tn" --profile optimized --out "$build/redis-native"
+  build "$benchmark/addon.tn" --profile optimized --emit node-addon --timings \
+  --out "$build/redis.node" 2>"$build/build-addon-incremental.phases"
+/usr/bin/time -p -o "$build/build-native-clean.time" \
+  env TYPENATIVE_RUNTIME_ROOT="$root" "$guard" "$tn_bin" \
+  build "$benchmark/native.tn" --profile optimized --timings \
+  --out "$build/redis-native" 2>"$build/build-native-clean.phases"
+/usr/bin/time -p -o "$build/build-native-incremental.time" \
+  env TYPENATIVE_RUNTIME_ROOT="$root" "$guard" "$tn_bin" \
+  build "$benchmark/native.tn" --profile optimized --timings \
+  --out "$build/redis-native" 2>"$build/build-native-incremental.phases"
 node "$benchmark/benchmark.mjs" \
   --compiler-commit "$(git -C "$root" rev-parse HEAD)"

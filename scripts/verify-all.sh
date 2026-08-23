@@ -7,6 +7,20 @@ case "$target_dir" in
   /*) ;;
   *) target_dir="$root/$target_dir" ;;
 esac
+
+verification_dir=$(mktemp -d "${TMPDIR:-/tmp}/typenative-verify-all.XXXXXX")
+worktree_snapshot="$verification_dir/worktree-state.json"
+scripts/worktree-state.py capture "$worktree_snapshot"
+cleanup() {
+  result=$?
+  if ! scripts/worktree-state.py compare "$worktree_snapshot"; then
+    result=1
+  fi
+  rm -r -- "$verification_dir"
+  exit "$result"
+}
+trap cleanup EXIT
+
 if [ -n "${TN_BIN:-}" ]; then
   tn=$TN_BIN
 elif [ -x "$target_dir/release/tn" ]; then
@@ -51,6 +65,7 @@ time_stage compiler scripts/verify-design.sh
 time_stage freeze scripts/verify-selfhost-freeze.sh
 time_stage freeze scripts/verify-ledger.sh docs/implementation-ledger.json docs/selfhost-debt.json
 time_stage freeze scripts/verify-active-boundary.sh
+time_stage tests scripts/test-worktree-preservation.sh
 time_stage compiler sh scripts/check-direct-llvm-backend.sh
 time_stage compiler scripts/check-toolchain.sh
 time_stage compiler scripts/check-native-sources.sh
@@ -72,8 +87,8 @@ time_stage tests cargo test --workspace --all-targets
 time_stage tests cargo clippy --workspace --all-targets -- -D warnings
 time_stage tests env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
 
-parallel_dir=$(mktemp -d "${TMPDIR:-/tmp}/typenative-verify-all.XXXXXX")
-trap 'rm -rf -- "$parallel_dir"' EXIT
+parallel_dir="$verification_dir/parallel"
+mkdir -p "$parallel_dir"
 
 if [ -n "${TYPENATIVE_RUNTIME_SOURCE:-}" ]; then
   runtime_source=$TYPENATIVE_RUNTIME_SOURCE
@@ -146,20 +161,27 @@ for job in \
   fi
 done
 rm -r -- "$parallel_dir"
-trap - EXIT
 [ "$parallel_failed" -eq 0 ] || exit 1
 
 time_stage benchmarks env TN_BIN="$compiler" scripts/verify-performance-budgets.sh
 
 if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list 2>/dev/null | rg -q '^nightly'; then
   fuzz_targets='lexer parser formatter hir_mir node_bridge resp utf8 collections'
+  fuzz_corpus_root="$verification_dir/fuzz-corpus"
+  fuzz_artifact_root=${TN_FUZZ_ARTIFACT_DIR:-$target_dir/verify-fuzz-artifacts}
+  mkdir -p "$fuzz_corpus_root" "$fuzz_artifact_root"
+  printf '%s\n' "fuzz-artifact-directory=$fuzz_artifact_root"
   for fuzz_target in $fuzz_targets; do
     corpus_dir="$root/fuzz/corpus/$fuzz_target"
     if [ ! -d "$corpus_dir" ] || ! rg --files "$corpus_dir" | rg -q .; then
       printf '%s\n' "fuzz corpus missing for $fuzz_target" >&2
       exit 1
     fi
-    time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run $fuzz_target -- -runs=10000 -max_len=4096 -timeout=5 -print_final_stats=1"
+    working_corpus="$fuzz_corpus_root/$fuzz_target"
+    artifact_dir="$fuzz_artifact_root/$fuzz_target"
+    mkdir -p "$working_corpus" "$artifact_dir"
+    cp -R "$corpus_dir/." "$working_corpus/"
+    time_stage tests sh -c "cd \"$root/fuzz\" && cargo +nightly fuzz run $fuzz_target \"$working_corpus\" -- -runs=10000 -max_len=4096 -timeout=5 -print_final_stats=1 -artifact_prefix=\"$artifact_dir/\""
   done
 else
   printf '%s\n' 'fuzzing=unavailable (cargo-fuzz/nightly not installed)' >&2

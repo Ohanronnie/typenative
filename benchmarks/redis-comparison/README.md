@@ -14,7 +14,10 @@ commands, pipelining, fragmented frames, malformed frames, large values, and
 concurrent clients before measurement. Each implementation is started fresh for
 every sample. The benchmark separately measures pipelined and non-pipelined
 PING, randomized SET, and randomized GET, then reports min/median/max across
-repeated samples. RSS is sampled before and after the measured work.
+repeated samples. Every metric also includes standard deviation, median absolute
+deviation, and a 95% Student-t confidence interval. A deterministic response
+checksum is verified before timing. RSS, user and system CPU time, Mach and Unix
+system calls, and context switches are sampled before and after the measured work.
 
 Run it with:
 
@@ -29,4 +32,5 @@ Use `BENCH_WARMUPS`, `BENCH_SAMPLES`, `BENCH_SHUFFLE_SEED`, `BENCH_PING_COUNT`, 
 to declare a different workload. Set `BENCH_RESULTS` to keep fresh evidence outside the repository. The runner writes the machine-readable result
 to that path, or `results.json` by default, including the exact workload, platform, architecture, Node
 version, compiler commit, compilation times, artifact sizes, RSS, startup
-latency, per-sample measurements, and aggregate statistics.
+latency, CPU and system-call counters, response checksum, per-sample measurements,
+paired comparisons, and aggregate statistics.

@@ -70,7 +70,18 @@ async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,):
         return;
       }
       const reply = executeLocked(database.get(), command!);
-      try await connection.writeReply(reply);
+      connection.bufferReply(reply);
+      let batchSize: usize = 1usize;
+      while (batchSize<1024usize) {
+        const buffered = try connection.readBufferedCommand();
+        if (buffered === undefined) {
+          break;
+        }
+        const bufferedReply = executeLocked(database.get(), buffered!);
+        connection.bufferReply(bufferedReply);
+        batchSize = batchSize + 1usize;
+      }
+      try await connection.flushReplies();
     }
   } catch (error: RedisError) {
     connection.close();
