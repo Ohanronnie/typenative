@@ -14,4 +14,4 @@ Run it from the repository root:
 benchmarks/json-parser/run.sh
 ```
 
-Use `BENCH_ITERATIONS` and `BENCH_SAMPLES` to change the workload. The runner validates matching checksums and malformed-input rejection before timing, then writes the latest machine-readable result to `results.json`. Executable timings include process startup; addon and Node.js timings are in-process.
+The default measurement uses two shuffled warmup rounds and nine shuffled measured samples per product. Use `BENCH_ITERATIONS`, `BENCH_SAMPLES`, `BENCH_WARMUPS`, and `BENCH_SHUFFLE_SEED` to declare a workload. Set `BENCH_RESULTS` to keep fresh evidence outside the repository. The runner validates matching checksums and malformed-input rejection before timing. Executable timings include process startup; addon and Node.js timings are in-process.

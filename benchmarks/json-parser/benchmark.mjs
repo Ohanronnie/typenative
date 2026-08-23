@@ -12,7 +12,12 @@ const fixtureText = readFileSync(
 ).trim();
 const fixture = new TextEncoder().encode(fixtureText);
 const iterations = Number.parseInt(process.env.BENCH_ITERATIONS ?? "50000", 10);
-const samples = Number.parseInt(process.env.BENCH_SAMPLES ?? "10", 10);
+const samples = Number.parseInt(process.env.BENCH_SAMPLES ?? "9", 10);
+const warmups = Number.parseInt(process.env.BENCH_WARMUPS ?? "2", 10);
+const shuffleSeed = Number.parseInt(
+  process.env.BENCH_SHUFFLE_SEED ?? "305419896",
+  10,
+);
 const nativePath = `${directory}build/json-parser`;
 const addonPath = `${directory}build/json-parser.node`;
 const require = createRequire(import.meta.url);
@@ -27,6 +32,16 @@ if (
 }
 if (!Number.isInteger(samples) || samples <= 0) {
   throw new Error("BENCH_SAMPLES must be a positive integer");
+}
+if (!Number.isInteger(warmups) || warmups !== 2) {
+  throw new Error("BENCH_WARMUPS must be exactly 2");
+}
+if (
+  !Number.isInteger(shuffleSeed) ||
+  shuffleSeed < 0 ||
+  shuffleSeed > 0xffffffff
+) {
+  throw new Error("BENCH_SHUFFLE_SEED must be a uint32");
 }
 
 const expectedChecksum = parseManyJavaScript(fixture, 1);
@@ -70,69 +85,55 @@ function summarize(name, values, checksum) {
   };
 }
 
-for (let index = 0; index < 3; index += 1) {
-  parseManyJavaScript(fixture, Math.max(1, Math.floor(iterations / 10)));
-  addon.parseMany(fixture, Math.max(1, Math.floor(iterations / 10)));
-  for (
-    let inner = 0;
-    inner < Math.max(1, Math.floor(iterations / 10));
-    inner += 1
-  ) {
-    JSON.parse(fixtureText);
+function shuffledPlan(names, repetitions, seed) {
+  const plan = [];
+  for (let repetition = 0; repetition < repetitions; repetition += 1) {
+    for (const name of names) plan.push(name);
   }
+  let state = seed >>> 0;
+  for (let index = plan.length - 1; index > 0; index -= 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    const swapIndex = state % (index + 1);
+    [plan[index], plan[swapIndex]] = [plan[swapIndex], plan[index]];
+  }
+  return plan;
 }
 
-const javascriptTimes = [];
-let javascriptChecksum = 0;
-for (let sample = 0; sample < samples; sample += 1) {
-  const result = elapsedNanoseconds(() =>
-    parseManyJavaScript(fixture, iterations),
-  );
-  javascriptTimes.push(result.nanoseconds);
-  javascriptChecksum = result.checksum;
-}
-
-const addonTimes = [];
-let addonChecksum = 0n;
-for (let sample = 0; sample < samples; sample += 1) {
-  const result = elapsedNanoseconds(() => addon.parseMany(fixture, iterations));
-  addonTimes.push(result.nanoseconds);
-  addonChecksum = result.checksum;
-}
-
-const builtinTimes = [];
-for (let sample = 0; sample < samples; sample += 1) {
-  const result = elapsedNanoseconds(() => {
-    let parsed;
-    for (let iteration = 0; iteration < iterations; iteration += 1)
-      parsed = JSON.parse(fixtureText);
-    return parsed.routes.length;
-  });
-  builtinTimes.push(result.nanoseconds);
-}
-
-const nativeTimes = [];
-for (let index = 0; index < 3; index += 1) {
-  execFileSync(
-    nativePath,
-    [fixtureText, String(Math.max(1, Math.floor(iterations / 10)))],
-    {
-      stdio: "ignore",
-    },
-  );
-}
-for (let sample = 0; sample < samples; sample += 1) {
-  const result = elapsedNanoseconds(() =>
-    execFileSync(nativePath, [fixtureText, String(iterations)], {
-      stdio: "ignore",
+const runners = {
+  native: () =>
+    elapsedNanoseconds(() =>
+      execFileSync(nativePath, [fixtureText, String(iterations)], {
+        stdio: "ignore",
+      }),
+    ),
+  addon: () => elapsedNanoseconds(() => addon.parseMany(fixture, iterations)),
+  javascript: () =>
+    elapsedNanoseconds(() => parseManyJavaScript(fixture, iterations)),
+  builtin: () =>
+    elapsedNanoseconds(() => {
+      let parsed;
+      for (let iteration = 0; iteration < iterations; iteration += 1)
+        parsed = JSON.parse(fixtureText);
+      return parsed.routes.length;
     }),
-  );
-  nativeTimes.push(result.nanoseconds);
+};
+const names = Object.keys(runners);
+const warmupPlan = shuffledPlan(names, warmups, shuffleSeed ^ 0xa5a5a5a5);
+for (const name of warmupPlan) runners[name]();
+
+const measuredPlan = shuffledPlan(names, samples, shuffleSeed);
+const measured = Object.fromEntries(
+  names.map((name) => [name, { times: [], checksum: undefined }]),
+);
+for (const name of measuredPlan) {
+  const result = runners[name]();
+  measured[name].times.push(result.nanoseconds);
+  measured[name].checksum = result.checksum;
 }
 
-if (String(javascriptChecksum) !== String(addonChecksum)) {
+if (String(measured.javascript.checksum) !== String(measured.addon.checksum)) {
   throw new Error(
-    `checksum mismatch: JavaScript=${javascriptChecksum} addon=${addonChecksum}`,
+    `checksum mismatch: JavaScript=${measured.javascript.checksum} addon=${measured.addon.checksum}`,
   );
 }
 
@@ -145,25 +146,37 @@ const results = {
     fixtureBytes: fixture.length,
     iterations,
     samples,
+    warmups,
+    shuffleSeed,
+  },
+  methodology: {
+    warmupPlan,
+    measuredPlan,
+    executionOrder: "deterministic Fisher-Yates shuffle per phase",
   },
   results: [
     summarize(
       "TypeNative executable (process wall)",
-      nativeTimes,
+      measured.native.times,
       "validated-by-exit-status",
     ),
-    summarize("TypeNative .node addon", addonTimes, addonChecksum),
+    summarize(
+      "TypeNative .node addon",
+      measured.addon.times,
+      measured.addon.checksum,
+    ),
     summarize(
       "Node.js handwritten parser",
-      javascriptTimes,
-      javascriptChecksum,
+      measured.javascript.times,
+      measured.javascript.checksum,
     ),
-    summarize("Node.js JSON.parse", builtinTimes, "not-comparable"),
+    summarize("Node.js JSON.parse", measured.builtin.times, "not-comparable"),
   ],
 };
 
 writeFileSync(
-  new URL("./results.json", import.meta.url),
+  process.env.BENCH_RESULTS ??
+    fileURLToPath(new URL("./results.json", import.meta.url)),
   `${JSON.stringify(results, null, 2)}\n`,
 );
 console.table(results.results);

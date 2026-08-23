@@ -8,4 +8,3 @@ fuzz_target!(|bytes: &[u8]| {
         assert_eq!(parsed.syntax().to_string(), source);
     }
 });
-

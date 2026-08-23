@@ -1,0 +1,109 @@
+{
+  "format": 1,
+  "platform": {
+    "os": "Darwin",
+    "architecture": "arm64",
+    "llvm": "22.1.8"
+  },
+  "sampling": {
+    "json": {
+      "warmups": 2,
+      "samples": 9,
+      "shuffleSeed": 305419896
+    },
+    "redis": {
+      "warmups": 2,
+      "samples": 9,
+      "shuffleSeed": 324508639
+    },
+    "http": {
+      "samples": 5
+    }
+  },
+  "workloads": {
+    "json": {
+      "fixtureBytes": 1141,
+      "iterations": 1000,
+      "minimumThroughputMiBPerSecond": {
+        "native": 20,
+        "addon": 100,
+        "javascript": 60,
+        "builtin": 100
+      },
+      "maximumNativeWallMilliseconds": 100
+    },
+    "redis": {
+      "pipelinedPingCount": 2000,
+      "nonPipelinedPingCount": 200,
+      "operationCount": 200,
+      "concurrentClients": 4,
+      "largeValueBytes": 2048,
+      "minimumPipelinedPingPerSecond": {
+        "native": 250000,
+        "addon": 250000,
+        "javascript": 150000
+      },
+      "minimumRandomSetPerSecond": {
+        "native": 15000,
+        "addon": 15000,
+        "javascript": 10000
+      },
+      "minimumRandomGetPerSecond": {
+        "native": 15000,
+        "addon": 15000,
+        "javascript": 10000
+      },
+      "maximumStartupMilliseconds": {
+        "native": 100,
+        "addon": 150,
+        "javascript": 150
+      },
+      "maximumNonPipelinedSeconds": {
+        "native": 0.05,
+        "addon": 0.05,
+        "javascript": 0.05
+      },
+      "maximumTypeNativeRssGrowthKiB": 1024
+    },
+    "http": {
+      "fixtureBytes": 1048544,
+      "iterations": 2,
+      "minimumThroughputMiBPerSecond": {
+        "native": 150,
+        "addon": 100,
+        "javascript": 120
+      },
+      "maximumPeakRssBytes": {
+        "native": 8388608,
+        "addon": 100663296,
+        "javascript": 100663296
+      },
+      "maximumProcessWallMilliseconds": 100
+    }
+  },
+  "allocation": {
+    "maximumCount": 64
+  },
+  "artifacts": {
+    "redis": {
+      "maximumBytes": {
+        "native": 200000,
+        "addon": 250000
+      }
+    },
+    "http": {
+      "maximumBytes": {
+        "native": 1000000,
+        "addon": 2000000
+      }
+    }
+  },
+  "compiler": {
+    "maximumSeconds": {
+      "check": 120,
+      "debugExecutable": 160,
+      "optimizedExecutable": 160,
+      "optimizedNodeAddon": 160
+    }
+  }
+}

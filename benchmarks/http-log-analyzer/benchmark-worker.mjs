@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { analyzeMany as analyzeJavaScript } from "./analyzer.mjs";
 
@@ -90,6 +90,8 @@ if (mode === "javascript" || mode === "addon") {
         elapsed,
         checksums,
         {
+          artifactBytes:
+            mode === "javascript" ? null : statSync(productPath).size,
           peakRssBytes,
           peakRssMethod:
             "isolated Node process.resourceUsage().maxRSS after fixture load and measured samples",
@@ -168,6 +170,7 @@ if (mode === "javascript" || mode === "addon") {
       peakRssBytes: Math.max(
         ...runs.map((run) => run.peakRssBytes ?? Number.NEGATIVE_INFINITY),
       ),
+      artifactBytes: statSync(productPath).size,
       peakRssMethod:
         process.platform === "darwin"
           ? "maximum resident set size from macOS /usr/bin/time -l, including loaded fixture"

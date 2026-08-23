@@ -9,7 +9,11 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.10"
+tn-hir = { path = "../crates/tn-hir" }
+tn-mir = { path = "../crates/tn-mir" }
+tn-node-api = { path = "../crates/tn-node-api" }
 tn-syntax = { path = "../crates/tn-syntax" }
+tn-typecheck = { path = "../crates/tn-typecheck" }
 
 [[bin]]
 name = "lexer"
@@ -25,6 +29,47 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "formatter"
+path = "fuzz_targets/formatter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hir_mir"
+path = "fuzz_targets/hir_mir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_bridge"
+path = "fuzz_targets/node_bridge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resp"
+path = "fuzz_targets/resp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "utf8"
+path = "fuzz_targets/utf8.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "collections"
+path = "fuzz_targets/collections.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
-

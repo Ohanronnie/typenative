@@ -22,11 +22,11 @@ Run it with:
 TN_BIN=/path/to/tn benchmarks/redis-comparison/run.sh
 ```
 
-The default workload is five samples of 100,000 pipelined PINGs, 10,000
+The default workload is two shuffled warmup rounds and nine shuffled measured samples of 100,000 pipelined PINGs, 10,000
 non-pipelined PINGs, and 10,000 deterministic randomized SET and GET commands.
-Use `BENCH_SAMPLES`, `BENCH_PING_COUNT`, `BENCH_NONPIPE_PING_COUNT`,
+Use `BENCH_WARMUPS`, `BENCH_SAMPLES`, `BENCH_SHUFFLE_SEED`, `BENCH_PING_COUNT`, `BENCH_NONPIPE_PING_COUNT`,
 `BENCH_OPERATION_COUNT`, `BENCH_CONCURRENT_CLIENTS`, and `BENCH_LARGE_VALUE`
-to declare a different workload. The runner writes the machine-readable result
-to `results.json`, including the exact workload, platform, architecture, Node
+to declare a different workload. Set `BENCH_RESULTS` to keep fresh evidence outside the repository. The runner writes the machine-readable result
+to that path, or `results.json` by default, including the exact workload, platform, architecture, Node
 version, compiler commit, compilation times, artifact sizes, RSS, startup
 latency, per-sample measurements, and aggregate statistics.

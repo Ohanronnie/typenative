@@ -1,0 +1,4 @@
+function main(): i32 {
+  let value: i32 = 42i32;
+  return value;
+}

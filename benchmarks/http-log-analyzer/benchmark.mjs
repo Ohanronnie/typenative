@@ -124,7 +124,7 @@ const results = {
   results: modes,
 };
 writeFileSync(
-  `${directory}results.json`,
+  process.env.BENCH_RESULTS ?? `${directory}results.json`,
   `${JSON.stringify(results, null, 2)}\n`,
 );
 

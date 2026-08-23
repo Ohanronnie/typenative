@@ -1,0 +1,31 @@
+import { Array, Map } from "std/collections";
+declare extern "C" {
+  function tn_runtime_reset_allocation_count(): void;
+  function tn_runtime_allocation_count_i32(): i32;
+}
+function main(): i32 {
+  unsafe {
+    tn_runtime_reset_allocation_count();
+  }
+  {
+    let map = new Map<i32, i32>({
+      capacity: 32usize,
+    });
+    let index: i32 = 0i32;
+    while (index<24i32) {
+      map.set(index, index * 3i32);
+      index += 1i32;
+    }
+    let values = new Array<i32>({
+      capacity: 24usize,
+    });
+    index = 0i32;
+    while (index<24i32) {
+      values.push(index * 7i32);
+      index += 1i32;
+    }
+  }
+  unsafe {
+    return tn_runtime_allocation_count_i32();
+  }
+}

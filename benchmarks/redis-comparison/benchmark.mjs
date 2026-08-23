@@ -9,7 +9,8 @@ const portBase = 10_000 + ((process.pid * 17 + Date.now()) % 20_000);
 const addonPortBase = portBase;
 const nativePortBase = portBase + 100;
 const handwrittenPortBase = portBase + 200;
-const sampleCount = positiveInteger("BENCH_SAMPLES", 5);
+const sampleCount = positiveInteger("BENCH_SAMPLES", 9);
+const warmupCount = positiveInteger("BENCH_WARMUPS", 2);
 const pingCount = positiveInteger("BENCH_PING_COUNT", 100_000);
 const nonPipelinedPingCount = positiveInteger(
   "BENCH_NONPIPE_PING_COUNT",
@@ -19,6 +20,7 @@ const operationCount = positiveInteger("BENCH_OPERATION_COUNT", 10_000);
 const concurrentClients = positiveInteger("BENCH_CONCURRENT_CLIENTS", 8);
 const largeValueBytes = positiveInteger("BENCH_LARGE_VALUE", 12_000);
 const randomSeed = 0x1234_5678;
+const shuffleSeed = positiveInteger("BENCH_SHUFFLE_SEED", 0x1357_9bdf);
 
 function positiveInteger(name, fallback) {
   const value = Number.parseInt(process.env[name] ?? String(fallback), 10);
@@ -26,6 +28,28 @@ function positiveInteger(name, fallback) {
     throw new Error(`${name} must be a positive integer`);
   return value;
 }
+
+function shuffledPlan(implementationCount, repetitions, seed) {
+  const plan = [];
+  for (let repetition = 0; repetition < repetitions; repetition += 1) {
+    for (
+      let implementationIndex = 0;
+      implementationIndex < implementationCount;
+      implementationIndex += 1
+    ) {
+      plan.push({ implementationIndex, repetition });
+    }
+  }
+  let state = seed >>> 0;
+  for (let index = plan.length - 1; index > 0; index -= 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    const swapIndex = state % (index + 1);
+    [plan[index], plan[swapIndex]] = [plan[swapIndex], plan[index]];
+  }
+  return plan;
+}
+
+if (warmupCount !== 2) throw new Error("BENCH_WARMUPS must be exactly 2");
 
 function argumentValue(name) {
   const index = process.argv.indexOf(name);
@@ -439,59 +463,88 @@ const allImplementations = [
   },
 ];
 
-const results = [];
-for (const implementation of allImplementations) {
-  const samples = [];
-  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
-    const serverPort = implementation.basePort + sampleIndex;
-    const childArguments = implementation.portArgument
-      ? [...implementation.arguments, String(serverPort)]
-      : implementation.arguments;
-    const child = spawn(implementation.command, childArguments, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        REDIS_NATIVE_PORT: String(serverPort),
-        REDIS_PORT: String(serverPort),
-      },
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    try {
-      const startupMilliseconds = await waitUntilReady(
-        child,
-        implementation.name,
-        () => stderr,
-        serverPort,
-      );
-      const client = await openClient(serverPort);
-      try {
-        await validate(client, serverPort);
-        await validateMalformedFrame(serverPort);
-        samples.push({
-          sample: sampleIndex + 1,
-          port: serverPort,
-          startupMilliseconds,
-          ...(await benchmark(client, child.pid)),
-        });
-      } finally {
-        client.close();
-      }
-    } finally {
-      await stop(child);
-    }
-    if (child.exitCode && child.signalCode === null)
-      throw new Error(`${implementation.name} failed: ${stderr}`);
-  }
-  results.push({
-    name: implementation.name,
-    artifactBytes: implementation.artifactBytes,
-    samples,
-    summary: summarize(samples),
+async function runSample(implementation, portOffset, sampleNumber) {
+  const serverPort = implementation.basePort + portOffset;
+  const childArguments = implementation.portArgument
+    ? [...implementation.arguments, String(serverPort)]
+    : implementation.arguments;
+  const child = spawn(implementation.command, childArguments, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      REDIS_NATIVE_PORT: String(serverPort),
+      REDIS_PORT: String(serverPort),
+    },
   });
+  let stderr = "";
+  let result;
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  try {
+    const startupMilliseconds = await waitUntilReady(
+      child,
+      implementation.name,
+      () => stderr,
+      serverPort,
+    );
+    const client = await openClient(serverPort);
+    try {
+      await validate(client, serverPort);
+      await validateMalformedFrame(serverPort);
+      result = {
+        ...(sampleNumber === undefined ? {} : { sample: sampleNumber }),
+        port: serverPort,
+        startupMilliseconds,
+        ...(await benchmark(client, child.pid)),
+      };
+    } finally {
+      client.close();
+    }
+  } finally {
+    await stop(child);
+  }
+  if (child.exitCode && child.signalCode === null)
+    throw new Error(`${implementation.name} failed: ${stderr}`);
+  return result;
 }
+
+const warmupPlan = shuffledPlan(
+  allImplementations.length,
+  warmupCount,
+  shuffleSeed ^ 0xa5a5_a5a5,
+);
+for (const run of warmupPlan)
+  await runSample(
+    allImplementations[run.implementationIndex],
+    sampleCount + warmupCount + run.repetition,
+    undefined,
+  );
+
+const measuredPlan = shuffledPlan(
+  allImplementations.length,
+  sampleCount,
+  shuffleSeed,
+);
+const measuredSamples = allImplementations.map(() => []);
+for (const run of measuredPlan) {
+  measuredSamples[run.implementationIndex].push(
+    await runSample(
+      allImplementations[run.implementationIndex],
+      warmupCount + run.repetition,
+      run.repetition + 1,
+    ),
+  );
+}
+
+const results = allImplementations.map((implementation, index) => ({
+  name: implementation.name,
+  artifactBytes: implementation.artifactBytes,
+  samples: measuredSamples[index].sort(
+    (left, right) => left.sample - right.sample,
+  ),
+  summary: summarize(measuredSamples[index]),
+}));
 
 const report = {
   generatedAt: new Date().toISOString(),
@@ -503,6 +556,7 @@ const report = {
   },
   workload: {
     samples: sampleCount,
+    warmups: warmupCount,
     pipelinedPingCount: pingCount,
     nonPipelinedPingCount,
     randomizedSetCount: operationCount,
@@ -510,11 +564,22 @@ const report = {
     concurrentClients,
     largeValueBytes,
     randomSeed,
+    shuffleSeed,
     portBases: {
       addon: addonPortBase,
       native: nativePortBase,
       handwritten: handwrittenPortBase,
     },
+  },
+  methodology: {
+    warmupPlan: warmupPlan.map(
+      (run) => allImplementations[run.implementationIndex].name,
+    ),
+    measuredPlan: measuredPlan.map(
+      (run) =>
+        `${allImplementations[run.implementationIndex].name}#${run.repetition + 1}`,
+    ),
+    executionOrder: "deterministic Fisher-Yates shuffle per phase",
   },
   compilation: {
     addonSeconds: buildSeconds("build-addon"),
@@ -524,7 +589,7 @@ const report = {
 };
 
 writeFileSync(
-  `${directory}results.json`,
+  process.env.BENCH_RESULTS ?? `${directory}results.json`,
   `${JSON.stringify(report, null, 2)}\n`,
 );
 for (const result of results)
