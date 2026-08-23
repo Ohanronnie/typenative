@@ -10,6 +10,7 @@ const portBase = 10_000 + ((process.pid * 17 + Date.now()) % 20_000);
 const addonPortBase = portBase;
 const nativePortBase = portBase + 100;
 const handwrittenPortBase = portBase + 200;
+const rustPortBase = portBase + 300;
 const sampleCount = positiveInteger("BENCH_SAMPLES", 9);
 const warmupCount = positiveInteger("BENCH_WARMUPS", 2);
 const pingCount = positiveInteger("BENCH_PING_COUNT", 100_000);
@@ -600,6 +601,13 @@ const allImplementations = [
     artifactBytes: null,
     basePort: handwrittenPortBase,
   },
+  {
+    name: "Rust native executable",
+    command: `${directory}build/redis-rust`,
+    arguments: [],
+    artifactBytes: statSync(`${directory}build/redis-rust`).size,
+    basePort: rustPortBase,
+  },
 ];
 
 async function runSample(implementation, portOffset, sampleNumber) {
@@ -613,6 +621,7 @@ async function runSample(implementation, portOffset, sampleNumber) {
       ...process.env,
       REDIS_NATIVE_PORT: String(serverPort),
       REDIS_PORT: String(serverPort),
+      REDIS_RUST_PORT: String(serverPort),
     },
   });
   let stderr = "";
@@ -698,6 +707,7 @@ const nativeResult = results.find((result) => result.name.includes("native"));
 const handwrittenResult = results.find((result) =>
   result.name.includes("handwritten"),
 );
+const rustResult = results.find((result) => result.name.startsWith("Rust"));
 
 const report = {
   generatedAt: new Date().toISOString(),
@@ -722,6 +732,7 @@ const report = {
       addon: addonPortBase,
       native: nativePortBase,
       handwritten: handwrittenPortBase,
+      rust: rustPortBase,
     },
   },
   methodology: {
@@ -759,6 +770,16 @@ const report = {
     addonVersusHandwrittenPipelinedPing: pairedComparison(
       addonResult.samples,
       handwrittenResult.samples,
+      "pipelinedPingPerSecond",
+    ),
+    nativeVersusRustPipelinedPing: pairedComparison(
+      nativeResult.samples,
+      rustResult.samples,
+      "pipelinedPingPerSecond",
+    ),
+    addonVersusRustPipelinedPing: pairedComparison(
+      addonResult.samples,
+      rustResult.samples,
       "pipelinedPingPerSecond",
     ),
   },

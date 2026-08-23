@@ -41,26 +41,31 @@
       "minimumPipelinedPingPerSecond": {
         "native": 250000,
         "addon": 250000,
+        "rust": 1500000,
         "javascript": 150000
       },
       "minimumRandomSetPerSecond": {
         "native": 15000,
         "addon": 15000,
+        "rust": 20000,
         "javascript": 10000
       },
       "minimumRandomGetPerSecond": {
         "native": 15000,
         "addon": 15000,
+        "rust": 20000,
         "javascript": 10000
       },
       "maximumStartupMilliseconds": {
         "native": 30,
         "addon": 150,
+        "rust": 30,
         "javascript": 150
       },
       "maximumNonPipelinedLatencyMicroseconds": {
         "native": 75,
         "addon": 75,
+        "rust": 75,
         "javascript": 75
       },
       "maximumTypeNativeRssGrowthKiB": 1024,
@@ -90,7 +95,8 @@
     "redis": {
       "maximumBytes": {
         "native": 200000,
-        "addon": 250000
+        "addon": 250000,
+        "rust": 600000
       }
     },
     "http": {

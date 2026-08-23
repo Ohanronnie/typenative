@@ -1,13 +1,14 @@
 {
-  "generatedAt": "2026-08-22T11:16:47.676Z",
-  "compilerCommit": "84d459e30fc351f3fa9a42a43aa5199d3b866460",
+  "generatedAt": "2026-08-23T15:09:17.538Z",
+  "compilerCommit": "34f93873377ebc2dec11a29c47d49fd8bc6f96cb",
   "environment": {
     "platform": "darwin",
     "architecture": "arm64",
     "node": "v24.14.0"
   },
   "workload": {
-    "samples": 5,
+    "samples": 9,
+    "warmups": 2,
     "pipelinedPingCount": 100000,
     "nonPipelinedPingCount": 10000,
     "randomizedSetCount": 10000,
@@ -15,310 +16,1042 @@
     "concurrentClients": 8,
     "largeValueBytes": 12000,
     "randomSeed": 305419896,
+    "shuffleSeed": 324508639,
     "portBases": {
-      "addon": 12921,
-      "native": 13021,
-      "handwritten": 13121
+      "addon": 23728,
+      "native": 23828,
+      "handwritten": 23928,
+      "rust": 24028
     }
   },
+  "methodology": {
+    "warmupPlan": [
+      "TypeNative .node addon",
+      "Rust native executable",
+      "Node.js handwritten",
+      "TypeNative .node addon",
+      "TypeNative native executable",
+      "Rust native executable",
+      "Node.js handwritten",
+      "TypeNative native executable"
+    ],
+    "measuredPlan": [
+      "TypeNative .node addon#9",
+      "TypeNative .node addon#1",
+      "TypeNative .node addon#3",
+      "TypeNative native executable#2",
+      "TypeNative native executable#1",
+      "Node.js handwritten#8",
+      "Rust native executable#3",
+      "Rust native executable#4",
+      "TypeNative .node addon#2",
+      "Rust native executable#7",
+      "Rust native executable#1",
+      "TypeNative .node addon#4",
+      "TypeNative native executable#4",
+      "Node.js handwritten#6",
+      "Node.js handwritten#9",
+      "Rust native executable#6",
+      "TypeNative .node addon#5",
+      "TypeNative .node addon#8",
+      "TypeNative native executable#6",
+      "Node.js handwritten#3",
+      "Rust native executable#2",
+      "TypeNative native executable#8",
+      "TypeNative native executable#7",
+      "TypeNative native executable#9",
+      "Rust native executable#8",
+      "Node.js handwritten#5",
+      "Rust native executable#9",
+      "Node.js handwritten#1",
+      "Rust native executable#5",
+      "Node.js handwritten#7",
+      "TypeNative native executable#3",
+      "Node.js handwritten#2",
+      "TypeNative .node addon#6",
+      "TypeNative .node addon#7",
+      "TypeNative native executable#5",
+      "Node.js handwritten#4"
+    ],
+    "executionOrder": "deterministic Fisher-Yates shuffle per phase"
+  },
   "compilation": {
-    "addonSeconds": 1.68,
-    "nativeSeconds": 1.66
+    "incrementalDefinition": "unchanged-input rebuild with the existing output artifact",
+    "addon": {
+      "clean": {
+        "realSeconds": 31.21,
+        "phaseMicroseconds": {
+          "module-check": 464557,
+          "ownership": 2672,
+          "mir-drop": 2030427,
+          "monomorphization": 3554,
+          "llvm-link": 24863807
+        }
+      },
+      "incremental": {
+        "realSeconds": 31.23,
+        "phaseMicroseconds": {
+          "module-check": 465959,
+          "ownership": 2662,
+          "mir-drop": 2025759,
+          "monomorphization": 3168,
+          "llvm-link": 24860451
+        }
+      }
+    },
+    "native": {
+      "clean": {
+        "realSeconds": 37.44,
+        "phaseMicroseconds": {
+          "module-check": 470008,
+          "ownership": 2812,
+          "mir-drop": 2057879,
+          "monomorphization": 3054,
+          "llvm-link": 31011929
+        }
+      },
+      "incremental": {
+        "realSeconds": 37.39,
+        "phaseMicroseconds": {
+          "module-check": 472016,
+          "ownership": 2989,
+          "mir-drop": 2061977,
+          "monomorphization": 3304,
+          "llvm-link": 30932035
+        }
+      }
+    }
+  },
+  "correctness": {
+    "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+    "checkedBeforeTiming": true
+  },
+  "comparisons": {
+    "nativeVersusHandwrittenPipelinedPing": {
+      "metric": "pipelinedPingPerSecond",
+      "direction": "left minus right; positive favors left throughput",
+      "difference": {
+        "min": 334405,
+        "median": 362676,
+        "max": 378507,
+        "mean": 360654.6666666667,
+        "standardDeviation": 13901.52970899246,
+        "medianAbsoluteDeviation": 6975,
+        "confidenceInterval95": [
+          349969.02416368783,
+          371340.30916964554
+        ]
+      }
+    },
+    "addonVersusHandwrittenPipelinedPing": {
+      "metric": "pipelinedPingPerSecond",
+      "direction": "left minus right; positive favors left throughput",
+      "difference": {
+        "min": 376649,
+        "median": 385758,
+        "max": 397016,
+        "mean": 386831.8888888889,
+        "standardDeviation": 7905.172696476094,
+        "medianAbsoluteDeviation": 7419,
+        "confidenceInterval95": [
+          380755.44614286424,
+          392908.3316349135
+        ]
+      }
+    },
+    "nativeVersusRustPipelinedPing": {
+      "metric": "pipelinedPingPerSecond",
+      "direction": "left minus right; positive favors left throughput",
+      "difference": {
+        "min": -855533,
+        "median": -816225,
+        "max": -760244,
+        "mean": -814988.5555555555,
+        "standardDeviation": 26439.011579062066,
+        "medianAbsoluteDeviation": 9866,
+        "confidenceInterval95": [
+          -835311.3424559946,
+          -794665.7686551164
+        ]
+      }
+    },
+    "addonVersusRustPipelinedPing": {
+      "metric": "pipelinedPingPerSecond",
+      "direction": "left minus right; positive favors left throughput",
+      "difference": {
+        "min": -806440,
+        "median": -792100,
+        "max": -754513,
+        "mean": -788811.3333333334,
+        "standardDeviation": 14865.870980201596,
+        "medianAbsoluteDeviation": 5335,
+        "confidenceInterval95": [
+          -800238.2328267817,
+          -777384.433839885
+        ]
+      }
+    }
   },
   "implementations": [
     {
       "name": "TypeNative .node addon",
-      "artifactBytes": 138584,
+      "artifactBytes": 140184,
       "samples": [
         {
           "sample": 1,
-          "port": 12921,
-          "startupMilliseconds": 478.333625,
-          "pipelinedPingSeconds": 0.163318166,
-          "pipelinedPingPerSecond": 612302,
-          "nonPipelinedPingSeconds": 0.353318416,
-          "nonPipelinedPingPerSecond": 28303,
-          "randomSetSeconds": 0.3509865,
-          "randomSetPerSecond": 28491,
-          "randomGetSeconds": 0.353082416,
-          "randomGetPerSecond": 28322,
-          "initialRssKiB": 44672,
-          "finalRssKiB": 45040,
-          "rssGrowthKiB": 368
+          "port": 23730,
+          "startupMilliseconds": 79.1485,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.094884291,
+          "pipelinedPingPerSecond": 1053915,
+          "nonPipelinedPingSeconds": 0.408830417,
+          "nonPipelinedPingPerSecond": 24460,
+          "nonPipelinedPingLatencyMicroseconds": 40.8830417,
+          "randomSetSeconds": 0.4211605,
+          "randomSetPerSecond": 23744,
+          "randomGetSeconds": 0.350763,
+          "randomGetPerSecond": 28509,
+          "initialRssKiB": 44832,
+          "finalRssKiB": 44880,
+          "rssGrowthKiB": 48,
+          "cpuUserNanoseconds": 111372792,
+          "cpuSystemNanoseconds": 265622959,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 54330
         },
         {
           "sample": 2,
-          "port": 12922,
-          "startupMilliseconds": 82.122042,
-          "pipelinedPingSeconds": 0.155681708,
-          "pipelinedPingPerSecond": 642336,
-          "nonPipelinedPingSeconds": 0.353241334,
-          "nonPipelinedPingPerSecond": 28309,
-          "randomSetSeconds": 0.343450833,
-          "randomSetPerSecond": 29116,
-          "randomGetSeconds": 0.351558125,
-          "randomGetPerSecond": 28445,
-          "initialRssKiB": 44592,
-          "finalRssKiB": 44960,
-          "rssGrowthKiB": 368
+          "port": 23731,
+          "startupMilliseconds": 78.711791,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.095783375,
+          "pipelinedPingPerSecond": 1044023,
+          "nonPipelinedPingSeconds": 0.326946625,
+          "nonPipelinedPingPerSecond": 30586,
+          "nonPipelinedPingLatencyMicroseconds": 32.6946625,
+          "randomSetSeconds": 0.327786041,
+          "randomSetPerSecond": 30508,
+          "randomGetSeconds": 0.33561175,
+          "randomGetPerSecond": 29796,
+          "initialRssKiB": 44640,
+          "finalRssKiB": 44640,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 101798333,
+          "cpuSystemNanoseconds": 229477625,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 44299
         },
         {
           "sample": 3,
-          "port": 12923,
-          "startupMilliseconds": 82.017167,
-          "pipelinedPingSeconds": 0.156590792,
-          "pipelinedPingPerSecond": 638607,
-          "nonPipelinedPingSeconds": 0.331521459,
-          "nonPipelinedPingPerSecond": 30164,
-          "randomSetSeconds": 0.350967125,
-          "randomSetPerSecond": 28493,
-          "randomGetSeconds": 0.351118208,
-          "randomGetPerSecond": 28480,
-          "initialRssKiB": 44592,
-          "finalRssKiB": 44928,
-          "rssGrowthKiB": 336
+          "port": 23732,
+          "startupMilliseconds": 79.080167,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.0957225,
+          "pipelinedPingPerSecond": 1044686,
+          "nonPipelinedPingSeconds": 0.342954417,
+          "nonPipelinedPingPerSecond": 29158,
+          "nonPipelinedPingLatencyMicroseconds": 34.295441700000005,
+          "randomSetSeconds": 0.355092,
+          "randomSetPerSecond": 28162,
+          "randomGetSeconds": 0.343875208,
+          "randomGetPerSecond": 29080,
+          "initialRssKiB": 44752,
+          "finalRssKiB": 44752,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 104166042,
+          "cpuSystemNanoseconds": 242927167,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 43421
         },
         {
           "sample": 4,
-          "port": 12924,
-          "startupMilliseconds": 81.9465,
-          "pipelinedPingSeconds": 0.155208084,
-          "pipelinedPingPerSecond": 644296,
-          "nonPipelinedPingSeconds": 0.335943042,
-          "nonPipelinedPingPerSecond": 29767,
-          "randomSetSeconds": 0.346451209,
-          "randomSetPerSecond": 28864,
-          "randomGetSeconds": 0.346141,
-          "randomGetPerSecond": 28890,
-          "initialRssKiB": 44608,
-          "finalRssKiB": 44912,
-          "rssGrowthKiB": 304
+          "port": 23733,
+          "startupMilliseconds": 79.373458,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.096853833,
+          "pipelinedPingPerSecond": 1032484,
+          "nonPipelinedPingSeconds": 0.326141541,
+          "nonPipelinedPingPerSecond": 30662,
+          "nonPipelinedPingLatencyMicroseconds": 32.6141541,
+          "randomSetSeconds": 0.316007375,
+          "randomSetPerSecond": 31645,
+          "randomGetSeconds": 0.356169,
+          "randomGetPerSecond": 28077,
+          "initialRssKiB": 44752,
+          "finalRssKiB": 44784,
+          "rssGrowthKiB": 32,
+          "cpuUserNanoseconds": 103344083,
+          "cpuSystemNanoseconds": 230467334,
+          "machSystemCalls": 1,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 44344
         },
         {
           "sample": 5,
-          "port": 12925,
-          "startupMilliseconds": 81.986833,
-          "pipelinedPingSeconds": 0.1580615,
-          "pipelinedPingPerSecond": 632665,
-          "nonPipelinedPingSeconds": 0.311518708,
-          "nonPipelinedPingPerSecond": 32101,
-          "randomSetSeconds": 0.350070333,
-          "randomSetPerSecond": 28566,
-          "randomGetSeconds": 0.351977458,
-          "randomGetPerSecond": 28411,
-          "initialRssKiB": 44448,
+          "port": 23734,
+          "startupMilliseconds": 79.381875,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.096083584,
+          "pipelinedPingPerSecond": 1040761,
+          "nonPipelinedPingSeconds": 0.320117125,
+          "nonPipelinedPingPerSecond": 31239,
+          "nonPipelinedPingLatencyMicroseconds": 32.0117125,
+          "randomSetSeconds": 0.342002042,
+          "randomSetPerSecond": 29240,
+          "randomGetSeconds": 0.344738083,
+          "randomGetPerSecond": 29008,
+          "initialRssKiB": 44704,
+          "finalRssKiB": 44704,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 102346625,
+          "cpuSystemNanoseconds": 233650541,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 44872
+        },
+        {
+          "sample": 6,
+          "port": 23735,
+          "startupMilliseconds": 78.734791,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.095950375,
+          "pipelinedPingPerSecond": 1042205,
+          "nonPipelinedPingSeconds": 0.317661375,
+          "nonPipelinedPingPerSecond": 31480,
+          "nonPipelinedPingLatencyMicroseconds": 31.7661375,
+          "randomSetSeconds": 0.342815833,
+          "randomSetPerSecond": 29170,
+          "randomGetSeconds": 0.3408835,
+          "randomGetPerSecond": 29336,
+          "initialRssKiB": 44800,
           "finalRssKiB": 44816,
-          "rssGrowthKiB": 368
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 102982042,
+          "cpuSystemNanoseconds": 233010708,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 44459
+        },
+        {
+          "sample": 7,
+          "port": 23736,
+          "startupMilliseconds": 78.827125,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.094706875,
+          "pipelinedPingPerSecond": 1055890,
+          "nonPipelinedPingSeconds": 0.324288417,
+          "nonPipelinedPingPerSecond": 30837,
+          "nonPipelinedPingLatencyMicroseconds": 32.4288417,
+          "randomSetSeconds": 0.331728916,
+          "randomSetPerSecond": 30145,
+          "randomGetSeconds": 0.340866,
+          "randomGetPerSecond": 29337,
+          "initialRssKiB": 44640,
+          "finalRssKiB": 44640,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 101496500,
+          "cpuSystemNanoseconds": 231455917,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 44581
+        },
+        {
+          "sample": 8,
+          "port": 23737,
+          "startupMilliseconds": 78.070875,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.0960395,
+          "pipelinedPingPerSecond": 1041238,
+          "nonPipelinedPingSeconds": 0.302653375,
+          "nonPipelinedPingPerSecond": 33041,
+          "nonPipelinedPingLatencyMicroseconds": 30.2653375,
+          "randomSetSeconds": 0.340729958,
+          "randomSetPerSecond": 29349,
+          "randomGetSeconds": 0.334293458,
+          "randomGetPerSecond": 29914,
+          "initialRssKiB": 44560,
+          "finalRssKiB": 44560,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 100696084,
+          "cpuSystemNanoseconds": 227597750,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 42758
+        },
+        {
+          "sample": 9,
+          "port": 23738,
+          "startupMilliseconds": 78.811041,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.096327125,
+          "pipelinedPingPerSecond": 1038129,
+          "nonPipelinedPingSeconds": 0.391794208,
+          "nonPipelinedPingPerSecond": 25524,
+          "nonPipelinedPingLatencyMicroseconds": 39.179420799999995,
+          "randomSetSeconds": 0.418217875,
+          "randomSetPerSecond": 23911,
+          "randomGetSeconds": 0.423385375,
+          "randomGetPerSecond": 23619,
+          "initialRssKiB": 44912,
+          "finalRssKiB": 44912,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 112022833,
+          "cpuSystemNanoseconds": 275623916,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 58285
         }
       ],
       "summary": {
         "startupMilliseconds": {
-          "min": 81.9465,
-          "median": 82.017167,
-          "max": 478.333625
+          "min": 78.070875,
+          "median": 78.827125,
+          "max": 79.381875,
+          "mean": 78.90440255555558,
+          "standardDeviation": 0.4052458089098844,
+          "medianAbsoluteDeviation": 0.25304200000000776,
+          "confidenceInterval95": [
+            78.59290361044017,
+            79.21590150067098
+          ]
         },
         "pipelinedPingSeconds": {
-          "min": 0.155208084,
-          "median": 0.156590792,
-          "max": 0.163318166
+          "min": 0.094706875,
+          "median": 0.095950375,
+          "max": 0.096853833,
+          "mean": 0.09581682866666667,
+          "standardDeviation": 0.000669514430009729,
+          "medianAbsoluteDeviation": 0.00022787500000000238,
+          "confidenceInterval95": [
+            0.09530219524146587,
+            0.09633146209186748
+          ]
         },
         "pipelinedPingPerSecond": {
-          "min": 612302,
-          "median": 638607,
-          "max": 644296
+          "min": 1032484,
+          "median": 1042205,
+          "max": 1055890,
+          "mean": 1043703.4444444445,
+          "standardDeviation": 7312.5545316105345,
+          "medianAbsoluteDeviation": 2481,
+          "confidenceInterval95": [
+            1038082.5275278132,
+            1049324.361361076
+          ]
         },
         "nonPipelinedPingSeconds": {
-          "min": 0.311518708,
-          "median": 0.335943042,
-          "max": 0.353318416
+          "min": 0.302653375,
+          "median": 0.326141541,
+          "max": 0.408830417,
+          "mean": 0.34015416666666665,
+          "standardDeviation": 0.035929089136553245,
+          "medianAbsoluteDeviation": 0.008480165999999956,
+          "confidenceInterval95": [
+            0.31253667348370273,
+            0.36777165984963056
+          ]
         },
         "nonPipelinedPingPerSecond": {
-          "min": 28303,
-          "median": 29767,
-          "max": 32101
+          "min": 24460,
+          "median": 30662,
+          "max": 33041,
+          "mean": 29665.222222222223,
+          "standardDeviation": 2847.847115707661,
+          "medianAbsoluteDeviation": 818,
+          "confidenceInterval95": [
+            27476.177072614933,
+            31854.267371829512
+          ]
+        },
+        "nonPipelinedPingLatencyMicroseconds": {
+          "min": 30.2653375,
+          "median": 32.6141541,
+          "max": 40.8830417,
+          "mean": 34.01541666666667,
+          "standardDeviation": 3.5929089136553243,
+          "medianAbsoluteDeviation": 0.8480166000000011,
+          "confidenceInterval95": [
+            31.253667348370275,
+            36.77716598496306
+          ]
         },
         "randomSetSeconds": {
-          "min": 0.343450833,
-          "median": 0.350070333,
-          "max": 0.3509865
+          "min": 0.316007375,
+          "median": 0.342002042,
+          "max": 0.4211605,
+          "mean": 0.35506005999999996,
+          "standardDeviation": 0.038238217359482136,
+          "medianAbsoluteDeviation": 0.013089958000000013,
+          "confidenceInterval95": [
+            0.3256676169230113,
+            0.3844525030769886
+          ]
         },
         "randomSetPerSecond": {
-          "min": 28491,
-          "median": 28566,
-          "max": 29116
+          "min": 23744,
+          "median": 29240,
+          "max": 31645,
+          "mean": 28430.444444444445,
+          "standardDeviation": 2786.027059771275,
+          "medianAbsoluteDeviation": 1078,
+          "confidenceInterval95": [
+            26288.918311166926,
+            30571.970577721964
+          ]
         },
         "randomGetSeconds": {
-          "min": 0.346141,
-          "median": 0.351558125,
-          "max": 0.353082416
+          "min": 0.334293458,
+          "median": 0.343875208,
+          "max": 0.423385375,
+          "mean": 0.35228726377777775,
+          "standardDeviation": 0.027528227306386883,
+          "medianAbsoluteDeviation": 0.006887792000000004,
+          "confidenceInterval95": [
+            0.331127233054935,
+            0.3734472945006205
+          ]
         },
         "randomGetPerSecond": {
-          "min": 28322,
-          "median": 28445,
-          "max": 28890
+          "min": 23619,
+          "median": 29080,
+          "max": 29914,
+          "mean": 28519.555555555555,
+          "standardDeviation": 1925.898174301481,
+          "medianAbsoluteDeviation": 571,
+          "confidenceInterval95": [
+            27039.181825575815,
+            29999.929285535294
+          ]
         },
         "initialRssKiB": {
-          "min": 44448,
-          "median": 44592,
-          "max": 44672
+          "min": 44560,
+          "median": 44752,
+          "max": 44912,
+          "mean": 44732.444444444445,
+          "standardDeviation": 109.04025760139132,
+          "medianAbsoluteDeviation": 80,
+          "confidenceInterval95": [
+            44648.62883310151,
+            44816.26005578738
+          ]
         },
         "finalRssKiB": {
-          "min": 44816,
-          "median": 44928,
-          "max": 45040
+          "min": 44560,
+          "median": 44752,
+          "max": 44912,
+          "mean": 44743.11111111111,
+          "standardDeviation": 117.60574437973305,
+          "medianAbsoluteDeviation": 112,
+          "confidenceInterval95": [
+            44652.71149559789,
+            44833.51072662433
+          ]
         },
         "rssGrowthKiB": {
-          "min": 304,
-          "median": 368,
-          "max": 368
+          "min": 0,
+          "median": 0,
+          "max": 48,
+          "mean": 10.666666666666666,
+          "standardDeviation": 17.88854381999832,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            -3.0836606829720417,
+            24.416994016305374
+          ]
+        },
+        "cpuUserNanoseconds": {
+          "min": 100696084,
+          "median": 102982042,
+          "max": 112022833,
+          "mean": 104469481.55555555,
+          "standardDeviation": 4227862.788145421,
+          "medianAbsoluteDeviation": 1184000,
+          "confidenceInterval95": [
+            101219664.35906777,
+            107719298.75204334
+          ]
+        },
+        "cpuSystemNanoseconds": {
+          "min": 227597750,
+          "median": 233010708,
+          "max": 275623916,
+          "mean": 241092657.44444445,
+          "standardDeviation": 17467819.38112927,
+          "medianAbsoluteDeviation": 3533083,
+          "confidenceInterval95": [
+            227665726.9468164,
+            254519587.94207248
+          ]
+        },
+        "machSystemCalls": {
+          "min": 0,
+          "median": 0,
+          "max": 1,
+          "mean": 0.1111111111111111,
+          "standardDeviation": 0.33333333333333337,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            -0.14511111111111114,
+            0.36733333333333335
+          ]
+        },
+        "unixSystemCalls": {
+          "min": 60200,
+          "median": 60200,
+          "max": 60200,
+          "mean": 60200,
+          "standardDeviation": 0,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            60200,
+            60200
+          ]
+        },
+        "contextSwitches": {
+          "min": 42758,
+          "median": 44459,
+          "max": 58285,
+          "mean": 46816.555555555555,
+          "standardDeviation": 5508.713849691031,
+          "medianAbsoluteDeviation": 413,
+          "confidenceInterval95": [
+            42582.19084309305,
+            51050.92026801806
+          ]
         }
       }
     },
     {
       "name": "TypeNative native executable",
-      "artifactBytes": 116224,
+      "artifactBytes": 116064,
       "samples": [
         {
           "sample": 1,
-          "port": 13021,
-          "startupMilliseconds": 444.313708,
-          "pipelinedPingSeconds": 0.188509625,
-          "pipelinedPingPerSecond": 530477,
-          "nonPipelinedPingSeconds": 0.335348625,
-          "nonPipelinedPingPerSecond": 29820,
-          "randomSetSeconds": 0.344375792,
-          "randomSetPerSecond": 29038,
-          "randomGetSeconds": 0.349845292,
-          "randomGetPerSecond": 28584,
-          "initialRssKiB": 2144,
-          "finalRssKiB": 2512,
-          "rssGrowthKiB": 368
+          "port": 23830,
+          "startupMilliseconds": 26.675666,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.09902575,
+          "pipelinedPingPerSecond": 1009838,
+          "nonPipelinedPingSeconds": 0.3362465,
+          "nonPipelinedPingPerSecond": 29740,
+          "nonPipelinedPingLatencyMicroseconds": 33.62465,
+          "randomSetSeconds": 0.345388791,
+          "randomSetPerSecond": 28953,
+          "randomGetSeconds": 0.338763667,
+          "randomGetPerSecond": 29519,
+          "initialRssKiB": 2272,
+          "finalRssKiB": 2272,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 108827917,
+          "cpuSystemNanoseconds": 236376000,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 44774
         },
         {
           "sample": 2,
-          "port": 13022,
-          "startupMilliseconds": 27.447375,
-          "pipelinedPingSeconds": 0.172560042,
-          "pipelinedPingPerSecond": 579508,
-          "nonPipelinedPingSeconds": 0.334278,
-          "nonPipelinedPingPerSecond": 29915,
-          "randomSetSeconds": 0.349000042,
-          "randomSetPerSecond": 28653,
-          "randomGetSeconds": 0.351591917,
-          "randomGetPerSecond": 28442,
-          "initialRssKiB": 2128,
-          "finalRssKiB": 2480,
-          "rssGrowthKiB": 352
+          "port": 23831,
+          "startupMilliseconds": 26.767542,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.097615375,
+          "pipelinedPingPerSecond": 1024429,
+          "nonPipelinedPingSeconds": 0.339453583,
+          "nonPipelinedPingPerSecond": 29459,
+          "nonPipelinedPingLatencyMicroseconds": 33.945358299999995,
+          "randomSetSeconds": 0.343993834,
+          "randomSetPerSecond": 29070,
+          "randomGetSeconds": 0.332970666,
+          "randomGetPerSecond": 30033,
+          "initialRssKiB": 2256,
+          "finalRssKiB": 2256,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 107623042,
+          "cpuSystemNanoseconds": 235875500,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 43176
         },
         {
           "sample": 3,
-          "port": 13023,
-          "startupMilliseconds": 27.422167,
-          "pipelinedPingSeconds": 0.167205666,
-          "pipelinedPingPerSecond": 598066,
-          "nonPipelinedPingSeconds": 0.33368575,
-          "nonPipelinedPingPerSecond": 29968,
-          "randomSetSeconds": 0.349376417,
-          "randomSetPerSecond": 28622,
-          "randomGetSeconds": 0.35192425,
-          "randomGetPerSecond": 28415,
-          "initialRssKiB": 2112,
-          "finalRssKiB": 2480,
-          "rssGrowthKiB": 368
+          "port": 23832,
+          "startupMilliseconds": 26.662042,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.097128208,
+          "pipelinedPingPerSecond": 1029567,
+          "nonPipelinedPingSeconds": 0.43000575,
+          "nonPipelinedPingPerSecond": 23256,
+          "nonPipelinedPingLatencyMicroseconds": 43.000575,
+          "randomSetSeconds": 0.421875125,
+          "randomSetPerSecond": 23704,
+          "randomGetSeconds": 0.411041917,
+          "randomGetPerSecond": 24328,
+          "initialRssKiB": 2288,
+          "finalRssKiB": 2288,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 116048417,
+          "cpuSystemNanoseconds": 276212291,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 58011
         },
         {
           "sample": 4,
-          "port": 13024,
-          "startupMilliseconds": 27.497042,
-          "pipelinedPingSeconds": 0.168588667,
-          "pipelinedPingPerSecond": 593160,
-          "nonPipelinedPingSeconds": 0.332608916,
-          "nonPipelinedPingPerSecond": 30065,
-          "randomSetSeconds": 0.3525065,
-          "randomSetPerSecond": 28368,
-          "randomGetSeconds": 0.351617125,
-          "randomGetPerSecond": 28440,
-          "initialRssKiB": 2096,
-          "finalRssKiB": 2464,
-          "rssGrowthKiB": 368
+          "port": 23833,
+          "startupMilliseconds": 26.651875,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.097675708,
+          "pipelinedPingPerSecond": 1023796,
+          "nonPipelinedPingSeconds": 0.324170625,
+          "nonPipelinedPingPerSecond": 30848,
+          "nonPipelinedPingLatencyMicroseconds": 32.4170625,
+          "randomSetSeconds": 0.347709792,
+          "randomSetPerSecond": 28760,
+          "randomGetSeconds": 0.3381695,
+          "randomGetPerSecond": 29571,
+          "initialRssKiB": 2272,
+          "finalRssKiB": 2272,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 106347125,
+          "cpuSystemNanoseconds": 233493167,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 45118
         },
         {
           "sample": 5,
-          "port": 13025,
-          "startupMilliseconds": 27.626875,
-          "pipelinedPingSeconds": 0.176289667,
-          "pipelinedPingPerSecond": 567248,
-          "nonPipelinedPingSeconds": 0.334321417,
-          "nonPipelinedPingPerSecond": 29911,
-          "randomSetSeconds": 0.3500055,
-          "randomSetPerSecond": 28571,
-          "randomGetSeconds": 0.350859875,
-          "randomGetPerSecond": 28501,
-          "initialRssKiB": 2112,
-          "finalRssKiB": 2464,
-          "rssGrowthKiB": 352
+          "port": 23834,
+          "startupMilliseconds": 26.619333,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.098262834,
+          "pipelinedPingPerSecond": 1017679,
+          "nonPipelinedPingSeconds": 0.343339458,
+          "nonPipelinedPingPerSecond": 29126,
+          "nonPipelinedPingLatencyMicroseconds": 34.333945799999995,
+          "randomSetSeconds": 0.379397042,
+          "randomSetPerSecond": 26358,
+          "randomGetSeconds": 0.340182917,
+          "randomGetPerSecond": 29396,
+          "initialRssKiB": 2288,
+          "finalRssKiB": 2288,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 110992042,
+          "cpuSystemNanoseconds": 244587458,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 46497
+        },
+        {
+          "sample": 6,
+          "port": 23835,
+          "startupMilliseconds": 26.336875,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.099040041,
+          "pipelinedPingPerSecond": 1009693,
+          "nonPipelinedPingSeconds": 0.326636625,
+          "nonPipelinedPingPerSecond": 30615,
+          "nonPipelinedPingLatencyMicroseconds": 32.6636625,
+          "randomSetSeconds": 0.331300334,
+          "randomSetPerSecond": 30184,
+          "randomGetSeconds": 0.359096667,
+          "randomGetPerSecond": 27848,
+          "initialRssKiB": 2256,
+          "finalRssKiB": 2256,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 108396292,
+          "cpuSystemNanoseconds": 234488292,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 45663
+        },
+        {
+          "sample": 7,
+          "port": 23836,
+          "startupMilliseconds": 26.663625,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.100590375,
+          "pipelinedPingPerSecond": 994131,
+          "nonPipelinedPingSeconds": 0.405292583,
+          "nonPipelinedPingPerSecond": 24674,
+          "nonPipelinedPingLatencyMicroseconds": 40.529258299999995,
+          "randomSetSeconds": 0.41758925,
+          "randomSetPerSecond": 23947,
+          "randomGetSeconds": 0.417820166,
+          "randomGetPerSecond": 23934,
+          "initialRssKiB": 2288,
+          "finalRssKiB": 2288,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 117941584,
+          "cpuSystemNanoseconds": 275971417,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 59833
+        },
+        {
+          "sample": 8,
+          "port": 23837,
+          "startupMilliseconds": 26.690958,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.098405375,
+          "pipelinedPingPerSecond": 1016205,
+          "nonPipelinedPingSeconds": 0.395774084,
+          "nonPipelinedPingPerSecond": 25267,
+          "nonPipelinedPingLatencyMicroseconds": 39.5774084,
+          "randomSetSeconds": 0.417313291,
+          "randomSetPerSecond": 23963,
+          "randomGetSeconds": 0.418415833,
+          "randomGetPerSecond": 23900,
+          "initialRssKiB": 2288,
+          "finalRssKiB": 2288,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 117479500,
+          "cpuSystemNanoseconds": 273276541,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 59174
+        },
+        {
+          "sample": 9,
+          "port": 23838,
+          "startupMilliseconds": 26.652542,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.096861875,
+          "pipelinedPingPerSecond": 1032398,
+          "nonPipelinedPingSeconds": 0.395166209,
+          "nonPipelinedPingPerSecond": 25306,
+          "nonPipelinedPingLatencyMicroseconds": 39.5166209,
+          "randomSetSeconds": 0.4117425,
+          "randomSetPerSecond": 24287,
+          "randomGetSeconds": 0.413978125,
+          "randomGetPerSecond": 24156,
+          "initialRssKiB": 2256,
+          "finalRssKiB": 2256,
+          "rssGrowthKiB": 0,
+          "cpuUserNanoseconds": 115462875,
+          "cpuSystemNanoseconds": 271669041,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60200,
+          "contextSwitches": 58765
         }
       ],
       "summary": {
         "startupMilliseconds": {
-          "min": 27.422167,
-          "median": 27.497042,
-          "max": 444.313708
+          "min": 26.336875,
+          "median": 26.662042,
+          "max": 26.767542,
+          "mean": 26.635606444444445,
+          "standardDeviation": 0.11917225526639064,
+          "medianAbsoluteDeviation": 0.01362400000000008,
+          "confidenceInterval95": [
+            26.54400270422968,
+            26.72721018465921
+          ]
         },
         "pipelinedPingSeconds": {
-          "min": 0.167205666,
-          "median": 0.172560042,
-          "max": 0.188509625
+          "min": 0.096861875,
+          "median": 0.098262834,
+          "max": 0.100590375,
+          "mean": 0.09828950455555556,
+          "standardDeviation": 0.001152792104879399,
+          "medianAbsoluteDeviation": 0.0007629160000000024,
+          "confidenceInterval95": [
+            0.09740339169093826,
+            0.09917561742017286
+          ]
         },
         "pipelinedPingPerSecond": {
-          "min": 530477,
-          "median": 579508,
-          "max": 598066
+          "min": 994131,
+          "median": 1017679,
+          "max": 1032398,
+          "mean": 1017526.2222222222,
+          "standardDeviation": 11846.318423647257,
+          "medianAbsoluteDeviation": 7841,
+          "confidenceInterval95": [
+            1008420.3521272454,
+            1026632.0923171991
+          ]
         },
         "nonPipelinedPingSeconds": {
-          "min": 0.332608916,
-          "median": 0.334278,
-          "max": 0.335348625
+          "min": 0.324170625,
+          "median": 0.343339458,
+          "max": 0.43000575,
+          "mean": 0.36623171300000007,
+          "standardDeviation": 0.039968704640191165,
+          "medianAbsoluteDeviation": 0.019168832999999996,
+          "confidenceInterval95": [
+            0.3355091020332398,
+            0.39695432396676034
+          ]
         },
         "nonPipelinedPingPerSecond": {
-          "min": 29820,
-          "median": 29915,
-          "max": 30065
+          "min": 23256,
+          "median": 29126,
+          "max": 30848,
+          "mean": 27587.88888888889,
+          "standardDeviation": 2918.469266775155,
+          "medianAbsoluteDeviation": 1722,
+          "confidenceInterval95": [
+            25344.55884582772,
+            29831.21893195006
+          ]
+        },
+        "nonPipelinedPingLatencyMicroseconds": {
+          "min": 32.4170625,
+          "median": 34.333945799999995,
+          "max": 43.000575,
+          "mean": 36.623171299999996,
+          "standardDeviation": 3.9968704640191155,
+          "medianAbsoluteDeviation": 1.916883299999995,
+          "confidenceInterval95": [
+            33.550910203323966,
+            39.695432396676026
+          ]
         },
         "randomSetSeconds": {
-          "min": 0.344375792,
-          "median": 0.349376417,
-          "max": 0.3525065
+          "min": 0.331300334,
+          "median": 0.379397042,
+          "max": 0.421875125,
+          "mean": 0.3795899954444445,
+          "standardDeviation": 0.03787131369059972,
+          "medianAbsoluteDeviation": 0.03540320800000002,
+          "confidenceInterval95": [
+            0.3504795789876035,
+            0.4087004119012855
+          ]
         },
         "randomSetPerSecond": {
-          "min": 28368,
-          "median": 28622,
-          "max": 29038
+          "min": 23704,
+          "median": 26358,
+          "max": 30184,
+          "mean": 26580.666666666668,
+          "standardDeviation": 2667.684576556981,
+          "medianAbsoluteDeviation": 2411,
+          "confidenceInterval95": [
+            24530.106455486537,
+            28631.2268778468
+          ]
         },
         "randomGetSeconds": {
-          "min": 0.349845292,
-          "median": 0.351591917,
-          "max": 0.35192425
+          "min": 0.332970666,
+          "median": 0.359096667,
+          "max": 0.418415833,
+          "mean": 0.374493273111111,
+          "standardDeviation": 0.03942662802092146,
+          "medianAbsoluteDeviation": 0.026126000999999954,
+          "confidenceInterval95": [
+            0.3441873383723627,
+            0.40479920784985934
+          ]
         },
         "randomGetPerSecond": {
-          "min": 28415,
-          "median": 28442,
-          "max": 28584
+          "min": 23900,
+          "median": 27848,
+          "max": 30033,
+          "mean": 26965,
+          "standardDeviation": 2802.7143539790136,
+          "medianAbsoluteDeviation": 2185,
+          "confidenceInterval95": [
+            24810.64689990813,
+            29119.35310009187
+          ]
         },
         "initialRssKiB": {
-          "min": 2096,
-          "median": 2112,
-          "max": 2144
+          "min": 2256,
+          "median": 2272,
+          "max": 2288,
+          "mean": 2273.777777777778,
+          "standardDeviation": 14.847371634213392,
+          "medianAbsoluteDeviation": 16,
+          "confidenceInterval95": [
+            2262.365098114946,
+            2285.19045744061
+          ]
         },
         "finalRssKiB": {
-          "min": 2464,
-          "median": 2480,
-          "max": 2512
+          "min": 2256,
+          "median": 2272,
+          "max": 2288,
+          "mean": 2273.777777777778,
+          "standardDeviation": 14.847371634213392,
+          "medianAbsoluteDeviation": 16,
+          "confidenceInterval95": [
+            2262.365098114946,
+            2285.19045744061
+          ]
         },
         "rssGrowthKiB": {
-          "min": 352,
-          "median": 368,
-          "max": 368
+          "min": 0,
+          "median": 0,
+          "max": 0,
+          "mean": 0,
+          "standardDeviation": 0,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            0,
+            0
+          ]
+        },
+        "cpuUserNanoseconds": {
+          "min": 106347125,
+          "median": 110992042,
+          "max": 117941584,
+          "mean": 112124310.44444445,
+          "standardDeviation": 4592752.506783027,
+          "medianAbsoluteDeviation": 4470833,
+          "confidenceInterval95": [
+            108594014.68423057,
+            115654606.20465833
+          ]
+        },
+        "cpuSystemNanoseconds": {
+          "min": 233493167,
+          "median": 244587458,
+          "max": 276212291,
+          "mean": 253549967.44444445,
+          "standardDeviation": 19959402.820006635,
+          "medianAbsoluteDeviation": 11094291,
+          "confidenceInterval95": [
+            238207839.81013268,
+            268892095.0787562
+          ]
+        },
+        "machSystemCalls": {
+          "min": 0,
+          "median": 0,
+          "max": 0,
+          "mean": 0,
+          "standardDeviation": 0,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            0,
+            0
+          ]
+        },
+        "unixSystemCalls": {
+          "min": 60200,
+          "median": 60200,
+          "max": 60200,
+          "mean": 60200,
+          "standardDeviation": 0,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            60200,
+            60200
+          ]
+        },
+        "contextSwitches": {
+          "min": 43176,
+          "median": 46497,
+          "max": 59833,
+          "mean": 51223.444444444445,
+          "standardDeviation": 7392.333175512166,
+          "medianAbsoluteDeviation": 3321,
+          "confidenceInterval95": [
+            45541.20434353409,
+            56905.6845453548
+          ]
         }
       }
     },
@@ -328,145 +1061,859 @@
       "samples": [
         {
           "sample": 1,
-          "port": 13121,
-          "startupMilliseconds": 82.356833,
-          "pipelinedPingSeconds": 0.143670292,
-          "pipelinedPingPerSecond": 696038,
-          "nonPipelinedPingSeconds": 0.40067875,
-          "nonPipelinedPingPerSecond": 24958,
-          "randomSetSeconds": 0.434484791,
-          "randomSetPerSecond": 23016,
-          "randomGetSeconds": 0.435586917,
-          "randomGetPerSecond": 22958,
-          "initialRssKiB": 48048,
-          "finalRssKiB": 55248,
-          "rssGrowthKiB": 7200
+          "port": 23930,
+          "startupMilliseconds": 105.684375,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.150973416,
+          "pipelinedPingPerSecond": 662368,
+          "nonPipelinedPingSeconds": 0.464416291,
+          "nonPipelinedPingPerSecond": 21532,
+          "nonPipelinedPingLatencyMicroseconds": 46.4416291,
+          "randomSetSeconds": 0.515048167,
+          "randomSetPerSecond": 19416,
+          "randomGetSeconds": 0.494994417,
+          "randomGetPerSecond": 20202,
+          "initialRssKiB": 51360,
+          "finalRssKiB": 56160,
+          "rssGrowthKiB": 4800,
+          "cpuUserNanoseconds": 393777541,
+          "cpuSystemNanoseconds": 434534459,
+          "machSystemCalls": 2,
+          "unixSystemCalls": 220873,
+          "contextSwitches": 71878
         },
         {
           "sample": 2,
-          "port": 13122,
-          "startupMilliseconds": 83.408916,
-          "pipelinedPingSeconds": 0.147535625,
-          "pipelinedPingPerSecond": 677802,
-          "nonPipelinedPingSeconds": 0.399125416,
-          "nonPipelinedPingPerSecond": 25055,
-          "randomSetSeconds": 0.435392791,
-          "randomSetPerSecond": 22968,
-          "randomGetSeconds": 0.442213125,
-          "randomGetPerSecond": 22614,
-          "initialRssKiB": 48176,
-          "finalRssKiB": 55664,
-          "rssGrowthKiB": 7488
+          "port": 23931,
+          "startupMilliseconds": 107.365834,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.149841125,
+          "pipelinedPingPerSecond": 667374,
+          "nonPipelinedPingSeconds": 0.462698958,
+          "nonPipelinedPingPerSecond": 21612,
+          "nonPipelinedPingLatencyMicroseconds": 46.2698958,
+          "randomSetSeconds": 0.431538333,
+          "randomSetPerSecond": 23173,
+          "randomGetSeconds": 0.422174709,
+          "randomGetPerSecond": 23687,
+          "initialRssKiB": 50912,
+          "finalRssKiB": 55872,
+          "rssGrowthKiB": 4960,
+          "cpuUserNanoseconds": 381017209,
+          "cpuSystemNanoseconds": 407157041,
+          "machSystemCalls": 3,
+          "unixSystemCalls": 220915,
+          "contextSwitches": 67564
         },
         {
           "sample": 3,
-          "port": 13123,
-          "startupMilliseconds": 83.510709,
-          "pipelinedPingSeconds": 0.149783625,
-          "pipelinedPingPerSecond": 667630,
-          "nonPipelinedPingSeconds": 0.405287292,
-          "nonPipelinedPingPerSecond": 24674,
-          "randomSetSeconds": 0.455085625,
-          "randomSetPerSecond": 21974,
-          "randomGetSeconds": 0.437138125,
-          "randomGetPerSecond": 22876,
-          "initialRssKiB": 47904,
-          "finalRssKiB": 55040,
-          "rssGrowthKiB": 7136
+          "port": 23932,
+          "startupMilliseconds": 79.956917,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.15359575,
+          "pipelinedPingPerSecond": 651060,
+          "nonPipelinedPingSeconds": 0.46189225,
+          "nonPipelinedPingPerSecond": 21650,
+          "nonPipelinedPingLatencyMicroseconds": 46.189225,
+          "randomSetSeconds": 0.506516375,
+          "randomSetPerSecond": 19743,
+          "randomGetSeconds": 0.500724375,
+          "randomGetPerSecond": 19971,
+          "initialRssKiB": 51248,
+          "finalRssKiB": 55968,
+          "rssGrowthKiB": 4720,
+          "cpuUserNanoseconds": 393712208,
+          "cpuSystemNanoseconds": 431370208,
+          "machSystemCalls": 1,
+          "unixSystemCalls": 220896,
+          "contextSwitches": 72746
         },
         {
           "sample": 4,
-          "port": 13124,
-          "startupMilliseconds": 83.4065,
-          "pipelinedPingSeconds": 0.146129208,
-          "pipelinedPingPerSecond": 684326,
-          "nonPipelinedPingSeconds": 0.398703666,
-          "nonPipelinedPingPerSecond": 25081,
-          "randomSetSeconds": 0.435316375,
-          "randomSetPerSecond": 22972,
-          "randomGetSeconds": 0.4277425,
-          "randomGetPerSecond": 23379,
-          "initialRssKiB": 48176,
-          "finalRssKiB": 55392,
-          "rssGrowthKiB": 7216
+          "port": 23933,
+          "startupMilliseconds": 80.937667,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.152871375,
+          "pipelinedPingPerSecond": 654145,
+          "nonPipelinedPingSeconds": 0.395261917,
+          "nonPipelinedPingPerSecond": 25300,
+          "nonPipelinedPingLatencyMicroseconds": 39.5261917,
+          "randomSetSeconds": 0.42918425,
+          "randomSetPerSecond": 23300,
+          "randomGetSeconds": 0.420764125,
+          "randomGetPerSecond": 23766,
+          "initialRssKiB": 51152,
+          "finalRssKiB": 55952,
+          "rssGrowthKiB": 4800,
+          "cpuUserNanoseconds": 367825417,
+          "cpuSystemNanoseconds": 402309208,
+          "machSystemCalls": 3,
+          "unixSystemCalls": 220928,
+          "contextSwitches": 65356
         },
         {
           "sample": 5,
-          "port": 13125,
-          "startupMilliseconds": 83.401042,
-          "pipelinedPingSeconds": 0.145866875,
-          "pipelinedPingPerSecond": 685557,
-          "nonPipelinedPingSeconds": 0.402678917,
-          "nonPipelinedPingPerSecond": 24834,
-          "randomSetSeconds": 0.436672625,
-          "randomSetPerSecond": 22900,
-          "randomGetSeconds": 0.434172,
-          "randomGetPerSecond": 23032,
-          "initialRssKiB": 48160,
-          "finalRssKiB": 55392,
-          "rssGrowthKiB": 7232
+          "port": 23934,
+          "startupMilliseconds": 81.122292,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.152671041,
+          "pipelinedPingPerSecond": 655003,
+          "nonPipelinedPingSeconds": 0.464248375,
+          "nonPipelinedPingPerSecond": 21540,
+          "nonPipelinedPingLatencyMicroseconds": 46.4248375,
+          "randomSetSeconds": 0.500776125,
+          "randomSetPerSecond": 19969,
+          "randomGetSeconds": 0.498029875,
+          "randomGetPerSecond": 20079,
+          "initialRssKiB": 51232,
+          "finalRssKiB": 55888,
+          "rssGrowthKiB": 4656,
+          "cpuUserNanoseconds": 390289916,
+          "cpuSystemNanoseconds": 430098458,
+          "machSystemCalls": 2,
+          "unixSystemCalls": 220860,
+          "contextSwitches": 72885
+        },
+        {
+          "sample": 6,
+          "port": 23935,
+          "startupMilliseconds": 81.724208,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.154993458,
+          "pipelinedPingPerSecond": 645189,
+          "nonPipelinedPingSeconds": 0.4546185,
+          "nonPipelinedPingPerSecond": 21996,
+          "nonPipelinedPingLatencyMicroseconds": 45.46185,
+          "randomSetSeconds": 0.421281333,
+          "randomSetPerSecond": 23737,
+          "randomGetSeconds": 0.433606042,
+          "randomGetPerSecond": 23062,
+          "initialRssKiB": 50928,
+          "finalRssKiB": 55792,
+          "rssGrowthKiB": 4864,
+          "cpuUserNanoseconds": 373006792,
+          "cpuSystemNanoseconds": 413469041,
+          "machSystemCalls": 4,
+          "unixSystemCalls": 220805,
+          "contextSwitches": 66107
+        },
+        {
+          "sample": 7,
+          "port": 23936,
+          "startupMilliseconds": 80.63525,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.151578083,
+          "pipelinedPingPerSecond": 659726,
+          "nonPipelinedPingSeconds": 0.45916975,
+          "nonPipelinedPingPerSecond": 21778,
+          "nonPipelinedPingLatencyMicroseconds": 45.916975,
+          "randomSetSeconds": 0.499897,
+          "randomSetPerSecond": 20004,
+          "randomGetSeconds": 0.50185825,
+          "randomGetPerSecond": 19926,
+          "initialRssKiB": 51072,
+          "finalRssKiB": 55808,
+          "rssGrowthKiB": 4736,
+          "cpuUserNanoseconds": 389960458,
+          "cpuSystemNanoseconds": 430557583,
+          "machSystemCalls": 1,
+          "unixSystemCalls": 220906,
+          "contextSwitches": 72335
+        },
+        {
+          "sample": 8,
+          "port": 23937,
+          "startupMilliseconds": 107.492625,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.151433875,
+          "pipelinedPingPerSecond": 660354,
+          "nonPipelinedPingSeconds": 0.408368,
+          "nonPipelinedPingPerSecond": 24488,
+          "nonPipelinedPingLatencyMicroseconds": 40.8368,
+          "randomSetSeconds": 0.421717541,
+          "randomSetPerSecond": 23713,
+          "randomGetSeconds": 0.425149417,
+          "randomGetPerSecond": 23521,
+          "initialRssKiB": 50992,
+          "finalRssKiB": 55600,
+          "rssGrowthKiB": 4608,
+          "cpuUserNanoseconds": 364834208,
+          "cpuSystemNanoseconds": 408050917,
+          "machSystemCalls": 2,
+          "unixSystemCalls": 220953,
+          "contextSwitches": 65345
+        },
+        {
+          "sample": 9,
+          "port": 23938,
+          "startupMilliseconds": 79.865583,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.152293875,
+          "pipelinedPingPerSecond": 656625,
+          "nonPipelinedPingSeconds": 0.394770083,
+          "nonPipelinedPingPerSecond": 25331,
+          "nonPipelinedPingLatencyMicroseconds": 39.4770083,
+          "randomSetSeconds": 0.421031708,
+          "randomSetPerSecond": 23751,
+          "randomGetSeconds": 0.421597084,
+          "randomGetPerSecond": 23719,
+          "initialRssKiB": 50928,
+          "finalRssKiB": 55712,
+          "rssGrowthKiB": 4784,
+          "cpuUserNanoseconds": 363005500,
+          "cpuSystemNanoseconds": 408206250,
+          "machSystemCalls": 2,
+          "unixSystemCalls": 220881,
+          "contextSwitches": 65144
         }
       ],
       "summary": {
         "startupMilliseconds": {
-          "min": 82.356833,
-          "median": 83.4065,
-          "max": 83.510709
+          "min": 79.865583,
+          "median": 81.122292,
+          "max": 107.492625,
+          "mean": 89.4205278888889,
+          "standardDeviation": 13.092165721813853,
+          "medianAbsoluteDeviation": 1.1653749999999974,
+          "confidenceInterval95": [
+            79.35701650405466,
+            99.48403927372314
+          ]
         },
         "pipelinedPingSeconds": {
-          "min": 0.143670292,
-          "median": 0.146129208,
-          "max": 0.149783625
+          "min": 0.149841125,
+          "median": 0.152293875,
+          "max": 0.154993458,
+          "mean": 0.15225022200000002,
+          "standardDeviation": 0.0015187490655072873,
+          "medianAbsoluteDeviation": 0.0008599999999999997,
+          "confidenceInterval95": [
+            0.1510828102183134,
+            0.15341763378168663
+          ]
         },
         "pipelinedPingPerSecond": {
-          "min": 667630,
-          "median": 684326,
-          "max": 696038
+          "min": 645189,
+          "median": 656625,
+          "max": 667374,
+          "mean": 656871.5555555555,
+          "standardDeviation": 6538.636996941929,
+          "medianAbsoluteDeviation": 3729,
+          "confidenceInterval95": [
+            651845.5232505728,
+            661897.5878605382
+          ]
         },
         "nonPipelinedPingSeconds": {
-          "min": 0.398703666,
-          "median": 0.40067875,
-          "max": 0.405287292
+          "min": 0.394770083,
+          "median": 0.45916975,
+          "max": 0.464416291,
+          "mean": 0.44060490266666663,
+          "standardDeviation": 0.031233723439606467,
+          "medianAbsoluteDeviation": 0.005078625000000003,
+          "confidenceInterval95": [
+            0.4165965805827558,
+            0.4646132247505775
+          ]
         },
         "nonPipelinedPingPerSecond": {
-          "min": 24674,
-          "median": 24958,
-          "max": 25081
+          "min": 21532,
+          "median": 21778,
+          "max": 25331,
+          "mean": 22803,
+          "standardDeviation": 1700.198223737456,
+          "medianAbsoluteDeviation": 238,
+          "confidenceInterval95": [
+            21496.114298687142,
+            24109.885701312858
+          ]
+        },
+        "nonPipelinedPingLatencyMicroseconds": {
+          "min": 39.4770083,
+          "median": 45.916975,
+          "max": 46.4416291,
+          "mean": 44.06049026666666,
+          "standardDeviation": 3.1233723439606482,
+          "medianAbsoluteDeviation": 0.5078625000000017,
+          "confidenceInterval95": [
+            41.659658058275575,
+            46.46132247505775
+          ]
         },
         "randomSetSeconds": {
-          "min": 0.434484791,
-          "median": 0.435392791,
-          "max": 0.455085625
+          "min": 0.421031708,
+          "median": 0.431538333,
+          "max": 0.515048167,
+          "mean": 0.46077675911111116,
+          "standardDeviation": 0.042845643271790364,
+          "medianAbsoluteDeviation": 0.010506624999999992,
+          "confidenceInterval95": [
+            0.427842741316195,
+            0.4937107769060273
+          ]
         },
         "randomSetPerSecond": {
-          "min": 21974,
-          "median": 22968,
-          "max": 23016
+          "min": 19416,
+          "median": 23173,
+          "max": 23751,
+          "mean": 21867.333333333332,
+          "standardDeviation": 1993.9015146190145,
+          "medianAbsoluteDeviation": 578,
+          "confidenceInterval95": [
+            20334.687702429517,
+            23399.978964237147
+          ]
         },
         "randomGetSeconds": {
-          "min": 0.4277425,
-          "median": 0.435586917,
-          "max": 0.442213125
+          "min": 0.420764125,
+          "median": 0.433606042,
+          "max": 0.50185825,
+          "mean": 0.457655366,
+          "standardDeviation": 0.039351282200269615,
+          "medianAbsoluteDeviation": 0.012841917000000036,
+          "confidenceInterval95": [
+            0.4274073470820594,
+            0.4879033849179406
+          ]
         },
         "randomGetPerSecond": {
-          "min": 22614,
-          "median": 22958,
-          "max": 23379
+          "min": 19926,
+          "median": 23062,
+          "max": 23766,
+          "mean": 21992.555555555555,
+          "standardDeviation": 1860.8410135682677,
+          "medianAbsoluteDeviation": 704,
+          "confidenceInterval95": [
+            20562.189096459413,
+            23422.922014651696
+          ]
         },
         "initialRssKiB": {
-          "min": 47904,
-          "median": 48160,
-          "max": 48176
+          "min": 50912,
+          "median": 51072,
+          "max": 51360,
+          "mean": 51091.555555555555,
+          "standardDeviation": 164.29783254132656,
+          "medianAbsoluteDeviation": 144,
+          "confidenceInterval95": [
+            50965.265288275456,
+            51217.845822835654
+          ]
         },
         "finalRssKiB": {
-          "min": 55040,
-          "median": 55392,
-          "max": 55664
+          "min": 55600,
+          "median": 55872,
+          "max": 56160,
+          "mean": 55861.333333333336,
+          "standardDeviation": 161.19553343687906,
+          "medianAbsoluteDeviation": 80,
+          "confidenceInterval95": [
+            55737.42769996486,
+            55985.238966701814
+          ]
         },
         "rssGrowthKiB": {
-          "min": 7136,
-          "median": 7216,
-          "max": 7488
+          "min": 4608,
+          "median": 4784,
+          "max": 4960,
+          "mean": 4769.777777777777,
+          "standardDeviation": 105.96435459362947,
+          "medianAbsoluteDeviation": 64,
+          "confidenceInterval95": [
+            4688.326510546807,
+            4851.229045008748
+          ]
+        },
+        "cpuUserNanoseconds": {
+          "min": 363005500,
+          "median": 381017209,
+          "max": 393777541,
+          "mean": 379714361,
+          "standardDeviation": 12743520.37849027,
+          "medianAbsoluteDeviation": 12694999,
+          "confidenceInterval95": [
+            369918841.66906714,
+            389509880.33093286
+          ]
+        },
+        "cpuSystemNanoseconds": {
+          "min": 402309208,
+          "median": 413469041,
+          "max": 434534459,
+          "mean": 418417018.3333333,
+          "standardDeviation": 12912461.66053644,
+          "medianAbsoluteDeviation": 11159833,
+          "confidenceInterval95": [
+            408491639.47026765,
+            428342397.196399
+          ]
+        },
+        "machSystemCalls": {
+          "min": 1,
+          "median": 2,
+          "max": 4,
+          "mean": 2.2222222222222223,
+          "standardDeviation": 0.9718253158075502,
+          "medianAbsoluteDeviation": 1,
+          "confidenceInterval95": [
+            1.4752124961381519,
+            2.969231948306293
+          ]
+        },
+        "unixSystemCalls": {
+          "min": 220805,
+          "median": 220896,
+          "max": 220953,
+          "mean": 220890.77777777778,
+          "standardDeviation": 43.04003304418393,
+          "medianAbsoluteDeviation": 23,
+          "confidenceInterval95": [
+            220857.69433904448,
+            220923.86121651108
+          ]
+        },
+        "contextSwitches": {
+          "min": 65144,
+          "median": 67564,
+          "max": 72885,
+          "mean": 68817.77777777778,
+          "standardDeviation": 3538.5386735832694,
+          "medianAbsoluteDeviation": 2420,
+          "confidenceInterval95": [
+            66097.82105068344,
+            71537.73450487212
+          ]
+        }
+      }
+    },
+    {
+      "name": "Rust native executable",
+      "artifactBytes": 447752,
+      "samples": [
+        {
+          "sample": 1,
+          "port": 24030,
+          "startupMilliseconds": 26.60775,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054505625,
+          "pipelinedPingPerSecond": 1834673,
+          "nonPipelinedPingSeconds": 0.313324625,
+          "nonPipelinedPingPerSecond": 31916,
+          "nonPipelinedPingLatencyMicroseconds": 31.3324625,
+          "randomSetSeconds": 0.322260917,
+          "randomSetPerSecond": 31031,
+          "randomGetSeconds": 0.31362625,
+          "randomGetPerSecond": 31885,
+          "initialRssKiB": 2000,
+          "finalRssKiB": 2016,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 18662666,
+          "cpuSystemNanoseconds": 223356125,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 43050
+        },
+        {
+          "sample": 2,
+          "port": 24031,
+          "startupMilliseconds": 26.087666,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054621292,
+          "pipelinedPingPerSecond": 1830788,
+          "nonPipelinedPingSeconds": 0.377101,
+          "nonPipelinedPingPerSecond": 26518,
+          "nonPipelinedPingLatencyMicroseconds": 37.7101,
+          "randomSetSeconds": 0.398563666,
+          "randomSetPerSecond": 25090,
+          "randomGetSeconds": 0.392273375,
+          "randomGetPerSecond": 25492,
+          "initialRssKiB": 2032,
+          "finalRssKiB": 2048,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 21467084,
+          "cpuSystemNanoseconds": 264296292,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 56227
+        },
+        {
+          "sample": 3,
+          "port": 24032,
+          "startupMilliseconds": 26.632,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054169334,
+          "pipelinedPingPerSecond": 1846063,
+          "nonPipelinedPingSeconds": 0.309206792,
+          "nonPipelinedPingPerSecond": 32341,
+          "nonPipelinedPingLatencyMicroseconds": 30.920679200000002,
+          "randomSetSeconds": 0.322256917,
+          "randomSetPerSecond": 31031,
+          "randomGetSeconds": 0.31293,
+          "randomGetPerSecond": 31956,
+          "initialRssKiB": 2016,
+          "finalRssKiB": 2032,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 18475917,
+          "cpuSystemNanoseconds": 220920708,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 43461
+        },
+        {
+          "sample": 4,
+          "port": 24033,
+          "startupMilliseconds": 26.637209,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054807,
+          "pipelinedPingPerSecond": 1824584,
+          "nonPipelinedPingSeconds": 0.304549125,
+          "nonPipelinedPingPerSecond": 32835,
+          "nonPipelinedPingLatencyMicroseconds": 30.4549125,
+          "randomSetSeconds": 0.326545166,
+          "randomSetPerSecond": 30624,
+          "randomGetSeconds": 0.315918833,
+          "randomGetPerSecond": 31654,
+          "initialRssKiB": 2032,
+          "finalRssKiB": 2048,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 18446750,
+          "cpuSystemNanoseconds": 222879666,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 43196
+        },
+        {
+          "sample": 5,
+          "port": 24034,
+          "startupMilliseconds": 26.607042,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054551083,
+          "pipelinedPingPerSecond": 1833144,
+          "nonPipelinedPingSeconds": 0.379062334,
+          "nonPipelinedPingPerSecond": 26381,
+          "nonPipelinedPingLatencyMicroseconds": 37.9062334,
+          "randomSetSeconds": 0.40136675,
+          "randomSetPerSecond": 24915,
+          "randomGetSeconds": 0.38666425,
+          "randomGetPerSecond": 25862,
+          "initialRssKiB": 2016,
+          "finalRssKiB": 2032,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 21309083,
+          "cpuSystemNanoseconds": 265243459,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 56474
+        },
+        {
+          "sample": 6,
+          "port": 24035,
+          "startupMilliseconds": 26.714667,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054093667,
+          "pipelinedPingPerSecond": 1848645,
+          "nonPipelinedPingSeconds": 0.299801625,
+          "nonPipelinedPingPerSecond": 33355,
+          "nonPipelinedPingLatencyMicroseconds": 29.9801625,
+          "randomSetSeconds": 0.31562175,
+          "randomSetPerSecond": 31683,
+          "randomGetSeconds": 0.321505041,
+          "randomGetPerSecond": 31104,
+          "initialRssKiB": 2000,
+          "finalRssKiB": 2032,
+          "rssGrowthKiB": 32,
+          "cpuUserNanoseconds": 17835000,
+          "cpuSystemNanoseconds": 220720375,
+          "machSystemCalls": 1,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 43026
+        },
+        {
+          "sample": 7,
+          "port": 24036,
+          "startupMilliseconds": 26.649208,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054063875,
+          "pipelinedPingPerSecond": 1849664,
+          "nonPipelinedPingSeconds": 0.331661042,
+          "nonPipelinedPingPerSecond": 30151,
+          "nonPipelinedPingLatencyMicroseconds": 33.1661042,
+          "randomSetSeconds": 0.32008125,
+          "randomSetPerSecond": 31242,
+          "randomGetSeconds": 0.332504458,
+          "randomGetPerSecond": 30075,
+          "initialRssKiB": 2016,
+          "finalRssKiB": 2032,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 18854125,
+          "cpuSystemNanoseconds": 230839583,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 43738
+        },
+        {
+          "sample": 8,
+          "port": 24037,
+          "startupMilliseconds": 26.70325,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.054572333,
+          "pipelinedPingPerSecond": 1832430,
+          "nonPipelinedPingSeconds": 0.388804542,
+          "nonPipelinedPingPerSecond": 25720,
+          "nonPipelinedPingLatencyMicroseconds": 38.880454199999996,
+          "randomSetSeconds": 0.395403791,
+          "randomSetPerSecond": 25291,
+          "randomGetSeconds": 0.399221916,
+          "randomGetPerSecond": 25049,
+          "initialRssKiB": 2016,
+          "finalRssKiB": 2032,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 21533792,
+          "cpuSystemNanoseconds": 266127458,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 55468
+        },
+        {
+          "sample": 9,
+          "port": 24038,
+          "startupMilliseconds": 26.69075,
+          "responseChecksumSha256": "3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad",
+          "pipelinedPingSeconds": 0.055783584,
+          "pipelinedPingPerSecond": 1792642,
+          "nonPipelinedPingSeconds": 0.379075875,
+          "nonPipelinedPingPerSecond": 26380,
+          "nonPipelinedPingLatencyMicroseconds": 37.9075875,
+          "randomSetSeconds": 0.389016583,
+          "randomSetPerSecond": 25706,
+          "randomGetSeconds": 0.388315209,
+          "randomGetPerSecond": 25752,
+          "initialRssKiB": 2000,
+          "finalRssKiB": 2016,
+          "rssGrowthKiB": 16,
+          "cpuUserNanoseconds": 21214166,
+          "cpuSystemNanoseconds": 262533584,
+          "machSystemCalls": 0,
+          "unixSystemCalls": 60800,
+          "contextSwitches": 56711
+        }
+      ],
+      "summary": {
+        "startupMilliseconds": {
+          "min": 26.087666,
+          "median": 26.637209,
+          "max": 26.714667,
+          "mean": 26.592171333333333,
+          "standardDeviation": 0.1932998869819902,
+          "medianAbsoluteDeviation": 0.030166999999998723,
+          "confidenceInterval95": [
+            26.443588153539842,
+            26.740754513126824
+          ]
+        },
+        "pipelinedPingSeconds": {
+          "min": 0.054063875,
+          "median": 0.054551083,
+          "max": 0.055783584,
+          "mean": 0.05457419922222222,
+          "standardDeviation": 0.0005219582856401883,
+          "medianAbsoluteDeviation": 0.00025591700000000134,
+          "confidenceInterval95": [
+            0.054172987286660125,
+            0.05497541115778431
+          ]
+        },
+        "pipelinedPingPerSecond": {
+          "min": 1792642,
+          "median": 1833144,
+          "max": 1849664,
+          "mean": 1832514.7777777778,
+          "standardDeviation": 17315.501196744044,
+          "medianAbsoluteDeviation": 8560,
+          "confidenceInterval95": [
+            1819204.9291912138,
+            1845824.6263643417
+          ]
+        },
+        "nonPipelinedPingSeconds": {
+          "min": 0.299801625,
+          "median": 0.331661042,
+          "max": 0.388804542,
+          "mean": 0.34250966222222223,
+          "standardDeviation": 0.037677050751916616,
+          "medianAbsoluteDeviation": 0.031859417,
+          "confidenceInterval95": [
+            0.3135485692109157,
+            0.3714707552335288
+          ]
+        },
+        "nonPipelinedPingPerSecond": {
+          "min": 25720,
+          "median": 30151,
+          "max": 33355,
+          "mean": 29510.777777777777,
+          "standardDeviation": 3220.202391845029,
+          "medianAbsoluteDeviation": 3204,
+          "confidenceInterval95": [
+            27035.515539246233,
+            31986.04001630932
+          ]
+        },
+        "nonPipelinedPingLatencyMicroseconds": {
+          "min": 29.9801625,
+          "median": 33.1661042,
+          "max": 38.880454199999996,
+          "mean": 34.25096622222222,
+          "standardDeviation": 3.7677050751916603,
+          "medianAbsoluteDeviation": 3.1859417000000008,
+          "confidenceInterval95": [
+            31.35485692109156,
+            37.147075523352875
+          ]
+        },
+        "randomSetSeconds": {
+          "min": 0.31562175,
+          "median": 0.326545166,
+          "max": 0.40136675,
+          "mean": 0.35456853222222223,
+          "standardDeviation": 0.03962194398265723,
+          "medianAbsoluteDeviation": 0.010923416000000019,
+          "confidenceInterval95": [
+            0.3241124646142197,
+            0.38502459983022475
+          ]
+        },
+        "randomSetPerSecond": {
+          "min": 24915,
+          "median": 30624,
+          "max": 31683,
+          "mean": 28512.555555555555,
+          "standardDeviation": 3113.6067153347703,
+          "medianAbsoluteDeviation": 1059,
+          "confidenceInterval95": [
+            26119.22986036823,
+            30905.88125074288
+          ]
+        },
+        "randomGetSeconds": {
+          "min": 0.31293,
+          "median": 0.332504458,
+          "max": 0.399221916,
+          "mean": 0.3514399257777778,
+          "standardDeviation": 0.03869805300754502,
+          "medianAbsoluteDeviation": 0.019574458000000017,
+          "confidenceInterval95": [
+            0.32169402236597816,
+            0.3811858291895774
+          ]
+        },
+        "randomGetPerSecond": {
+          "min": 25049,
+          "median": 30075,
+          "max": 31956,
+          "mean": 28758.777777777777,
+          "standardDeviation": 3112.005734963296,
+          "medianAbsoluteDeviation": 1881,
+          "confidenceInterval95": [
+            26366.68270283599,
+            31150.872852719564
+          ]
+        },
+        "initialRssKiB": {
+          "min": 2000,
+          "median": 2016,
+          "max": 2032,
+          "mean": 2014.2222222222222,
+          "standardDeviation": 12.507775359529147,
+          "medianAbsoluteDeviation": 16,
+          "confidenceInterval95": [
+            2004.6079122291974,
+            2023.836532215247
+          ]
+        },
+        "finalRssKiB": {
+          "min": 2016,
+          "median": 2032,
+          "max": 2048,
+          "mean": 2032,
+          "standardDeviation": 11.313708498984761,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            2023.3035294004471,
+            2040.6964705995529
+          ]
+        },
+        "rssGrowthKiB": {
+          "min": 16,
+          "median": 16,
+          "max": 32,
+          "mean": 17.77777777777778,
+          "standardDeviation": 5.333333333333334,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            13.678222222222223,
+            21.877333333333333
+          ]
+        },
+        "cpuUserNanoseconds": {
+          "min": 17835000,
+          "median": 18854125,
+          "max": 21533792,
+          "mean": 19755398.111111112,
+          "standardDeviation": 1568375.404634637,
+          "medianAbsoluteDeviation": 1019125,
+          "confidenceInterval95": [
+            18549840.21674862,
+            20960956.005473603
+          ]
+        },
+        "cpuSystemNanoseconds": {
+          "min": 220720375,
+          "median": 230839583,
+          "max": 266127458,
+          "mean": 241879694.44444445,
+          "standardDeviation": 21725302.673620705,
+          "medianAbsoluteDeviation": 10119208,
+          "confidenceInterval95": [
+            225180178.455988,
+            258579210.4329009
+          ]
+        },
+        "machSystemCalls": {
+          "min": 0,
+          "median": 0,
+          "max": 1,
+          "mean": 0.1111111111111111,
+          "standardDeviation": 0.33333333333333337,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            -0.14511111111111114,
+            0.36733333333333335
+          ]
+        },
+        "unixSystemCalls": {
+          "min": 60800,
+          "median": 60800,
+          "max": 60800,
+          "mean": 60800,
+          "standardDeviation": 0,
+          "medianAbsoluteDeviation": 0,
+          "confidenceInterval95": [
+            60800,
+            60800
+          ]
+        },
+        "contextSwitches": {
+          "min": 43026,
+          "median": 43738,
+          "max": 56711,
+          "mean": 49039,
+          "standardDeviation": 6823.835230279231,
+          "medianAbsoluteDeviation": 712,
+          "confidenceInterval95": [
+            43793.7453196587,
+            54284.2546803413
+          ]
         }
       }
     }

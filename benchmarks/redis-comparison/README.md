@@ -1,13 +1,19 @@
 # Redis comparison
 
-This benchmark compares three servers implementing the same RESP2 subset. Each
-run allocates separate loopback ports for the addon, native executable,
-and handwritten Node server, and each sample gets a fresh port. This prevents
+This benchmark compares four servers implementing the same RESP2 subset. Each
+run allocates separate loopback ports for the addon, TypeNative native executable,
+handwritten Node server, and Rust native executable, and each sample gets a fresh port. This prevents
 TCP close-state conflicts between different socket implementations:
 
 - a handwritten Node.js server;
 - the TypeNative Redis server compiled as a Node-API addon and loaded by Node;
 - the TypeNative Redis server compiled as a native executable.
+- a Rust server compiled as an optimized native executable.
+
+The TypeNative and Rust native servers both begin with a 4 KiB connection input
+buffer, retain an 8 KiB response buffer, and flush no more than 1,024 commands
+per batch. The Rust server validates UTF-8 and implements the same RESP length
+limits rather than using a PING-specific parser.
 
 All implementations are checked for PING, SET, GET, DEL, missing keys, unknown
 commands, pipelining, fragmented frames, malformed frames, large values, and

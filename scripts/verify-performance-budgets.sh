@@ -153,6 +153,8 @@ def confidence(values):
     return {"count": len(values), "mean": mean, "median": median(values), "ci95": [mean - margin, mean + margin]}
 
 def implementation_key(name):
+    if name.startswith("Rust"):
+        return "rust"
     if name.startswith("TypeNative") and ("executable" in name or "native" in name):
         return "native"
     if ".node" in name:
@@ -202,12 +204,12 @@ require(redis_env["randomizedGetCount"] == redis_workload["operationCount"], "Re
 require(redis_env["samples"] == sampling["redis"]["samples"], "Redis sample count changed")
 require(redis_env["warmups"] == sampling["redis"]["warmups"], "Redis warmup count changed")
 require(redis_env["shuffleSeed"] == sampling["redis"]["shuffleSeed"], "Redis shuffle seed changed")
-require(len(redis_report["methodology"]["warmupPlan"]) == 6, "Redis warmup plan is not two rounds")
-require(len(redis_report["methodology"]["measuredPlan"]) == 27, "Redis measured plan is not nine samples per product")
+require(len(redis_report["methodology"]["warmupPlan"]) == 8, "Redis warmup plan is not two rounds")
+require(len(redis_report["methodology"]["measuredPlan"]) == 36, "Redis measured plan is not nine samples per product")
 require(redis_report["correctness"]["checkedBeforeTiming"], "Redis correctness checksum was not checked before timing")
 require(len(redis_report["correctness"]["responseChecksumSha256"]) == 64, "Redis correctness checksum is malformed")
 redis_items = implementation_map(redis_report["implementations"])
-require(set(redis_items) == {"native", "addon", "javascript"}, "Redis products are incomplete")
+require(set(redis_items) == {"native", "addon", "rust", "javascript"}, "Redis products are incomplete")
 redis_evidence = {"samples": sampling["redis"]["samples"], "warmups": sampling["redis"]["warmups"], "products": {}}
 for key, item in redis_items.items():
     require(len(item["samples"]) == sampling["redis"]["samples"], f"Redis {key} samples are incomplete")
