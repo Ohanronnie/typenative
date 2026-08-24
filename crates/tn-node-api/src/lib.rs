@@ -2,8 +2,8 @@
 
 use std::fmt::Write;
 use tn_hir::{
-    AttributeKind, DeclarationId, DefinitionData, FunctionType, Method, PrimitiveType, Program,
-    ReceiverMode, Type, Visibility,
+    DeclarationId, DefinitionData, FunctionType, Method, PrimitiveType, Program, ReceiverMode,
+    Type, Visibility,
 };
 use tn_mir::Callable;
 
@@ -122,16 +122,12 @@ pub fn build_bridge_plan(program: &Program) -> Result<BridgePlan, NodeApiError> 
         let Some(declaration) = program.graph.declaration(definition.declaration) else {
             continue;
         };
-        if !declaration
-            .attributes
-            .iter()
-            .any(|attribute| attribute.kind == AttributeKind::Export)
-        {
+        if !declaration.exported || declaration.module != program.graph.entry {
             continue;
         }
         match &definition.data {
             DefinitionData::Function(function) => {
-                let name = exported_name(declaration);
+                let name = exported_name(program, declaration);
                 if !definition.generics.is_empty()
                     || !function.generics.is_empty()
                     || function.is_unsafe
@@ -157,7 +153,7 @@ pub fn build_bridge_plan(program: &Program) -> Result<BridgePlan, NodeApiError> 
                 is_abstract,
                 ..
             } => {
-                let name = exported_name(declaration);
+                let name = exported_name(program, declaration);
                 if *is_abstract || !definition.generics.is_empty() {
                     return Err(NodeApiError::InvalidClass(name));
                 }
@@ -186,7 +182,12 @@ pub fn build_bridge_plan(program: &Program) -> Result<BridgePlan, NodeApiError> 
                     drop,
                 });
             }
-            _ => return Err(NodeApiError::NotAFunction(exported_name(declaration))),
+            _ => {
+                return Err(NodeApiError::NotAFunction(exported_name(
+                    program,
+                    declaration,
+                )));
+            }
         }
     }
     functions.sort_by(|left, right| left.export_name.cmp(&right.export_name));
@@ -234,7 +235,9 @@ fn node_type(program: &Program, ty: &Type) -> Result<NodeType, NodeApiError> {
             primitive => NodeTypeKind::Scalar(primitive.clone()),
         },
         Type::String | Type::Str => NodeTypeKind::String,
-        Type::Promise { result, effects } => NodeTypeKind::Promise {
+        Type::Promise {
+            result, effects, ..
+        } => NodeTypeKind::Promise {
             result: Box::new(node_type(program, result)?),
             errors: bridge_errors(program, effects)?,
         },
@@ -445,7 +448,7 @@ pub fn typescript_type(program: &Program, ty: &Type, result: bool) -> Result<Str
     }
 }
 
-/// Generates TypeScript declarations for every resolved `@Export` function.
+/// Generates TypeScript declarations for every resolved exported function.
 ///
 /// # Errors
 ///
@@ -457,17 +460,14 @@ pub fn generate_declarations(program: &Program) -> Result<String, NodeApiError> 
         .iter()
         .filter_map(|definition| {
             let declaration = program.graph.declaration(definition.declaration)?;
-            declaration
-                .attributes
-                .iter()
-                .any(|attribute| attribute.kind == AttributeKind::Export)
+            (declaration.exported && declaration.module == program.graph.entry)
                 .then_some((declaration, definition))
         })
         .collect::<Vec<_>>();
     functions.sort_by(|left, right| left.0.name.cmp(&right.0.name));
     let mut output = String::from("// Generated from the resolved TypeNative export model.\n\n");
     for (declaration, definition) in functions {
-        let name = exported_name(declaration);
+        let name = exported_name(program, declaration);
         let DefinitionData::Function(function) = &definition.data else {
             if matches!(definition.data, DefinitionData::Class { .. }) {
                 continue;
@@ -505,16 +505,13 @@ pub fn generate_declarations(program: &Program) -> Result<String, NodeApiError> 
             let DefinitionData::Class { .. } = &definition.data else {
                 return None;
             };
-            declaration
-                .attributes
-                .iter()
-                .any(|attribute| attribute.kind == AttributeKind::Export)
+            (declaration.exported && declaration.module == program.graph.entry)
                 .then_some((declaration, definition))
         })
         .collect::<Vec<_>>();
     classes.sort_by(|left, right| left.0.name.cmp(&right.0.name));
     for (declaration, definition) in classes {
-        let name = exported_name(declaration);
+        let name = exported_name(program, declaration);
         let DefinitionData::Class {
             constructor,
             methods,
@@ -547,15 +544,8 @@ pub fn generate_declarations(program: &Program) -> Result<String, NodeApiError> 
     Ok(output)
 }
 
-fn exported_name(declaration: &tn_hir::Declaration) -> String {
-    declaration
-        .attributes
-        .iter()
-        .find(|attribute| attribute.kind == AttributeKind::Export)
-        .and_then(|attribute| attribute.arguments.first())
-        .cloned()
-        .or_else(|| declaration.name.clone())
-        .unwrap_or_else(|| "exported".into())
+fn exported_name(program: &Program, declaration: &tn_hir::Declaration) -> String {
+    program.export_name_for_declaration(declaration.id)
 }
 
 fn validate_method(class_name: &str, method: &Method) -> Result<(), NodeApiError> {

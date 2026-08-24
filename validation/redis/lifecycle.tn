@@ -3,9 +3,7 @@ async function worker(): Promise<i32, never> {
   return 42i32;
 }
 function main(): i32 {
-  using group = new TaskGroup<never>();
-  if (!group.spawn(worker())) {
-    return 1i32;
-  }
+  using group = new TaskGroup();
+  group.spawn(worker());
   return 0i32;
 }

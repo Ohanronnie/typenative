@@ -1,17 +1,15 @@
-import { Copy, Iterable } from "std/core";
+import { Iterable } from "std/core";
 export enum JobState {
   Queued, Running, Complete, Failed,
 }
 export interface Runnable {
   run(): i32;
 }
-@Sealed export interface ForgeLocalOnly {
+export interface ForgeLocalOnly {
 }
-@Conform(ForgeLocalOnly)
-export struct LocalPlugin {
+export struct LocalPlugin implements ForgeLocalOnly {
 }
-@Conform(Runnable)
-export struct LocalRunner {
+export struct LocalRunner implements Runnable {
   public result: i32;
   public run(): i32 {
     return this.result;
@@ -22,7 +20,7 @@ abstract class BuildUnit {
   }
   public abstract cost(): i32;
 }
-final class CompileUnit extends BuildUnit {
+class CompileUnit extends BuildUnit {
   private units: i32;
   public constructor(units: i32) {
     super();
@@ -32,14 +30,11 @@ final class CompileUnit extends BuildUnit {
     return this.units * 2i32;
   }
 }
-macro accessor(name: identifier, field: identifier, value: type) {
-  public {{name}}(): {{value}} {
-    return this.{{field}};
-  }
-}
-@Expand(accessor, valueOf, result, i32)
 struct MacroValue {
   public result: i32;
+  public valueOf(): i32 {
+    return this.result;
+  }
 }
 function* generatedValues(): Iterable<i32> {
   yield 2i32;

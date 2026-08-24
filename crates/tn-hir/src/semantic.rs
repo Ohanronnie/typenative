@@ -1,8 +1,8 @@
 use crate::{
-    AttributeKind, Declaration, DeclarationId, DeclarationKind, Definition, DefinitionData,
-    EnumField, EnumVariant, Field, Function, GenericBound, GenericParameter, MemberId, Method,
-    Module, ModuleGraph, ModuleId, Namespace, Parameter, PrimitiveType, Program, ReceiverMode,
-    Type, Visibility,
+    Declaration, DeclarationId, DeclarationKind, Definition, DefinitionData, EnumField,
+    EnumVariant, Field, Function, GenericBound, GenericParameter, MemberId, Method, Module,
+    ModuleGraph, ModuleId, Namespace, Parameter, PrimitiveType, Program, ReceiverMode, Type,
+    Visibility,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,13 +45,16 @@ pub fn lower_program(graph: ModuleGraph) -> Result<Program, Vec<Diagnostic>> {
 struct Resolver {
     names: BTreeMap<(ModuleId, Namespace, String), DeclarationId>,
     interfaces: BTreeSet<DeclarationId>,
+    generic_names: BTreeMap<DeclarationId, Vec<Namespace>>,
 }
 
 impl Resolver {
     fn new(graph: &ModuleGraph) -> Self {
         let mut names = BTreeMap::new();
         let mut interfaces = BTreeSet::new();
+        let mut generic_names = BTreeMap::new();
         for module in &graph.modules {
+            let lexed = lex(&module.path.to_string_lossy(), module.source.as_bytes());
             for declaration in &module.declarations {
                 if declaration.kind == DeclarationKind::Interface {
                     interfaces.insert(declaration.id);
@@ -60,6 +63,11 @@ impl Resolver {
                     (declaration.kind.namespace(), declaration.name.as_ref())
                 {
                     names.insert((module.id, namespace, name.clone()), declaration.id);
+                }
+                let names_for_declaration =
+                    declaration_generic_names(declaration, &lexed.tokens, &module.source);
+                if !names_for_declaration.is_empty() {
+                    generic_names.insert(declaration.id, names_for_declaration);
                 }
             }
         }
@@ -84,7 +92,11 @@ impl Resolver {
                 }
             }
         }
-        Self { names, interfaces }
+        Self {
+            names,
+            interfaces,
+            generic_names,
+        }
     }
 
     fn resolve(&self, module: ModuleId, namespace: Namespace, name: &str) -> Option<DeclarationId> {
@@ -92,6 +104,75 @@ impl Resolver {
             .get(&(module, namespace, name.to_owned()))
             .copied()
     }
+
+    fn elided_lifetime_arguments(&self, declaration: DeclarationId) -> Vec<Type> {
+        let Some(parameters) = self.generic_names.get(&declaration) else {
+            return Vec::new();
+        };
+        if parameters
+            .iter()
+            .all(|namespace| *namespace == Namespace::Lifetime)
+        {
+            parameters
+                .iter()
+                .map(|_| Type::Lifetime("scope".into()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+fn declaration_generic_names(
+    declaration: &Declaration,
+    tokens: &[Token],
+    source: &str,
+) -> Vec<Namespace> {
+    let significant = tokens
+        .iter()
+        .filter(|token| {
+            !token.kind.is_trivia()
+                && token.range.start >= declaration.byte_start as usize
+                && token.range.end <= declaration.byte_end as usize
+        })
+        .collect::<Vec<_>>();
+    let Some(name) = declaration.name.as_deref() else {
+        return Vec::new();
+    };
+    let Some(name_index) = significant
+        .iter()
+        .position(|token| &source[token.range.clone()] == name)
+    else {
+        return Vec::new();
+    };
+    if significant.get(name_index + 1).map(|token| token.kind) != Some(TokenKind::Less) {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut depth = 1_u32;
+    let mut parameter_start = true;
+    for token in significant.iter().skip(name_index + 2) {
+        match token.kind {
+            TokenKind::Less => depth += 1,
+            TokenKind::Greater => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            TokenKind::Comma if depth == 1 => parameter_start = true,
+            TokenKind::Lifetime if depth == 1 && parameter_start => {
+                result.push(Namespace::Lifetime);
+                parameter_start = false;
+            }
+            TokenKind::Identifier if depth == 1 && parameter_start => {
+                result.push(Namespace::Type);
+                parameter_start = false;
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 struct Cursor<'source, 'tokens> {
@@ -243,27 +324,25 @@ fn lower_declaration(
         DeclarationKind::Function => {
             DefinitionData::Function(lower_function(&mut cursor, resolver, diagnostics, false)?)
         }
+        DeclarationKind::ExternFunction => {
+            cursor.bump();
+            cursor.bump();
+            cursor.bump();
+            DefinitionData::Function(lower_function(&mut cursor, resolver, diagnostics, false)?)
+        }
         DeclarationKind::Struct => lower_struct(&mut cursor, declaration.id, resolver, diagnostics),
+        DeclarationKind::ExternStruct => {
+            lower_extern_struct(&mut cursor, declaration.id, resolver, diagnostics)
+        }
         DeclarationKind::Enum => lower_enum(&mut cursor, declaration.id, resolver, diagnostics),
-        DeclarationKind::Interface => lower_interface(
-            &mut cursor,
-            declaration.id,
-            resolver,
-            diagnostics,
-            has_attribute(declaration, "Sealed"),
-        ),
-        DeclarationKind::Class => lower_class(
-            &mut cursor,
-            declaration.id,
-            resolver,
-            diagnostics,
-            has_attribute(declaration, "Sealed"),
-        ),
+        DeclarationKind::Interface => {
+            lower_interface(&mut cursor, declaration.id, resolver, diagnostics)
+        }
+        DeclarationKind::Class => lower_class(&mut cursor, declaration.id, resolver, diagnostics),
         DeclarationKind::Impl => lower_impl(&mut cursor, declaration.id, resolver, diagnostics),
         DeclarationKind::ExternBlock => {
             lower_extern(&mut cursor, declaration.id, resolver, diagnostics)
         }
-        DeclarationKind::Macro => return None,
     };
     let generics = cursor.definition_generics.clone();
     Some(Definition {
@@ -681,21 +760,22 @@ fn parse_named_type(
         }
         let error = arguments.pop().unwrap_or(Type::Error);
         let result = arguments.pop().unwrap_or(Type::Error);
-        let effects = match error {
-            Type::Nominal(id, _) => vec![id],
-            Type::Primitive(PrimitiveType::Never) | Type::Error => Vec::new(),
+        let effects = match &error {
+            Type::Nominal(id, _) => vec![*id],
+            Type::Primitive(PrimitiveType::Never) | Type::Error | Type::Generic(_) => Vec::new(),
             _ => {
                 diagnostics.push(diag(
                     "TYPE_PROMISE_ERROR_TYPE",
-                    "Promise error types must be nominal errors or never",
+                    "Promise error types must be nominal errors, generic parameters, or never",
                     &cursor.span(),
-                    "use a declared error type as the second Promise argument",
+                    "use a declared error type, generic parameter, or never as the second Promise argument",
                 ));
                 Vec::new()
             }
         };
         return Type::Promise {
             result: Box::new(result),
+            error: Box::new(error),
             effects,
         };
     }
@@ -713,7 +793,7 @@ fn parse_named_type(
     let arguments = if cursor.kind() == Some(TokenKind::Less) {
         parse_generic_arguments(cursor, resolver, diagnostics)
     } else {
-        Vec::new()
+        resolver.elided_lifetime_arguments(id)
     };
     if resolver.interfaces.contains(&id) {
         Type::DynamicInterface(id, arguments)
@@ -858,6 +938,7 @@ fn lower_struct(
     cursor.bump();
     cursor.name(diagnostics);
     let generics = capture_definition_generic_parameters(cursor, resolver, diagnostics);
+    let interfaces = parse_implemented_interfaces(cursor, resolver, diagnostics);
     cursor.definition_generics = generics;
     cursor.eat(TokenKind::LeftBrace);
     let mut fields = Vec::new();
@@ -878,7 +959,42 @@ fn lower_struct(
             cursor.bump();
         }
     }
-    DefinitionData::Struct { fields, methods }
+    DefinitionData::Struct {
+        c_layout: false,
+        interfaces,
+        fields,
+        methods,
+    }
+}
+
+fn lower_extern_struct(
+    cursor: &mut Cursor<'_, '_>,
+    owner: DeclarationId,
+    resolver: &Resolver,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> DefinitionData {
+    cursor.bump();
+    cursor.bump();
+    cursor.name(diagnostics);
+    let generics = capture_definition_generic_parameters(cursor, resolver, diagnostics);
+    cursor.definition_generics = generics;
+    cursor.eat(TokenKind::LeftBrace);
+    let mut fields = Vec::new();
+    while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
+        let checkpoint = cursor.index;
+        if let Some(field) = parse_field(cursor, owner, resolver, diagnostics) {
+            fields.push(field);
+        } else {
+            cursor.index = checkpoint;
+            cursor.bump();
+        }
+    }
+    DefinitionData::Struct {
+        c_layout: true,
+        interfaces: Vec::new(),
+        fields,
+        methods: Vec::new(),
+    }
 }
 
 fn lower_enum(
@@ -890,6 +1006,15 @@ fn lower_enum(
     cursor.bump();
     cursor.name(diagnostics);
     let generics = capture_definition_generic_parameters(cursor, resolver, diagnostics);
+    let repr = if cursor.eat(TokenKind::Colon) {
+        match parse_type(cursor, resolver, diagnostics) {
+            Type::Primitive(primitive) if is_integer_primitive(&primitive) => Some(primitive),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let interfaces = parse_implemented_interfaces(cursor, resolver, diagnostics);
     cursor.definition_generics = generics;
     cursor.allow_self = true;
     cursor.eat(TokenKind::LeftBrace);
@@ -970,7 +1095,55 @@ fn lower_enum(
             break;
         }
     }
-    DefinitionData::Enum { variants, methods }
+    DefinitionData::Enum {
+        repr,
+        interfaces,
+        variants,
+        methods,
+    }
+}
+
+fn is_integer_primitive(primitive: &PrimitiveType) -> bool {
+    matches!(
+        primitive,
+        PrimitiveType::I8
+            | PrimitiveType::I16
+            | PrimitiveType::I32
+            | PrimitiveType::I64
+            | PrimitiveType::I128
+            | PrimitiveType::Isize
+            | PrimitiveType::U8
+            | PrimitiveType::U16
+            | PrimitiveType::U32
+            | PrimitiveType::U64
+            | PrimitiveType::U128
+            | PrimitiveType::Usize
+    )
+}
+
+fn parse_implemented_interfaces(
+    cursor: &mut Cursor<'_, '_>,
+    resolver: &Resolver,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<Type> {
+    let mut interfaces = Vec::new();
+    if !cursor.eat(TokenKind::Implements) {
+        return interfaces;
+    }
+    loop {
+        if let Some((id, _)) = resolve_named_type(cursor, resolver, diagnostics) {
+            let arguments = if cursor.kind() == Some(TokenKind::Less) {
+                parse_generic_arguments(cursor, resolver, diagnostics)
+            } else {
+                Vec::new()
+            };
+            interfaces.push(Type::Nominal(id, arguments));
+        }
+        if !cursor.eat(TokenKind::Comma) {
+            break;
+        }
+    }
+    interfaces
 }
 
 fn lower_interface(
@@ -978,7 +1151,6 @@ fn lower_interface(
     owner: DeclarationId,
     resolver: &Resolver,
     diagnostics: &mut Vec<Diagnostic>,
-    is_sealed: bool,
 ) -> DefinitionData {
     cursor.bump();
     cursor.name(diagnostics);
@@ -996,7 +1168,7 @@ fn lower_interface(
             cursor.bump();
         }
     }
-    DefinitionData::Interface { methods, is_sealed }
+    DefinitionData::Interface { methods }
 }
 
 fn lower_class(
@@ -1004,10 +1176,8 @@ fn lower_class(
     owner: DeclarationId,
     resolver: &Resolver,
     diagnostics: &mut Vec<Diagnostic>,
-    is_sealed: bool,
 ) -> DefinitionData {
     let is_abstract = cursor.eat(TokenKind::Abstract);
-    let is_final = cursor.eat(TokenKind::Final);
     cursor.eat(TokenKind::Class);
     cursor.name(diagnostics);
     let generics = capture_definition_generic_parameters(cursor, resolver, diagnostics);
@@ -1071,16 +1241,7 @@ fn lower_class(
         constructor,
         methods,
         is_abstract,
-        is_final,
-        is_sealed,
     }
-}
-
-fn has_attribute(declaration: &Declaration, name: &str) -> bool {
-    declaration
-        .attributes
-        .iter()
-        .any(|attribute| attribute.kind == AttributeKind::parse(name))
 }
 
 fn lower_impl(
@@ -1208,7 +1369,6 @@ fn parse_method(
     let visibility = parse_visibility(cursor);
     let is_static = cursor.eat(TokenKind::Static);
     let is_abstract = cursor.eat(TokenKind::Abstract);
-    let is_final = cursor.eat(TokenKind::Final);
     let is_override = cursor.eat(TokenKind::Override);
     let receiver = if is_static {
         ReceiverMode::Static
@@ -1253,6 +1413,14 @@ fn parse_method(
             "replace the body with a semicolon",
         ));
     }
+    let receiver = if receiver == ReceiverMode::Shared
+        && function.body_start != 0
+        && method_writes_receiver(&cursor.tokens, &function)
+    {
+        ReceiverMode::Mutable
+    } else {
+        receiver
+    };
     Some(Method {
         id: member_id(owner, &name, ordinal),
         name,
@@ -1260,10 +1428,60 @@ fn parse_method(
         visibility,
         receiver,
         is_abstract,
-        is_final,
         is_override,
         span,
     })
+}
+
+fn method_writes_receiver(tokens: &[&Token], function: &Function) -> bool {
+    let start = function.body_start as usize;
+    let end = function.body_end as usize;
+    let body = tokens
+        .iter()
+        .filter(|token| token.range.start >= start && token.range.end <= end)
+        .copied()
+        .collect::<Vec<_>>();
+    for (index, token) in body.iter().enumerate() {
+        if token.kind != TokenKind::This {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut saw_member = false;
+        while let Some(next) = body.get(cursor) {
+            match next.kind {
+                TokenKind::Dot
+                | TokenKind::Identifier
+                | TokenKind::LeftBracket
+                | TokenKind::RightBracket => {
+                    saw_member = true;
+                    cursor += 1;
+                }
+                TokenKind::Equal
+                | TokenKind::PlusEqual
+                | TokenKind::MinusEqual
+                | TokenKind::StarEqual
+                | TokenKind::SlashEqual
+                | TokenKind::PercentEqual
+                | TokenKind::AmpEqual
+                | TokenKind::PipeEqual
+                | TokenKind::CaretEqual
+                | TokenKind::ShiftLeftEqual
+                | TokenKind::ShiftRightEqual
+                    if saw_member =>
+                {
+                    return true;
+                }
+                TokenKind::Semicolon
+                | TokenKind::Comma
+                | TokenKind::RightParen
+                | TokenKind::RightBrace
+                | TokenKind::LeftBrace
+                | TokenKind::LeftParen => break,
+                _ => cursor += 1,
+            }
+        }
+    }
+    false
 }
 
 fn parse_constructor(
@@ -1314,7 +1532,6 @@ fn parse_constructor(
         visibility,
         receiver: ReceiverMode::Mutable,
         is_abstract: false,
-        is_final: true,
         is_override: false,
         span,
     })
@@ -1396,21 +1613,23 @@ fn validate_coherence_and_inheritance(
                 | DefinitionData::Class { .. }
         );
         if is_nominal && let Some(declaration) = graph.declaration(definition.declaration) {
+            let interfaces = match &definition.data {
+                DefinitionData::Struct { interfaces, .. }
+                | DefinitionData::Enum { interfaces, .. }
+                | DefinitionData::Class { interfaces, .. } => interfaces,
+                _ => unreachable!("nominal definition has no interface list"),
+            };
             let mut conformances = BTreeSet::new();
-            for attribute in declaration
-                .attributes
-                .iter()
-                .filter(|attribute| attribute.kind == AttributeKind::Conform)
-            {
-                for interface in &attribute.arguments {
-                    if !conformances.insert(interface.clone()) {
-                        diagnostics.push(diag(
-                            "TYPE_INCOHERENT_IMPLEMENTATION",
-                            "duplicate interface conformance",
-                            &declaration.span,
-                            "declare each interface conformance at most once",
-                        ));
-                    }
+            for interface in interfaces {
+                if let Some(interface) = nominal_id(interface)
+                    && !conformances.insert(interface)
+                {
+                    diagnostics.push(diag(
+                        "TYPE_INCOHERENT_IMPLEMENTATION",
+                        "duplicate interface conformance",
+                        &declaration.span,
+                        "declare each interface conformance at most once",
+                    ));
                 }
             }
         }

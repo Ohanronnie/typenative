@@ -5,7 +5,6 @@ import { Mutex, channel, close, destroyChannel, receive, send } from "std/sync";
 async function compute(value: i32): Promise<i32, never> {
   return value * 2i32;
 }
-@Export("schedulerProbe")
 export function schedulerProbe(): i32 {
   let counter = new AtomicI32(0i32);
   counter.fetchAdd(4i32, MemoryOrder.Relaxed);
@@ -35,10 +34,8 @@ export function schedulerProbe(): i32 {
   }
   close( & mut messages);
   destroyChannel( & mut messages);
-  let group = new TaskGroup<never>();
-  if (!group.spawn(compute(21i32))) {
-    return 6i32;
-  }
+  let group = new TaskGroup();
+  group.spawn(compute(21i32));
   if (runI32(compute(21i32)) !== 42i32) {
     return 7i32;
   }

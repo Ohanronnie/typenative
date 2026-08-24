@@ -180,7 +180,7 @@ fn intrinsic_authorization_rejects_project_path_suffixes() {
         "main.tn",
     );
     assert!(
-        diagnostics.contains(&"TYPE_INVALID_ATTRIBUTE_TARGET".into()),
+        diagnostics.contains(&"TYPE_UNKNOWN_ATTRIBUTE".into()),
         "{diagnostics:?}"
     );
 }
@@ -212,7 +212,7 @@ fn enforces_class_method_and_override_substitutability_rules() {
 class Animal {}
 class Dog extends Animal {}
 class Parent {
-  public final closed(): Animal { return new Animal(); }
+  public closed(): Animal { return new Animal(); }
   public safe(): Animal { return new Animal(); }
 }
 
@@ -230,34 +230,32 @@ abstract class AbstractOwner {
 }
 ",
     );
-    assert!(diagnostics.contains(&"TYPE_OVERRIDE_FINAL_METHOD".into()));
     assert!(diagnostics.contains(&"TYPE_INVALID_OVERRIDE_SIGNATURE".into()));
     assert!(diagnostics.contains(&"TYPE_ABSTRACT_METHOD_IN_CONCRETE_CLASS".into()));
     assert!(diagnostics.contains(&"TYPE_CONCRETE_METHOD_MISSING_BODY".into()));
-    assert!(diagnostics.contains(&"TYPE_GENERIC_VIRTUAL_METHOD_EXCLUDED".into()));
+    assert!(!diagnostics.contains(&"TYPE_GENERIC_VIRTUAL_METHOD_EXCLUDED".into()));
     assert!(diagnostics.contains(&"TYPE_ABSTRACT_METHOD_HAS_BODY".into()));
 }
 
 #[test]
-fn enforces_sealed_classes_and_interfaces_at_module_boundaries() {
+fn permits_open_class_and_interface_relationships() {
     let same_module = signature_conditions(
         r"
-@Sealed class Closed {}
+class Closed {}
 class Child extends Closed {}
-@Sealed interface Marker {}
-@Conform(Marker)
-struct Conforming {}
-final class FinalOwner {}
-class InvalidFinalChild extends FinalOwner {}
+interface Marker {}
+class Conforming implements Marker {}
+class FinalOwner {}
+class FinalChild extends FinalOwner {}
 ",
     );
     assert!(!same_module.contains(&"TYPE_EXTENDS_SEALED_CLASS".into()));
     assert!(!same_module.contains(&"TYPE_CONFORMS_TO_SEALED_INTERFACE".into()));
-    assert!(same_module.contains(&"TYPE_EXTENDS_FINAL_CLASS".into()));
+    assert!(!same_module.contains(&"TYPE_EXTENDS_FINAL_CLASS".into()));
 
     let cross_module_class = multi_module_signature_conditions(
         &[
-            ("base.tn", "@Sealed\nexport class Closed {}\n"),
+            ("base.tn", "export class Closed {}\n"),
             (
                 "main.tn",
                 "import { Closed } from \"./base\";\nclass Child extends Closed {}\n",
@@ -265,19 +263,19 @@ class InvalidFinalChild extends FinalOwner {}
         ],
         "main.tn",
     );
-    assert!(cross_module_class.contains(&"TYPE_EXTENDS_SEALED_CLASS".into()));
+    assert!(!cross_module_class.contains(&"TYPE_EXTENDS_SEALED_CLASS".into()));
 
     let cross_module_interface = multi_module_signature_conditions(
         &[
-            ("base.tn", "@Sealed\nexport interface Marker {}\n"),
+            ("base.tn", "export interface Marker {}\n"),
             (
                 "main.tn",
-                "import { Marker } from \"./base\";\n@Conform(Marker)\nstruct Conforming {}\n",
+                "import { Marker } from \"./base\";\nclass Conforming implements Marker {}\n",
             ),
         ],
         "main.tn",
     );
-    assert!(cross_module_interface.contains(&"TYPE_CONFORMS_TO_SEALED_INTERFACE".into()));
+    assert!(!cross_module_interface.contains(&"TYPE_CONFORMS_TO_SEALED_INTERFACE".into()));
 }
 
 #[test]
@@ -322,6 +320,7 @@ class NotAnInterface {}
 class WrongConformance implements NotAnInterface {}
 type TooFew = Pair<i32>;
 type WrongOrder = Pair<static, i32>;
+type TooMany = Pair<i32, static, i32>;
 ",
     );
     assert!(diagnostics.contains(&"TYPE_CONFORMANCE_TARGET_NOT_INTERFACE".into()));
@@ -360,6 +359,26 @@ export class Owner {
     );
     assert!(diagnostics.contains(&"TYPE_RETURN_REFERENCE_WITHOUT_INPUT".into()));
     assert!(diagnostics.contains(&"TYPE_UNRELATED_OUTPUT_LIFETIME".into()));
+}
+
+#[test]
+fn infers_lifetime_arguments_for_borrowed_aggregates() {
+    let diagnostics = signature_conditions(
+        r"
+struct View<lifetime source> { public value: &source i32; }
+export function retain(value: &i32): View { return undefined; }
+export function ambiguous(left: &i32, right: &i32): View { return undefined; }
+",
+    );
+    assert!(!diagnostics.contains(&"TYPE_GENERIC_ARGUMENT_ARITY".into()));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_AMBIGUOUS_ELIDED_OUTPUT_LIFETIME")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
 }
 
 #[test]
@@ -442,13 +461,11 @@ interface Source<Item> {
   first(): Item;
   second(): Item;
 }
-@Conform(Source)
-class Good<T> {
+class Good<T> implements Source<T> {
   first(): T { return undefined; }
   second(): T { return undefined; }
 }
-@Conform(Source)
-class Inconsistent {
+class Inconsistent implements Source<string> {
   first(): i32 { return 1i32; }
   second(): string { return "wrong"; }
 }
@@ -465,113 +482,71 @@ class Inconsistent {
 }
 
 #[test]
-fn copy_implementations_require_copy_fields_and_exclude_drop_and_classes() {
+fn copyability_is_not_declared_by_source_attributes() {
     let diagnostics = signature_conditions(
         r"
 interface Copy {}
-interface Drop { mut drop(): void; }
-@Conform(Copy)
 struct Scalar { value: i32; }
-@Conform(Copy)
 struct Text { value: string; }
-@Copy
 struct DerivedText { value: string; }
-@Conform(Copy)
-@Conform(Drop)
-struct Destroyed { mut drop(): void {} }
-@Conform(Copy)
 class Owner {}
 ",
     );
-    assert_eq!(
-        diagnostics
-            .iter()
-            .filter(|condition| condition.as_str() == "TYPE_INVALID_COPY_IMPLEMENTATION")
-            .count(),
-        4,
-        "{diagnostics:?}"
-    );
+    assert!(!diagnostics.contains(&"TYPE_UNKNOWN_ATTRIBUTE".into()));
+    assert!(!diagnostics.contains(&"TYPE_INVALID_COPY_IMPLEMENTATION".into()));
 }
 
 #[test]
-fn send_and_sync_implementations_require_an_explicit_unsafe_boundary() {
+fn structural_capability_implementations_are_not_user_declarable() {
     let diagnostics = signature_conditions(
         r"
 interface Send {}
 interface Sync {}
-@Conform(Send)
-struct Manual {}
-@Conform(Sync)
-struct SyncManual {}
-@Conform(Send, unsafe)
-struct Reviewed { public pointer: *mut i32; }
+class Manual implements Send {}
+class SyncManual implements Sync {}
+class Reviewed implements Send { public pointer: *mut i32; }
 ",
     );
     assert_eq!(
         diagnostics
             .iter()
             .filter(|condition| {
-                condition.as_str() == "TYPE_UNSAFE_MARKER_IMPLEMENTATION_REQUIRES_UNSAFE"
+                condition.as_str() == "TYPE_STRUCTURAL_CAPABILITY_CANNOT_BE_DECLARED"
             })
             .count(),
-        2,
+        3,
         "{diagnostics:?}"
     );
 }
 
 #[test]
-fn drop_requires_exact_private_mutable_nonthrowing_method() {
+fn cleanup_is_not_declared_by_a_drop_attribute() {
     let diagnostics = semantic_conditions(
         r"
 class Failure {}
-@Drop
 struct Missing { value: i32; }
-@Drop
 struct Public { public drop(): void {} }
-@Drop
 struct Static { static drop(): void {} }
-@Drop
-struct Throwing { private mut drop(): void throws Failure {} }
-@Drop
-struct Async { private mut async drop(): Promise<void, never> { return undefined; } }
+struct Throwing { private close(): void throws Failure {} }
+struct Async { private async close(): Promise<void, never> { return undefined; } }
 ",
     );
-    assert_eq!(
-        diagnostics
-            .iter()
-            .filter(|condition| condition.as_str() == "TYPE_INVALID_DROP_DESTRUCTOR")
-            .count(),
-        5,
-        "{diagnostics:?}"
-    );
+    assert!(!diagnostics.contains(&"TYPE_INVALID_DROP_DESTRUCTOR".into()));
 }
 
 #[test]
-fn clone_is_restricted_to_cloneable_fields_and_final_classes() {
+fn clone_is_an_ordinary_type_specific_method() {
     let diagnostics = semantic_conditions(
         r"
 class Opaque {}
-@Clone
 struct InvalidField { value: Opaque; }
-@Clone
-class InvalidClass {}
+class InvalidClass { public clone(): InvalidClass { return this; } }
 class Base {}
-@Clone
-final class InvalidBase extends Base {}
-@Clone
+class InvalidBase extends Base {}
 struct Valid { value: string; }
 ",
     );
-    assert!(
-        diagnostics.contains(&"TYPE_CLONE_FIELD_NOT_CLONEABLE".into()),
-        "{diagnostics:?}"
-    );
-    assert!(
-        diagnostics.contains(&"TYPE_INVALID_ATTRIBUTE_TARGET".into()),
-        "{diagnostics:?}"
-    );
-    assert!(
-        diagnostics.contains(&"TYPE_CLONE_BASE_NOT_CLONEABLE".into()),
-        "{diagnostics:?}"
-    );
+    assert!(!diagnostics.contains(&"TYPE_CLONE_FIELD_NOT_CLONEABLE".into()));
+    assert!(!diagnostics.contains(&"TYPE_INVALID_ATTRIBUTE_TARGET".into()));
+    assert!(!diagnostics.contains(&"TYPE_CLONE_BASE_NOT_CLONEABLE".into()));
 }

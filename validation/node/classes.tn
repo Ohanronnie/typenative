@@ -2,14 +2,12 @@ import { c_size } from "std/ffi";
 declare extern "C" {
   function tn_runtime_free_count(): c_size;
 }
-@Export("freeCount")
-function freeCount(): usize {
+export function freeCount(): usize {
   unsafe {
     return tn_runtime_free_count();
   }
 }
-@Drop
-@Export class Counter {
+export class Counter {
   public value: i32;
   public constructor(value: i32) {
     this.value = value;
@@ -18,6 +16,6 @@ function freeCount(): usize {
     this.value = this.value + delta;
     return this.value;
   }
-  mut drop(): void {
+  drop(): void {
   }
 }

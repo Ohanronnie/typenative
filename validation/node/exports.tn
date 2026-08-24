@@ -1,24 +1,18 @@
 import { Bytes } from "std/bytes";
 import { Array } from "std/collections";
-
-@Export("optional")
-function optional(value: i32 | undefined): i32 | undefined {
+export function optional(value: i32 | undefined): i32 | undefined {
   return value;
 }
-@Export("bytesLength")
-function bytesLength(value: Bytes): usize {
+export function bytesLength(value: Bytes): usize {
   return value.length;
 }
-@Export("echoString")
-function echoString(value: string): string {
+export function echoString(value: string): string {
   return value;
 }
-@Export("vectorLength")
-function vectorLength(value: & Array<i32 >): usize {
+export function vectorLength(value: & Array<i32 >): usize {
   return value.length;
 }
-@Export("makeVector")
-function makeVector(): Array<i32> {
+export function makeVector(): Array<i32> {
   let values = new Array<i32>({
     capacity: 3usize,
   });
@@ -27,40 +21,31 @@ function makeVector(): Array<i32> {
   values.push(9i32);
   return move values;
 }
-@Export("fixedMiddle")
-function fixedMiddle(value:[i32;
+export function fixedMiddle(value:[i32;
 3]): i32 {
   return value[1];
 }
-@Export("echoI8")
-function echoI8(value: i8): i8 {
+export function echoI8(value: i8): i8 {
   return value;
 }
-@Export("echoI16")
-function echoI16(value: i16): i16 {
+export function echoI16(value: i16): i16 {
   return value;
 }
-@Export("echoU8")
-function echoU8(value: u8): u8 {
+export function echoU8(value: u8): u8 {
   return value;
 }
-@Export("echoU16")
-function echoU16(value: u16): u16 {
+export function echoU16(value: u16): u16 {
   return value;
 }
-@Export("echoF32")
-function echoF32(value: f32): f32 {
+export function echoF32(value: f32): f32 {
   return value;
 }
-@Export("echoChar")
-function echoChar(value: char): char {
+export function echoChar(value: char): char {
   return value;
 }
-@Export("echoI128")
-function echoI128(value: i128): i128 {
+export function echoI128(value: i128): i128 {
   return value;
 }
-@Export("echoU128")
-function echoU128(value: u128): u128 {
+export function echoU128(value: u128): u128 {
   return value;
 }

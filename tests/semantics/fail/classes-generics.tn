@@ -4,7 +4,7 @@ interface Display<T> {
 
 struct Plain {}
 class Product {}
-final class Closed {}
+class Closed {}
 class ExtendsClosed extends Closed {}
 class NotInterface {}
 class Unrelated {}
@@ -13,7 +13,7 @@ class WrongConformance implements NotInterface {}
 class Parent {
   private secret: Product;
   protected inherited: Product;
-  public final closed(value: Product): Product { return value; }
+  public closed(value: Product): Product { return value; }
   public value(value: Product): Product { return value; }
 }
 

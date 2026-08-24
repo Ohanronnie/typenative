@@ -1,11 +1,16 @@
 
-@Clone struct User {
+struct User {
   public id: u64;
   public name: string;
+  public clone(): User {
+    return {
+      id: this.id, name: this.name.clone(),
+    };
+  }
 }
 function main(): i32 {
   const original = new User({
-    id: 42u64, name: string.from("clone"),
+    id: 42u64, name: String("clone"),
   });
   const copied = original.clone();
   if (copied.id !== 42u64 || copied.name !== "clone") {

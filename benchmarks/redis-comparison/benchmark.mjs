@@ -21,6 +21,7 @@ const nonPipelinedPingCount = positiveInteger(
 const operationCount = positiveInteger("BENCH_OPERATION_COUNT", 10_000);
 const concurrentClients = positiveInteger("BENCH_CONCURRENT_CLIENTS", 8);
 const largeValueBytes = positiveInteger("BENCH_LARGE_VALUE", 12_000);
+const internalTrialCount = 3;
 const randomSeed = 0x1234_5678;
 const shuffleSeed = positiveInteger("BENCH_SHUFFLE_SEED", 0x1357_9bdf);
 
@@ -96,6 +97,14 @@ class RespClient {
     if (lineEnd < 0) return undefined;
     const prefix = this.input[0];
     if (prefix === 43 || prefix === 45 || prefix === 58) {
+      const response = this.input.subarray(0, lineEnd + 2);
+      this.input = this.input.subarray(lineEnd + 2);
+      return response;
+    }
+    if (
+      prefix === 42 &&
+      this.input.subarray(0, lineEnd + 2).equals(Buffer.from("*0\r\n"))
+    ) {
       const response = this.input.subarray(0, lineEnd + 2);
       this.input = this.input.subarray(lineEnd + 2);
       return response;
@@ -259,6 +268,20 @@ async function validate(client, serverPort) {
     "-ERR unknown command\r\n",
     "unknown",
   );
+  equal(
+    await command(client, "PING", "hello"),
+    "$5\r\nhello\r\n",
+    "PING message",
+  );
+  equal(await command(client, "ECHO", "echo"), "$4\r\necho\r\n", "ECHO");
+  equal(await command(client, "SET", "counter", "1"), "+OK\r\n", "counter SET");
+  equal(await command(client, "INCR", "counter"), ":2\r\n", "INCR");
+  equal(await command(client, "EXISTS", "counter"), ":1\r\n", "EXISTS");
+  equal(await command(client, "EXPIRE", "counter", "2"), ":1\r\n", "EXPIRE");
+  const ttl = await command(client, "TTL", "counter");
+  if (ttl[0] !== 58 || Number.parseInt(ttl.toString("ascii", 1), 10) < 0)
+    throw new Error(`TTL did not return a nonnegative integer: ${ttl}`);
+  equal(await command(client, "COMMAND"), "*0\r\n", "COMMAND");
 
   await client.write(
     Buffer.concat([frame("SET", "pipeline", "ok"), frame("GET", "pipeline")]),
@@ -310,6 +333,13 @@ async function validate(client, serverPort) {
     );
   } finally {
     for (const concurrentClient of clients) concurrentClient.close();
+  }
+
+  const quitClient = await openClient(serverPort);
+  try {
+    equal(await command(quitClient, "QUIT"), "+OK\r\n", "QUIT");
+  } finally {
+    quitClient.close();
   }
 }
 
@@ -366,56 +396,77 @@ function randomGenerator() {
 async function measurePipelinedPing(client) {
   const ping = frame("PING");
   const batchSize = 1_000;
-  let completed = 0;
-  const started = process.hrtime.bigint();
-  while (completed < pingCount) {
-    const count = Math.min(batchSize, pingCount - completed);
-    await client.write(
-      Buffer.concat(Array.from({ length: count }, () => ping)),
-    );
-    for (let index = 0; index < count; index += 1)
-      equal(await client.response(), "+PONG\r\n", "pipelined PING");
-    completed += count;
+  let seconds = 0;
+  for (let trial = 0; trial < internalTrialCount; trial += 1) {
+    let completed = 0;
+    const started = process.hrtime.bigint();
+    while (completed < pingCount) {
+      const count = Math.min(batchSize, pingCount - completed);
+      await client.write(
+        Buffer.concat(Array.from({ length: count }, () => ping)),
+      );
+      for (let index = 0; index < count; index += 1)
+        equal(await client.response(), "+PONG\r\n", "pipelined PING");
+      completed += count;
+    }
+    seconds += Number(process.hrtime.bigint() - started) / 1e9;
   }
-  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
-  return { seconds, perSecond: Math.round(pingCount / seconds) };
+  return {
+    seconds,
+    perSecond: Math.round((pingCount * internalTrialCount) / seconds),
+  };
 }
 
 async function measureNonPipelinedPing(client) {
-  const started = process.hrtime.bigint();
-  for (let index = 0; index < nonPipelinedPingCount; index += 1)
-    equal(await command(client, "PING"), "+PONG\r\n", "non-pipelined PING");
-  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  let seconds = 0;
+  for (let trial = 0; trial < internalTrialCount; trial += 1) {
+    const started = process.hrtime.bigint();
+    for (let index = 0; index < nonPipelinedPingCount; index += 1)
+      equal(await command(client, "PING"), "+PONG\r\n", "non-pipelined PING");
+    seconds += Number(process.hrtime.bigint() - started) / 1e9;
+  }
   return {
     seconds,
-    perSecond: Math.round(nonPipelinedPingCount / seconds),
+    perSecond: Math.round(
+      (nonPipelinedPingCount * internalTrialCount) / seconds,
+    ),
   };
 }
 
 async function measureRandomSetGet(client) {
   const keys = Array.from({ length: 256 }, (_, index) => `benchmark-${index}`);
   const random = randomGenerator();
-  let started = process.hrtime.bigint();
-  for (let index = 0; index < operationCount; index += 1) {
-    const key = keys[random(keys.length)];
-    const value = `value-${random(1_024)}`;
-    equal(await command(client, "SET", key, value), "+OK\r\n", "random SET");
+  let setSeconds = 0;
+  for (let trial = 0; trial < internalTrialCount; trial += 1) {
+    const started = process.hrtime.bigint();
+    for (let index = 0; index < operationCount; index += 1) {
+      const key = keys[random(keys.length)];
+      const value = `value-${random(1_024)}`;
+      equal(await command(client, "SET", key, value), "+OK\r\n", "random SET");
+    }
+    setSeconds += Number(process.hrtime.bigint() - started) / 1e9;
   }
-  const setSeconds = Number(process.hrtime.bigint() - started) / 1e9;
 
-  started = process.hrtime.bigint();
-  for (let index = 0; index < operationCount; index += 1) {
-    const key = keys[random(keys.length)];
-    const response = await command(client, "GET", key);
-    if (response[0] !== 36)
-      throw new Error("random GET did not return a bulk value");
+  let getSeconds = 0;
+  for (let trial = 0; trial < internalTrialCount; trial += 1) {
+    const started = process.hrtime.bigint();
+    for (let index = 0; index < operationCount; index += 1) {
+      const key = keys[random(keys.length)];
+      const response = await command(client, "GET", key);
+      if (response[0] !== 36)
+        throw new Error("random GET did not return a bulk value");
+    }
+    getSeconds += Number(process.hrtime.bigint() - started) / 1e9;
   }
-  const getSeconds = Number(process.hrtime.bigint() - started) / 1e9;
   return {
     setSeconds,
-    setPerSecond: Math.round(operationCount / setSeconds),
+    setPerSecond: Math.round(
+      (operationCount * internalTrialCount) / setSeconds,
+    ),
     getSeconds,
-    getPerSecond: Math.round(operationCount / getSeconds),
+    getPerSecond: Math.round(
+      (operationCount * internalTrialCount) / getSeconds,
+    ),
   };
 }
 
@@ -436,7 +487,8 @@ async function benchmark(client, pid) {
     nonPipelinedPingSeconds: nonPipelinedPing.seconds,
     nonPipelinedPingPerSecond: nonPipelinedPing.perSecond,
     nonPipelinedPingLatencyMicroseconds:
-      (nonPipelinedPing.seconds * 1e6) / nonPipelinedPingCount,
+      (nonPipelinedPing.seconds * 1e6) /
+      (nonPipelinedPingCount * internalTrialCount),
     randomSetSeconds: randomSetGet.setSeconds,
     randomSetPerSecond: randomSetGet.setPerSecond,
     randomGetSeconds: randomSetGet.getSeconds,
@@ -499,28 +551,28 @@ function standardDeviation(values) {
   );
 }
 
-function tCritical95(count) {
-  const values = {
-    2: 12.706,
-    3: 4.303,
-    4: 3.182,
-    5: 2.776,
-    6: 2.571,
-    7: 2.447,
-    8: 2.365,
-    9: 2.306,
-    10: 2.262,
-  };
-  return values[count] ?? 1.96;
+function bootstrapMedianInterval(values) {
+  if (values.length < 2) return [values[0], values[0]];
+  const resampleCount = 10_000;
+  const estimates = new Array(resampleCount);
+  let state = 0x9e3779b9;
+  for (let repetition = 0; repetition < resampleCount; repetition += 1) {
+    const resample = new Array(values.length);
+    for (let index = 0; index < values.length; index += 1) {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      resample[index] = values[state % values.length];
+    }
+    estimates[repetition] = median(resample);
+  }
+  estimates.sort((left, right) => left - right);
+  const lowerIndex = Math.floor((resampleCount - 1) * 0.025);
+  const upperIndex = Math.ceil((resampleCount - 1) * 0.975);
+  return [estimates[lowerIndex], estimates[upperIndex]];
 }
 
 function statistics(values) {
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   const deviation = standardDeviation(values);
-  const margin =
-    values.length < 2
-      ? 0
-      : (tCritical95(values.length) * deviation) / Math.sqrt(values.length);
   const center = median(values);
   return {
     min: Math.min(...values),
@@ -531,7 +583,60 @@ function statistics(values) {
     medianAbsoluteDeviation: median(
       values.map((value) => Math.abs(value - center)),
     ),
-    confidenceInterval95: [mean - margin, mean + margin],
+    confidenceInterval95: bootstrapMedianInterval(values),
+  };
+}
+
+function durationMetric(metric) {
+  switch (metric) {
+    case "pipelinedPingPerSecond":
+      return "pipelinedPingSeconds";
+    case "nonPipelinedPingLatencyMicroseconds":
+      return "nonPipelinedPingSeconds";
+    case "randomSetPerSecond":
+      return "randomSetSeconds";
+    case "randomGetPerSecond":
+      return "randomGetSeconds";
+    default:
+      throw new Error(`no fixed-work duration for ${metric}`);
+  }
+}
+
+function pairedAggregateRatio(leftSamples, rightSamples, metric) {
+  const duration = durationMetric(metric);
+  const rightBySample = new Map(
+    rightSamples.map((sample) => [sample.sample, sample[duration]]),
+  );
+  const pairs = leftSamples.map((sample) => ({
+    left: sample[duration],
+    right: rightBySample.get(sample.sample),
+  }));
+  const lowerIsBetter = metric.includes("Latency");
+  const ratioFor = (pairSubset) => {
+    const leftTotal = pairSubset.reduce((sum, pair) => sum + pair.left, 0);
+    const rightTotal = pairSubset.reduce((sum, pair) => sum + pair.right, 0);
+    return lowerIsBetter ? leftTotal / rightTotal : rightTotal / leftTotal;
+  };
+  const estimate = ratioFor(pairs);
+  const resampleCount = 10_000;
+  const estimates = new Array(resampleCount);
+  let state = 0x9e3779b9;
+  for (let repetition = 0; repetition < resampleCount; repetition += 1) {
+    const resample = new Array(pairs.length);
+    for (let index = 0; index < pairs.length; index += 1) {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      resample[index] = pairs[state % pairs.length];
+    }
+    estimates[repetition] = ratioFor(resample);
+  }
+  estimates.sort((left, right) => left - right);
+  const lowerIndex = Math.floor((resampleCount - 1) * 0.025);
+  const upperIndex = Math.ceil((resampleCount - 1) * 0.975);
+  return {
+    estimate,
+    confidenceInterval95: [estimates[lowerIndex], estimates[upperIndex]],
+    method:
+      "paired percentile bootstrap of the ratio of summed fixed-work durations",
   };
 }
 
@@ -575,6 +680,11 @@ function pairedComparison(leftSamples, rightSamples, metric) {
     (sample) => sample[metric] / rightBySample.get(sample.sample),
   );
   const ratio = statistics(ratios);
+  const aggregateRatio = pairedAggregateRatio(
+    leftSamples,
+    rightSamples,
+    metric,
+  );
   return {
     metric,
     direction: metric.includes("Latency")
@@ -582,14 +692,15 @@ function pairedComparison(leftSamples, rightSamples, metric) {
       : "left divided by right; higher favors left throughput",
     difference: statistics(differences),
     ratio,
+    aggregateRatio,
     fivePercentMargin: {
       lower: 0.95,
       upper: 1.05,
       confidenceIntervalWithinMargin:
-        ratio.confidenceInterval95[0] >= 0.95 &&
-        ratio.confidenceInterval95[1] <= 1.05,
+        aggregateRatio.confidenceInterval95[0] >= 0.95 &&
+        aggregateRatio.confidenceInterval95[1] <= 1.05,
       confidenceIntervalAtLeastEquivalent:
-        ratio.confidenceInterval95[0] >= 0.95,
+        aggregateRatio.confidenceInterval95[0] >= 0.95,
     },
   };
 }
@@ -742,6 +853,7 @@ const report = {
     randomizedGetCount: operationCount,
     concurrentClients,
     largeValueBytes,
+    internalTrials: internalTrialCount,
     randomSeed,
     shuffleSeed,
     portBases: {

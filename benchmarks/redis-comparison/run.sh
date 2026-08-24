@@ -56,5 +56,10 @@ rm -f -- "$build/redis.node" "$build/redis.d.ts" "$build/redis-native" "$build/r
   "$rustc_bin" --edition=2024 -D warnings -C opt-level=3 -C lto=fat \
   -C codegen-units=1 -C panic=abort "$benchmark/server.rs" \
   -o "$build/redis-rust"
-node "$benchmark/benchmark.mjs" \
-  --compiler-commit "$(git -C "$root" rev-parse HEAD)"
+if command -v taskpolicy >/dev/null 2>&1; then
+  taskpolicy -t 5 -l 5 node "$benchmark/benchmark.mjs" \
+    --compiler-commit "$(git -C "$root" rev-parse HEAD)"
+else
+  node "$benchmark/benchmark.mjs" \
+    --compiler-commit "$(git -C "$root" rev-parse HEAD)"
+fi

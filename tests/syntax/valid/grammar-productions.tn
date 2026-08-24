@@ -2,7 +2,7 @@ import { Formatter } from "std/fmt";
 
 const answer: i32 = 42i32;
 static epoch: usize = 0usize;
-static mut counter: i64 = 0i64;
+static counter: i64 = 0i64;
 
 type Optional<T> = T | undefined;
 type Pair = (i32, string);
@@ -16,13 +16,10 @@ type Dynamic = unknown;
 
 interface Reader<T extends Display> {
   read<U extends Display>(buffer: &mut [T]): usize throws IOError;
-  move close(): void;
+  close(): void;
 }
 
-@Layout("C")
-@Conform(Reader)
-export struct Record<T extends Display & Send> {
-  @Inline
+export struct Record<T extends Display> {
   public readonly name: &str;
   protected value?: T;
   private bytes: [u8; 4usize];
@@ -31,7 +28,7 @@ export struct Record<T extends Display & Send> {
     return buffer.length();
   }
 
-  move close(): void {}
+  close(): void {}
 }
 
 abstract class Base implements Reader<i32> {
@@ -50,7 +47,7 @@ abstract class Base implements Reader<i32> {
   move close(): void {}
 }
 
-final class Derived extends Base implements Reader<i32> {
+class Derived extends Base implements Reader<i32> {
   public readonly ready: bool = true;
 
   constructor(id: i64) {
@@ -61,11 +58,11 @@ final class Derived extends Base implements Reader<i32> {
     return buffer.length();
   }
 
-  public final generic<T extends Copy>(value: T): T {
+  public generic<T>(value: T): T {
     return value;
   }
 
-  move close(): void {}
+  close(): void {}
 }
 
 enum Message<T> {
@@ -74,7 +71,6 @@ enum Message<T> {
   Record { value: T; },
 }
 
-@Layout("u8")
 enum Color {
   Red = 1u8,
   Green = 2u8,
@@ -82,11 +78,11 @@ enum Color {
 }
 
 declare extern "C" {
-  @Export("sum") function sum(left: i32, right: i32): i32;
+  function sum(left: i32, right: i32): i32;
   function log(format: *const c_char, ...): c_int;
 }
 
-async function transform<T extends Display & Send, E extends Error>(
+async function transform<T extends Display, E extends Error>(
   value: T,
   text: &str,
 ): Promise<T, E> throws E {

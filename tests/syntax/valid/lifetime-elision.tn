@@ -1,0 +1,7 @@
+function first(values: &[User]): &User | undefined {
+  return undefined;
+}
+
+struct View<lifetime source> {
+  bytes: &source [u8];
+}

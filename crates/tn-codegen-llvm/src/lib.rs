@@ -24,6 +24,7 @@ use inkwell::types::{
 };
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    StructValue,
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,7 +65,7 @@ pub enum Emission {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Layouts {
     pub globals: BTreeMap<DeclarationId, GlobalLayout>,
-    pub aliases: BTreeMap<DeclarationId, Type>,
+    pub aliases: BTreeMap<DeclarationId, AliasLayout>,
     pub nominals: BTreeMap<DeclarationId, NominalLayout>,
     pub witnesses: BTreeMap<(DeclarationId, DeclarationId), Vec<VtableEntry>>,
     pub interfaces: BTreeMap<DeclarationId, u32>,
@@ -77,6 +78,12 @@ pub struct Layouts {
     pub inlines: BTreeSet<Callable>,
     pub async_functions: BTreeMap<Callable, FunctionType>,
     pub abi_wrappers: BTreeMap<Callable, AbiWrapperKind>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AliasLayout {
+    pub parameters: Vec<String>,
+    pub body: Type,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -462,7 +469,7 @@ fn generate<'ctx>(
         profile,
         &sanitizer_set,
     );
-    generator.declare_externs()?;
+    generator.declare_externs(units)?;
     generator.declare_globals()?;
     generator.declare_bodies(units)?;
     generator.declare_descriptors(units)?;
@@ -5731,8 +5738,10 @@ impl<'ctx> Generator<'ctx> {
                 }
                 self.debug_info.attach_function(wrapper, &exported_name);
                 self.functions.insert(unit.instance.clone(), wrapper);
+                let mut emitted_signature = self.normalize_function_type(&signature);
+                emitted_signature.effects = unit.instance.effects.clone();
                 self.signatures
-                    .insert(unit.instance.clone(), signature.clone());
+                    .insert(unit.instance.clone(), emitted_signature);
                 let context_fields = body_type
                     .get_param_types()
                     .into_iter()
@@ -5802,8 +5811,13 @@ impl<'ctx> Generator<'ctx> {
                     .parameters
                     .iter()
                     .map(|parameter| match parameter {
-                        Type::Promise { result, effects } if effects.is_empty() => Type::Promise {
+                        Type::Promise {
+                            result,
+                            error,
+                            effects,
+                        } if effects.is_empty() => Type::Promise {
                             result: result.clone(),
+                            error: error.clone(),
                             effects: unit.instance.effects.clone(),
                         },
                         _ => parameter.clone(),
@@ -5828,8 +5842,10 @@ impl<'ctx> Generator<'ctx> {
                 }
                 self.debug_info.attach_function(wrapper, &exported_name);
                 self.functions.insert(unit.instance.clone(), wrapper);
-                self.signatures
-                    .insert(unit.instance.clone(), signature.clone());
+                self.signatures.insert(
+                    unit.instance.clone(),
+                    self.normalize_function_type(&signature),
+                );
                 self.abi_wrappers.push(AbiWrapper {
                     wrapper,
                     body: body_function,
@@ -5840,7 +5856,10 @@ impl<'ctx> Generator<'ctx> {
                 let signature = body_signature.clone();
                 let function = body_function;
                 self.functions.insert(unit.instance.clone(), function);
-                self.signatures.insert(unit.instance.clone(), signature);
+                self.signatures.insert(
+                    unit.instance.clone(),
+                    self.normalize_function_type(&signature),
+                );
             }
             if let Some(kind) = abi_kind {
                 let abi_type = self.abi_wrapper_type(kind, &body_signature)?;
@@ -5861,15 +5880,21 @@ impl<'ctx> Generator<'ctx> {
         Ok(())
     }
 
-    fn declare_externs(&mut self) -> Result<(), CodegenError> {
+    fn declare_externs(&mut self, units: &[MonomorphizedBody]) -> Result<(), CodegenError> {
         let mut declared = BTreeMap::<String, (FunctionValue<'ctx>, FunctionType)>::new();
+        let emitted_callables = units
+            .iter()
+            .map(|unit| unit.instance.callable)
+            .collect::<BTreeSet<_>>();
         for (callable, external) in &self.layouts.externs {
-            if self
-                .layouts
-                .exports
-                .values()
-                .any(|exported| exported == &external.name)
-            {
+            let shadowed_by_emitted_export =
+                self.layouts
+                    .exports
+                    .iter()
+                    .any(|(exported_callable, exported)| {
+                        exported == &external.name && emitted_callables.contains(exported_callable)
+                    });
+            if shadowed_by_emitted_export {
                 continue;
             }
             let signature = self.normalize_function_type(&external.function);
@@ -6208,11 +6233,16 @@ impl<'ctx> Generator<'ctx> {
                 let function_name =
                     format!("tn_builtin_ord_{}_{}", interface.0, builtin_type_name(ty));
                 let pointer = self.context.ptr_type(AddressSpace::default());
+                let string_type = matches!(ty, Type::String | Type::Str);
+                let mut parameters = vec![pointer.into()];
+                parameters.push(if string_type {
+                    self.borrowed_string_type().into()
+                } else {
+                    pointer.into()
+                });
                 let function = self.module.add_function(
                     &function_name,
-                    self.context
-                        .i32_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    self.context.i32_type().fn_type(&parameters, false),
                     None,
                 );
                 function.set_linkage(Linkage::Private);
@@ -6225,17 +6255,39 @@ impl<'ctx> Generator<'ctx> {
                         CodegenError::Unsupported("builtin Ord receiver is missing".into())
                     })?
                     .into_pointer_value();
-                let argument = function
-                    .get_nth_param(1)
-                    .ok_or_else(|| {
-                        CodegenError::Unsupported("builtin Ord argument is missing".into())
-                    })?
-                    .into_pointer_value();
-                let (less, greater) = if matches!(ty, Type::String | Type::Str) {
+                let argument = function.get_nth_param(1).ok_or_else(|| {
+                    CodegenError::Unsupported("builtin Ord argument is missing".into())
+                })?;
+                let (less, greater) = if string_type {
+                    let receiver = builder
+                        .build_load(
+                            self.borrowed_string_type(),
+                            receiver,
+                            "builtin.string.receiver",
+                        )?
+                        .into_struct_value();
+                    let left_pointer = builder
+                        .build_extract_value(receiver, 0, "builtin.string.left.pointer")?
+                        .into_pointer_value();
+                    let left_length = builder
+                        .build_extract_value(receiver, 1, "builtin.string.left.length")?
+                        .into_int_value();
+                    let argument = argument.into_struct_value();
+                    let right_pointer = builder
+                        .build_extract_value(argument, 0, "builtin.string.right.pointer")?
+                        .into_pointer_value();
+                    let right_length = builder
+                        .build_extract_value(argument, 1, "builtin.string.right.length")?
+                        .into_int_value();
                     let comparison = builder
                         .build_call(
-                            self.runtime_string_compare_slots(),
-                            &[receiver.into(), argument.into()],
+                            self.runtime_string_compare(),
+                            &[
+                                left_pointer.into(),
+                                left_length.into(),
+                                right_pointer.into(),
+                                right_length.into(),
+                            ],
                             "builtin.string.compare",
                         )?
                         .try_as_basic_value()
@@ -6259,6 +6311,7 @@ impl<'ctx> Generator<'ctx> {
                         )?,
                     )
                 } else {
+                    let argument = argument.into_pointer_value();
                     let value_type = self.basic_type(ty)?;
                     let left = builder.build_load(value_type, receiver, "builtin.ord.left")?;
                     let right = builder.build_load(value_type, argument, "builtin.ord.right")?;
@@ -6378,10 +6431,23 @@ impl<'ctx> Generator<'ctx> {
                     })?
                     .into_pointer_value();
                 let hash = if matches!(ty, Type::String | Type::Str) {
+                    let receiver = builder
+                        .build_load(
+                            self.borrowed_string_type(),
+                            receiver,
+                            "builtin.string.receiver",
+                        )?
+                        .into_struct_value();
+                    let pointer = builder
+                        .build_extract_value(receiver, 0, "builtin.string.pointer")?
+                        .into_pointer_value();
+                    let length = builder
+                        .build_extract_value(receiver, 1, "builtin.string.length")?
+                        .into_int_value();
                     builder
                         .build_call(
-                            self.runtime_string_hash_slots(),
-                            &[receiver.into()],
+                            self.runtime_bytes_hash(),
+                            &[pointer.into(), length.into()],
                             "builtin.string.hash",
                         )?
                         .try_as_basic_value()
@@ -6516,11 +6582,16 @@ impl<'ctx> Generator<'ctx> {
                 let pointer = self.context.ptr_type(AddressSpace::default());
                 let function_name =
                     format!("tn_builtin_equal_{}_{}", interface.0, builtin_type_name(ty));
+                let string_type = matches!(ty, Type::String | Type::Str);
+                let mut parameters = vec![pointer.into()];
+                parameters.push(if string_type {
+                    self.borrowed_string_type().into()
+                } else {
+                    pointer.into()
+                });
                 let function = self.module.add_function(
                     &function_name,
-                    self.context
-                        .bool_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    self.context.bool_type().fn_type(&parameters, false),
                     None,
                 );
                 function.set_linkage(Linkage::Private);
@@ -6533,17 +6604,39 @@ impl<'ctx> Generator<'ctx> {
                         CodegenError::Unsupported("builtin Equal receiver is missing".into())
                     })?
                     .into_pointer_value();
-                let argument = function
-                    .get_nth_param(1)
-                    .ok_or_else(|| {
-                        CodegenError::Unsupported("builtin Equal argument is missing".into())
-                    })?
-                    .into_pointer_value();
-                let equal = if matches!(ty, Type::String | Type::Str) {
+                let argument = function.get_nth_param(1).ok_or_else(|| {
+                    CodegenError::Unsupported("builtin Equal argument is missing".into())
+                })?;
+                let equal = if string_type {
+                    let receiver = builder
+                        .build_load(
+                            self.borrowed_string_type(),
+                            receiver,
+                            "builtin.string.receiver",
+                        )?
+                        .into_struct_value();
+                    let left_pointer = builder
+                        .build_extract_value(receiver, 0, "builtin.string.left.pointer")?
+                        .into_pointer_value();
+                    let left_length = builder
+                        .build_extract_value(receiver, 1, "builtin.string.left.length")?
+                        .into_int_value();
+                    let argument = argument.into_struct_value();
+                    let right_pointer = builder
+                        .build_extract_value(argument, 0, "builtin.string.right.pointer")?
+                        .into_pointer_value();
+                    let right_length = builder
+                        .build_extract_value(argument, 1, "builtin.string.right.length")?
+                        .into_int_value();
                     let result = builder
                         .build_call(
-                            self.runtime_string_equals_slots(),
-                            &[receiver.into(), argument.into()],
+                            self.runtime_string_equals(),
+                            &[
+                                left_pointer.into(),
+                                left_length.into(),
+                                right_pointer.into(),
+                                right_length.into(),
+                            ],
                             "builtin.string.equals",
                         )?
                         .try_as_basic_value()
@@ -6559,6 +6652,7 @@ impl<'ctx> Generator<'ctx> {
                         "builtin.string.equals.test",
                     )?
                 } else {
+                    let argument = argument.into_pointer_value();
                     let left =
                         builder.build_load(self.basic_type(ty)?, receiver, "builtin.equal.left")?;
                     let right = builder.build_load(
@@ -6775,44 +6869,16 @@ impl<'ctx> Generator<'ctx> {
             })
     }
 
-    fn runtime_string_compare_slots(&self) -> FunctionValue<'ctx> {
+    fn runtime_bytes_hash(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("tn_string_compare_slots")
+            .get_function("tn_bytes_hash")
             .unwrap_or_else(|| {
                 let pointer = self.context.ptr_type(AddressSpace::default());
                 self.module.add_function(
-                    "tn_string_compare_slots",
+                    "tn_bytes_hash",
                     self.context
-                        .i32_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
-                    None,
-                )
-            })
-    }
-
-    fn runtime_string_hash_slots(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("tn_string_hash_slots")
-            .unwrap_or_else(|| {
-                let pointer = self.context.ptr_type(AddressSpace::default());
-                self.module.add_function(
-                    "tn_string_hash_slots",
-                    self.context.i64_type().fn_type(&[pointer.into()], false),
-                    None,
-                )
-            })
-    }
-
-    fn runtime_string_equals_slots(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("tn_string_equals_slots")
-            .unwrap_or_else(|| {
-                let pointer = self.context.ptr_type(AddressSpace::default());
-                self.module.add_function(
-                    "tn_string_equals_slots",
-                    self.context
-                        .i32_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
+                        .i64_type()
+                        .fn_type(&[pointer.into(), self.pointer_int_type().into()], false),
                     None,
                 )
             })
@@ -6851,6 +6917,27 @@ impl<'ctx> Generator<'ctx> {
                             .ptr_type(AddressSpace::default())
                             .as_basic_type_enum()
                             .into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_string_scalar_length_bytes(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("tn_string_scalar_length_bytes")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_string_scalar_length_bytes",
+                    self.pointer_int_type().fn_type(
+                        &[
+                            self.context
+                                .ptr_type(AddressSpace::default())
+                                .as_basic_type_enum()
+                                .into(),
+                            self.pointer_int_type().into(),
+                        ],
                         false,
                     ),
                     None,
@@ -7644,6 +7731,11 @@ impl<'ctx> Generator<'ctx> {
 
     fn is_indirect_abi_type(&self, ty: &Type) -> bool {
         matches!(ty, Type::Optional(_) | Type::Array(_, _) | Type::Slice(_))
+            || matches!(
+                ty,
+                Type::Reference { referent, .. }
+                    if matches!(referent.as_ref(), Type::Slice(_) | Type::String | Type::Str)
+            )
             || matches!(ty, Type::Nominal(declaration, _) if !self.is_class_type(ty)
                 && self.layouts.nominals.contains_key(declaration))
     }
@@ -7781,6 +7873,17 @@ impl<'ctx> Generator<'ctx> {
             Type::Reference { referent, .. } if matches!(referent.as_ref(), Type::Slice(_)) => {
                 self.basic_type(referent)?
             }
+            Type::Reference { referent, .. } if matches!(referent.as_ref(), Type::Str) => {
+                self.borrowed_string_type().into()
+            }
+            Type::Reference {
+                mutable: true,
+                referent,
+                ..
+            } if matches!(referent.as_ref(), Type::String) => pointer(),
+            Type::Reference { referent, .. } if matches!(referent.as_ref(), Type::String) => {
+                self.borrowed_string_type().into()
+            }
             Type::Reference { .. }
             | Type::RawPointer { .. }
             | Type::String
@@ -7890,13 +7993,22 @@ impl<'ctx> Generator<'ctx> {
             let Type::Nominal(declaration, arguments) = &current else {
                 return current;
             };
-            if !arguments.is_empty() || !visited.insert(*declaration) {
+            if !visited.insert(*declaration) {
                 return current;
             }
             let Some(alias) = self.layouts.aliases.get(declaration) else {
                 return current;
             };
-            current = alias.clone();
+            if alias.parameters.len() != arguments.len() {
+                return current;
+            }
+            let substitutions = alias
+                .parameters
+                .iter()
+                .cloned()
+                .zip(arguments.iter().cloned())
+                .collect::<BTreeMap<_, _>>();
+            current = instantiate_type(&alias.body, &substitutions);
         }
     }
 
@@ -7917,8 +8029,13 @@ impl<'ctx> Generator<'ctx> {
                     .map(|argument| self.normalize_alias_deep(argument))
                     .collect(),
             ),
-            Type::Promise { result, effects } => Type::Promise {
+            Type::Promise {
+                result,
+                error,
+                effects,
+            } => Type::Promise {
                 result: Box::new(self.normalize_alias_deep(&result)),
+                error: Box::new(self.normalize_alias_deep(&error)),
                 effects,
             },
             Type::Optional(inner) => Type::Optional(Box::new(self.normalize_alias_deep(&inner))),
@@ -8002,6 +8119,16 @@ impl<'ctx> Generator<'ctx> {
         } else {
             self.context.i64_type()
         }
+    }
+
+    fn borrowed_string_type(&self) -> StructType<'ctx> {
+        self.context.struct_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.pointer_int_type().into(),
+            ],
+            false,
+        )
     }
 
     fn class_object_type(
@@ -8397,13 +8524,43 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         let destination = self.locals[usize::try_from(destination.0)
             .map_err(|_| CodegenError::Unsupported("borrow destination index overflow".into()))?];
         if matches!(
-            destination_type,
-            Type::Reference { referent, .. } if matches!(referent.as_ref(), Type::Slice(_))
+            &destination_type,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::Slice(_))
         ) {
+            let source_type = self.place_type(place)?;
             let value = self.builder.build_load(
-                self.generator.basic_type(&self.place_type(place)?)?,
+                self.generator.basic_type(&source_type)?,
                 self.place_pointer(place)?,
                 "slice.borrow",
+            )?;
+            self.builder.build_store(destination, value)?;
+        } else if matches!(
+            &destination_type,
+            Type::Reference {
+                mutable: true,
+                referent,
+                ..
+            } if matches!(referent.as_ref(), Type::String)
+        ) {
+            self.builder
+                .build_store(destination, self.place_pointer(place)?)?;
+        } else if matches!(
+            &destination_type,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ) {
+            let value = self.lower_borrowed_string_from_place(place)?;
+            self.builder.build_store(destination, value)?;
+        } else if matches!(
+            &destination_type,
+            Type::Reference { referent, .. }
+                if self.generator.is_class_type(referent)
+        ) {
+            let value = self.builder.build_load(
+                self.generator.context.ptr_type(AddressSpace::default()),
+                self.place_pointer(place)?,
+                "class.borrow",
             )?;
             self.builder.build_store(destination, value)?;
         } else {
@@ -8411,6 +8568,167 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .build_store(destination, self.place_pointer(place)?)?;
         }
         Ok(())
+    }
+
+    fn lower_borrowed_string_from_place(
+        &self,
+        place: &Place,
+    ) -> Result<StructValue<'ctx>, CodegenError> {
+        let source_type = self.place_type(place)?;
+        let source_pointer = self.place_pointer(place)?;
+        if matches!(
+            &source_type,
+            Type::Reference {
+                mutable: true,
+                referent,
+                ..
+            } if matches!(referent.as_ref(), Type::String)
+        ) {
+            let slot = self
+                .builder
+                .build_load(
+                    self.generator.context.ptr_type(AddressSpace::default()),
+                    source_pointer,
+                    "borrowed.mutable.string.slot",
+                )?
+                .into_pointer_value();
+            let pointer = self
+                .builder
+                .build_load(
+                    self.generator.context.ptr_type(AddressSpace::default()),
+                    slot,
+                    "borrowed.mutable.string.pointer",
+                )?
+                .into_pointer_value();
+            let length = self
+                .builder
+                .build_call(
+                    self.generator.runtime_string_length(),
+                    &[pointer.into()],
+                    "borrowed.mutable.string.length",
+                )?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
+                .into_int_value();
+            return self.make_borrowed_string(pointer, length);
+        }
+        if matches!(
+            &source_type,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ) {
+            return Ok(self
+                .builder
+                .build_load(
+                    self.generator.borrowed_string_type(),
+                    source_pointer,
+                    "borrowed.string.reborrow",
+                )?
+                .into_struct_value());
+        }
+        if self.place_is_fat_string_dereference(place)? {
+            return Ok(self
+                .builder
+                .build_load(
+                    self.generator.borrowed_string_type(),
+                    source_pointer,
+                    "borrowed.string.dereference",
+                )?
+                .into_struct_value());
+        }
+        if !matches!(&source_type, Type::String | Type::Str) {
+            return Err(CodegenError::Unsupported(format!(
+                "borrowed string source has unsupported type: {source_type:?}"
+            )));
+        }
+        let pointer = self
+            .builder
+            .build_load(
+                self.generator.context.ptr_type(AddressSpace::default()),
+                source_pointer,
+                "borrowed.string.pointer",
+            )?
+            .into_pointer_value();
+        let length = self
+            .builder
+            .build_call(
+                self.generator.runtime_string_length(),
+                &[pointer.into()],
+                "borrowed.string.length",
+            )?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
+            .into_int_value();
+        self.make_borrowed_string(pointer, length)
+    }
+
+    fn make_borrowed_string(
+        &self,
+        pointer: PointerValue<'ctx>,
+        length: IntValue<'ctx>,
+    ) -> Result<StructValue<'ctx>, CodegenError> {
+        let structure = self.generator.borrowed_string_type();
+        let value = self
+            .builder
+            .build_insert_value(
+                structure.const_zero(),
+                pointer,
+                0,
+                "borrowed.string.pointer",
+            )?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(value, length, 1, "borrowed.string.length")?
+            .into_struct_value())
+    }
+
+    fn lower_borrowed_string_from_address(
+        &self,
+        address: PointerValue<'ctx>,
+        pointee: &Type,
+    ) -> Result<StructValue<'ctx>, CodegenError> {
+        if matches!(
+            pointee,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ) {
+            return Ok(self
+                .builder
+                .build_load(
+                    self.generator.borrowed_string_type(),
+                    address,
+                    "borrowed.element.string.reborrow",
+                )?
+                .into_struct_value());
+        }
+        if !matches!(pointee, Type::String | Type::Str) {
+            return Err(CodegenError::Unsupported(format!(
+                "borrowed string element has unsupported type: {pointee:?}"
+            )));
+        }
+        let pointer = self
+            .builder
+            .build_load(
+                self.generator.context.ptr_type(AddressSpace::default()),
+                address,
+                "borrowed.element.string.pointer",
+            )?
+            .into_pointer_value();
+        let length = self
+            .builder
+            .build_call(
+                self.generator.runtime_string_length(),
+                &[pointer.into()],
+                "borrowed.element.string.length",
+            )?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
+            .into_int_value();
+        self.make_borrowed_string(pointer, length)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -8537,6 +8855,25 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .build_insert_value(value, payload, 1, "optional.payload")?
                         .into_struct_value()
                         .into());
+                }
+                let source_type = self.operand_type(operand)?;
+                if matches!(
+                    source_type,
+                    Type::Reference {
+                        mutable,
+                        referent,
+                        ..
+                    }
+                        if matches!(referent.as_ref(), Type::String | Type::Str)
+                            && (!mutable || matches!(referent.as_ref(), Type::Str))
+                ) && matches!(ty, Type::RawPointer { .. })
+                {
+                    let value = self.builder.build_extract_value(
+                        self.lower_operand(operand)?.into_struct_value(),
+                        0,
+                        "borrowed.string.pointer",
+                    )?;
+                    return self.lower_cast(value, self.generator.basic_type(ty)?);
                 }
                 let value = self.lower_operand(operand)?;
                 let target = self.generator.basic_type(ty)?;
@@ -8680,6 +9017,18 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 let value = if self.generator.is_macos { 528 } else { 2 };
                 Ok(result.const_int(value, false).into())
             }
+            Rvalue::RawOperation { operation, ty, .. }
+                if operation == "platform_socket_reuse_address_option" =>
+            {
+                let result = self.generator.basic_type(ty)?.into_int_type();
+                let value = if self.generator.is_macos { 4 } else { 2 };
+                Ok(result.const_int(value, false).into())
+            }
+            Rvalue::RawOperation { operation, ty, .. } if operation == "platform_socket_level" => {
+                let result = self.generator.basic_type(ty)?.into_int_type();
+                let value = if self.generator.is_macos { 65_535 } else { 1 };
+                Ok(result.const_int(value, false).into())
+            }
             Rvalue::RawOperation {
                 operation,
                 operands,
@@ -8805,6 +9154,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "call_raw operation requires a non-void callback result".into(),
                     )
                 })
+            }
+            Rvalue::RawOperation { operation, .. } if operation.starts_with("global_address:") => {
+                Ok(self.global_pointer(operation)?.into())
             }
             Rvalue::RawOperation { operation, ty, .. } if operation.starts_with("global_load:") => {
                 let pointer = self.global_pointer(operation)?;
@@ -9173,7 +9525,26 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 let operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("dereference operation lacks an operand".into())
                 })?;
-                let pointer = self.lower_operand(operand)?.into_pointer_value();
+                let pointer = match self.lower_operand(operand)? {
+                    BasicValueEnum::PointerValue(pointer) => pointer,
+                    BasicValueEnum::StructValue(view) if matches!(ty, Type::String | Type::Str) => {
+                        return Ok(self.builder.build_extract_value(
+                            view,
+                            0,
+                            "raw.dereference.pointer",
+                        )?);
+                    }
+                    BasicValueEnum::StructValue(view) => self
+                        .builder
+                        .build_extract_value(view, 0, "raw.dereference.pointer")?
+                        .into_pointer_value(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "dereference operation requires a pointer or string view, found {}",
+                            other.get_type().print_to_string()
+                        )));
+                    }
+                };
                 Ok(self.builder.build_load(
                     self.generator.basic_type(ty)?,
                     pointer,
@@ -9252,7 +9623,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             Rvalue::RawOperation {
                 operation,
                 operands,
-                ..
+                ty,
             } if operation == "borrow_element" => {
                 let pointer_operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("borrow_element operation lacks a pointer".into())
@@ -9274,16 +9645,25 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 // SAFETY: collection methods check the logical index before invoking this
                 // intrinsic, and their storage invariant guarantees `capacity` consecutive
                 // elements at `pointer`.
-                Ok(unsafe {
+                let address = unsafe {
                     self.builder
                         .build_gep(element, pointer, &[index], "borrowed.element")?
-                        .into()
-                })
+                };
+                if matches!(
+                    ty,
+                    Type::Reference { referent, .. }
+                        if matches!(referent.as_ref(), Type::String | Type::Str)
+                ) {
+                    return self
+                        .lower_borrowed_string_from_address(address, &pointee)
+                        .map(Into::into);
+                }
+                Ok(address.into())
             }
             Rvalue::RawOperation {
                 operation,
                 operands,
-                ..
+                ty,
             } if operation == "borrow_element_mut" => {
                 let pointer_operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("borrow_element_mut operation lacks a pointer".into())
@@ -9307,21 +9687,54 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 // SAFETY: collection methods check the logical index before invoking this
                 // intrinsic, and their storage invariant guarantees `capacity` consecutive
                 // elements at `pointer`.
-                Ok(unsafe {
+                let address = unsafe {
                     self.builder
                         .build_gep(element, pointer, &[index], "borrowed.element.mut")?
-                        .into()
-                })
+                };
+                if matches!(
+                    ty,
+                    Type::Reference { referent, .. }
+                        if matches!(referent.as_ref(), Type::String | Type::Str)
+                ) {
+                    return self
+                        .lower_borrowed_string_from_address(address, &pointee)
+                        .map(Into::into);
+                }
+                Ok(address.into())
             }
             Rvalue::RawOperation {
                 operation,
                 operands,
-                ..
-            } if matches!(operation.as_str(), "borrow_mut" | "borrow_shared") => {
+                ty,
+            } if matches!(
+                operation.as_str(),
+                "borrow_mut_direct"
+                    | "borrow_mut_storage"
+                    | "borrow_shared_direct"
+                    | "borrow_shared_storage"
+            ) =>
+            {
                 let operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported(format!("{operation} operation lacks an operand"))
                 })?;
-                Ok(self.lower_operand(operand)?.into_pointer_value().into())
+                let pointer = self.lower_operand(operand)?.into_pointer_value();
+                if matches!(
+                    operation.as_str(),
+                    "borrow_mut_storage" | "borrow_shared_storage"
+                ) && matches!(
+                    ty,
+                    Type::Reference { referent, .. }
+                        if self.generator.is_class_type(referent)
+                ) {
+                    let value = self.builder.build_load(
+                        self.generator.context.ptr_type(AddressSpace::default()),
+                        pointer,
+                        "class.borrow.intrinsic",
+                    )?;
+                    Ok(value.into())
+                } else {
+                    Ok(pointer.into())
+                }
             }
             Rvalue::RawOperation {
                 operation,
@@ -9541,15 +9954,27 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "string_from_static requires a pointer and byte length".into(),
                     ));
                 }
-                let text = operands
+                let text_value = operands
                     .first()
                     .ok_or_else(|| {
                         CodegenError::Unsupported(
                             "string_from_static operation lacks an operand".into(),
                         )
                     })
-                    .and_then(|operand| self.lower_operand(operand))?
-                    .into_pointer_value();
+                    .and_then(|operand| self.lower_operand(operand))?;
+                let text = match text_value {
+                    BasicValueEnum::PointerValue(pointer) => pointer,
+                    BasicValueEnum::StructValue(view) => self
+                        .builder
+                        .build_extract_value(view, 0, "string.pointer")?
+                        .into_pointer_value(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "string_from_static requires a text pointer, found {}",
+                            other.get_type().print_to_string()
+                        )));
+                    }
+                };
                 let length = self.lower_operand(&operands[1])?;
                 let value = self
                     .builder
@@ -9584,7 +10009,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ty,
-            } if operation == "slice_from_raw_parts" => {
+            } if matches!(
+                operation.as_str(),
+                "slice_from_raw_parts" | "str_from_raw_parts"
+            ) =>
+            {
                 let pointer = operands
                     .first()
                     .ok_or_else(|| {
@@ -9592,8 +10021,20 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             "slice_from_raw_parts operation lacks a pointer".into(),
                         )
                     })
-                    .and_then(|operand| self.lower_operand(operand))?
-                    .into_pointer_value();
+                    .and_then(|operand| self.lower_operand(operand))?;
+                let pointer = match pointer {
+                    BasicValueEnum::PointerValue(pointer) => pointer,
+                    BasicValueEnum::StructValue(view) => self
+                        .builder
+                        .build_extract_value(view, 0, "slice.pointer")?
+                        .into_pointer_value(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "slice_from_raw_parts operation requires a pointer or string view, found {}",
+                            other.get_type().print_to_string()
+                        )));
+                    }
+                };
                 let length = operands
                     .get(1)
                     .ok_or_else(|| {
@@ -9634,6 +10075,55 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 }
                 let slice = self.lower_operand(operand)?.into_struct_value();
                 Ok(self.builder.build_extract_value(slice, 1, "slice.length")?)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "string_scalar_length" => {
+                if *ty != Type::Primitive(PrimitiveType::Usize) || operands.len() != 1 {
+                    return Err(CodegenError::Unsupported(
+                        "string_scalar_length requires one string operand and a usize result"
+                            .into(),
+                    ));
+                }
+                let operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "string_scalar_length operation lacks a string operand".into(),
+                    )
+                })?;
+                let value = self.lower_operand(operand)?;
+                let (pointer, length) = self.string_parts(operand, value)?;
+                Ok(self
+                    .builder
+                    .build_call(
+                        self.generator.runtime_string_scalar_length_bytes(),
+                        &[pointer.into(), length.into()],
+                        "string.scalar_length",
+                    )?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::Builder("string scalar length returned void".into())
+                    })?)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "string_byte_length" => {
+                if *ty != Type::Primitive(PrimitiveType::Usize) || operands.len() != 1 {
+                    return Err(CodegenError::Unsupported(
+                        "string_byte_length requires one string operand and a usize result".into(),
+                    ));
+                }
+                let operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "string_byte_length operation lacks a string operand".into(),
+                    )
+                })?;
+                let value = self.lower_operand(operand)?;
+                Ok(self.string_parts(operand, value)?.1.into())
             }
             Rvalue::RawOperation {
                 operation,
@@ -9787,17 +10277,6 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 })?;
                 let source_type = self.operand_type(source_operand)?;
                 let source = self.lower_operand(source_operand)?.into_pointer_value();
-                let source = if matches!(&source_type, Type::Reference { .. }) {
-                    self.builder
-                        .build_load(
-                            self.generator.context.ptr_type(AddressSpace::default()),
-                            source,
-                            "arc.reference",
-                        )?
-                        .into_pointer_value()
-                } else {
-                    source
-                };
                 let source_type = match source_type {
                     Type::Reference { referent, .. } => referent.as_ref().clone(),
                     ty => ty,
@@ -10184,7 +10663,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         right: BasicValueEnum<'ctx>,
         ty: &Type,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
-        if !matches!(ty, Type::String | Type::Str) {
+        let string_like = matches!(ty, Type::String | Type::Str)
+            || matches!(
+                ty,
+                Type::Reference { referent, .. }
+                    if matches!(referent.as_ref(), Type::String | Type::Str)
+            );
+        if !string_like {
             return Ok(None);
         }
         match operator {
@@ -10209,16 +10694,16 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         right_operand: &Operand,
         right: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let left_length = self.string_length(left_operand, left)?;
-        let right_length = self.string_length(right_operand, right)?;
+        let (left_pointer, left_length) = self.string_parts(left_operand, left)?;
+        let (right_pointer, right_length) = self.string_parts(right_operand, right)?;
         let equal = self
             .builder
             .build_call(
                 self.generator.runtime_string_equals(),
                 &[
-                    left.into_pointer_value().into(),
+                    left_pointer.into(),
                     left_length.into(),
-                    right.into_pointer_value().into(),
+                    right_pointer.into(),
                     right_length.into(),
                 ],
                 "string.equals",
@@ -10248,16 +10733,16 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         right_operand: &Operand,
         right: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let left_length = self.string_length(left_operand, left)?;
-        let right_length = self.string_length(right_operand, right)?;
+        let (left_pointer, left_length) = self.string_parts(left_operand, left)?;
+        let (right_pointer, right_length) = self.string_parts(right_operand, right)?;
         let ordering = self
             .builder
             .build_call(
                 self.generator.runtime_string_compare(),
                 &[
-                    left.into_pointer_value().into(),
+                    left_pointer.into(),
                     left_length.into(),
-                    right.into_pointer_value().into(),
+                    right_pointer.into(),
                     right_length.into(),
                 ],
                 "string.compare",
@@ -10288,28 +10773,103 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             .into())
     }
 
-    fn string_length(
+    fn string_parts(
         &self,
         operand: &Operand,
         value: BasicValueEnum<'ctx>,
-    ) -> Result<IntValue<'ctx>, CodegenError> {
-        if let Operand::Constant(Constant::String(text)) = operand {
-            return Ok(self
-                .generator
-                .pointer_int_type()
-                .const_int(u64::try_from(text.len()).unwrap_or(u64::MAX), false));
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let operand_type = self.operand_type(operand)?;
+        if matches!(
+            &operand_type,
+            Type::Reference {
+                mutable: true,
+                referent,
+                ..
+            } if matches!(referent.as_ref(), Type::String)
+        ) {
+            let pointer = self
+                .builder
+                .build_load(
+                    self.generator.context.ptr_type(AddressSpace::default()),
+                    value.into_pointer_value(),
+                    "mutable.string.pointer",
+                )?
+                .into_pointer_value();
+            let length = self
+                .builder
+                .build_call(
+                    self.generator.runtime_string_length(),
+                    &[pointer.into()],
+                    "mutable.string.length",
+                )?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
+                .into_int_value();
+            return Ok((pointer, length));
         }
-        Ok(self
-            .builder
-            .build_call(
-                self.generator.runtime_string_length(),
-                &[value.into_pointer_value().into()],
-                "string.length",
-            )?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
-            .into_int_value())
+        if matches!(
+            &operand_type,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ) {
+            let value = value.into_struct_value();
+            let pointer = self
+                .builder
+                .build_extract_value(value, 0, "string.pointer")?
+                .into_pointer_value();
+            let length = self
+                .builder
+                .build_extract_value(value, 1, "string.length")?
+                .into_int_value();
+            return Ok((pointer, length));
+        }
+        if let Some(place) = operand_place(operand)
+            && self.place_is_fat_string_dereference(place)?
+        {
+            let value = self
+                .builder
+                .build_load(
+                    self.generator.borrowed_string_type(),
+                    self.place_pointer(place)?,
+                    "string.dereference.view",
+                )?
+                .into_struct_value();
+            let pointer = self
+                .builder
+                .build_extract_value(value, 0, "string.pointer")?
+                .into_pointer_value();
+            let length = self
+                .builder
+                .build_extract_value(value, 1, "string.length")?
+                .into_int_value();
+            return Ok((pointer, length));
+        }
+        let pointer = match operand_type {
+            Type::String | Type::Str => value.into_pointer_value(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "string operation requires string input, found {other:?}"
+                )));
+            }
+        };
+        let length = if let Operand::Constant(Constant::String(text)) = operand {
+            self.generator
+                .pointer_int_type()
+                .const_int(u64::try_from(text.len()).unwrap_or(u64::MAX), false)
+        } else {
+            self.builder
+                .build_call(
+                    self.generator.runtime_string_length(),
+                    &[pointer.into()],
+                    "string.length",
+                )?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("string length returned void".into()))?
+                .into_int_value()
+        };
+        Ok((pointer, length))
     }
 
     fn lower_optional_equality(
@@ -10624,8 +11184,15 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn is_pointer_representation(&self, ty: &Type) -> bool {
         matches!(
             ty,
+            Type::Reference {
+                mutable: true,
+                referent,
+                ..
+            } if matches!(referent.as_ref(), Type::String)
+        ) || matches!(
+            ty,
             Type::Reference { referent, .. }
-                if !matches!(referent.as_ref(), Type::Slice(_))
+                if !matches!(referent.as_ref(), Type::Slice(_) | Type::String | Type::Str)
         ) || matches!(
             ty,
             Type::RawPointer { .. }
@@ -10780,7 +11347,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         cancel: BasicBlockId,
     ) -> Result<(), CodegenError> {
         let promise = self.lower_operand(value)?.into_pointer_value();
-        let Type::Promise { result, effects } = self.operand_type(value)? else {
+        let Type::Promise {
+            result, effects, ..
+        } = self.operand_type(value)?
+        else {
             return Err(CodegenError::Unsupported(
                 "suspend operand is not a promise".into(),
             ));
@@ -11333,7 +11903,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     && signature.parameters[0] == *ty
             })
             .map(|(_, signature)| signature.clone())
-            .ok_or_else(|| CodegenError::Unsupported("drop method signature is missing".into()))?;
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "drop method signature is missing for {ty:?} ({callable:?})"
+                ))
+            })?;
         let function = self
             .resolve_emitted_callable(callable, &signature)
             .map_err(|error| CodegenError::Unsupported(error.to_string()))?;
@@ -11612,11 +12186,38 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             .filter(|(instance, signature)| {
                 instance.callable == callable && signature_matches(signature, function_type)
             })
-            .map(|(instance, _)| self.generator.functions[instance]);
-        let function = matches.next().ok_or_else(|| {
+            .map(|(instance, _)| self.generator.functions[instance])
+            .collect::<Vec<_>>();
+        if matches.is_empty()
+            && let Some(external_name) = self
+                .generator
+                .layouts
+                .externs
+                .get(&callable)
+                .map(|external| external.name.as_str())
+        {
+            matches = self
+                .generator
+                .layouts
+                .exports
+                .iter()
+                .filter(|(_, exported_name)| exported_name == &external_name)
+                .flat_map(|(exported_callable, _)| {
+                    self.generator
+                        .signatures
+                        .iter()
+                        .filter(move |(instance, signature)| {
+                            instance.callable == *exported_callable
+                                && signature_matches(signature, function_type)
+                        })
+                        .map(|(instance, _)| self.generator.functions[instance])
+                })
+                .collect();
+        }
+        let function = matches.first().copied().ok_or_else(|| {
             CodegenError::Unsupported(format!("call target {callable:?} was not emitted"))
         })?;
-        if matches.next().is_some() {
+        if matches.len() > 1 {
             return Err(CodegenError::Unsupported(format!(
                 "call target {callable:?} is ambiguous after specialization"
             )));
@@ -12203,9 +12804,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => {
                 let place_type = self.place_type(place)?;
-                if place_type == Type::Str
+                let raw_string_dereference = place_type == Type::Str
                     && matches!(place.projection.last(), Some(Projection::Dereference))
-                {
+                    && matches!(
+                        self.local_type(place.local.0)?,
+                        Type::RawPointer { pointee, .. } if pointee.as_ref() == &Type::Str
+                    );
+                if raw_string_dereference {
                     return Ok(self.place_pointer(place)?.into());
                 }
                 let ty = self.generator.basic_type(&place_type)?;
@@ -12380,7 +12985,23 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             ));
         };
         let source = self.operand_type(operand)?;
-        let data = if self.generator.is_class_type(&source) {
+        let witness_source = match &source {
+            Type::Reference { referent, .. } => referent.as_ref().clone(),
+            source => source.clone(),
+        };
+        let data = if matches!(
+            &source,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ) {
+            self.place_pointer(operand_place(operand).ok_or_else(|| {
+                CodegenError::Unsupported(
+                    "borrowed string interface source must be addressable".into(),
+                )
+            })?)?
+        } else if matches!(&source, Type::Reference { .. }) {
+            self.lower_operand(operand)?.into_pointer_value()
+        } else if self.generator.is_class_type(&source) {
             self.lower_operand(operand)?.into_pointer_value()
         } else if let Some(place) = operand_place(operand) {
             self.place_pointer(place)?
@@ -12404,15 +13025,15 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             self.builder.build_store(data, value)?;
             data
         };
-        let witness = match &source {
+        let witness = match &witness_source {
             Type::Primitive(_) | Type::String | Type::Str => self
                 .generator
                 .builtin_witnesses
-                .get(&(*interface, source.clone()))
+                .get(&(*interface, witness_source.clone()))
                 .copied()
                 .ok_or_else(|| {
                     CodegenError::Unsupported(format!(
-                        "no builtin witness table for interface {interface:?} and source {source:?}"
+                        "no builtin witness table for interface {interface:?} and source {witness_source:?}"
                     ))
                 })?,
             Type::Nominal(target_declaration, _) => self
@@ -12427,7 +13048,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 })?,
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "interface coercion source is not concrete: {source:?}"
+                    "interface coercion source is not concrete: {witness_source:?}"
                 )))
             }
         };
@@ -12650,7 +13271,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         })
     }
 
-    fn lower_static_string(&self, value: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+    fn lower_static_string(&self, value: &str) -> Result<StructValue<'ctx>, CodegenError> {
         let length = value.len();
         let total = 16usize
             .checked_add(length)
@@ -12684,11 +13305,27 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         global.set_initializer(&initializer);
         let zero = self.generator.context.i64_type().const_zero();
         let data_offset = self.generator.context.i64_type().const_int(16, false);
-        Ok(unsafe {
+        let pointer = unsafe {
             global
                 .as_pointer_value()
                 .const_gep(array_type, &[zero, data_offset])
-        })
+        };
+        let structure = self.generator.borrowed_string_type();
+        let value = self
+            .builder
+            .build_insert_value(structure.const_zero(), pointer, 0, "string.pointer")?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(
+                value,
+                self.generator
+                    .pointer_int_type()
+                    .const_int(u64::try_from(length).unwrap_or(u64::MAX), false),
+                1,
+                "string.length",
+            )?
+            .into_struct_value())
     }
 
     fn wrap_optional_constant(
@@ -12791,7 +13428,24 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             )));
                         }
                     };
-                    if !matches!(referent_type, Type::Slice(_)) {
+                    let fat_reference = matches!(
+                        &ty,
+                        Type::Reference {
+                            mutable,
+                            referent,
+                            ..
+                        }
+                            if matches!(
+                                referent.as_ref(),
+                                Type::Slice(_) | Type::String | Type::Str
+                            ) && !(*mutable && matches!(referent.as_ref(), Type::String))
+                    );
+                    let class_reference = matches!(
+                        &ty,
+                        Type::Reference { referent, .. }
+                            if self.generator.is_class_type(referent)
+                    );
+                    if !fat_reference && !class_reference {
                         pointer = self
                             .builder
                             .build_load(
@@ -12875,6 +13529,19 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             };
         }
         Ok(ty)
+    }
+
+    fn place_is_fat_string_dereference(&self, place: &Place) -> Result<bool, CodegenError> {
+        if !matches!(place.projection.last(), Some(Projection::Dereference)) {
+            return Ok(false);
+        }
+        let mut prefix = place.clone();
+        prefix.projection.pop();
+        Ok(matches!(
+            self.place_type(&prefix)?,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ))
     }
 
     fn local_type(&self, local: u32) -> Result<Type, CodegenError> {
@@ -13069,6 +13736,15 @@ fn signature_matches(emitted: &FunctionType, requested: &FunctionType) -> bool {
 fn abi_type_matches(left: &Type, right: &Type) -> bool {
     match (left, right) {
         (
+            Type::Primitive(PrimitiveType::Isize | PrimitiveType::I64),
+            Type::Primitive(PrimitiveType::Isize | PrimitiveType::I64),
+        )
+        | (
+            Type::Primitive(PrimitiveType::Usize | PrimitiveType::U64),
+            Type::Primitive(PrimitiveType::Usize | PrimitiveType::U64),
+        ) => true,
+        (Type::String, Type::Str) | (Type::Str, Type::String) => true,
+        (
             Type::Reference {
                 mutable: left_mutable,
                 referent: left,
@@ -13126,10 +13802,12 @@ fn abi_type_matches(left: &Type, right: &Type) -> bool {
             Type::Promise {
                 result: left,
                 effects: left_effects,
+                ..
             },
             Type::Promise {
                 result: right,
                 effects: right_effects,
+                ..
             },
         ) => left_effects == right_effects && abi_type_matches(left, right),
         _ => left == right,
@@ -13243,10 +13921,18 @@ fn instantiate_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
             .get(name)
             .cloned()
             .unwrap_or_else(|| ty.clone()),
-        Type::Promise { result, effects } => Type::Promise {
-            result: Box::new(instantiate_type(result, substitutions)),
-            effects: effects.clone(),
-        },
+        Type::Promise {
+            result,
+            error,
+            effects,
+        } => {
+            let error = instantiate_type(error, substitutions);
+            Type::Promise {
+                result: Box::new(instantiate_type(result, substitutions)),
+                error: Box::new(error.clone()),
+                effects: tn_hir::promise_effects(&error, effects),
+            }
+        }
         Type::Nominal(declaration, arguments) => Type::Nominal(
             *declaration,
             arguments

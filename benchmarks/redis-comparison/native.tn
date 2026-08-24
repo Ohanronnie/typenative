@@ -7,7 +7,7 @@ import { servePort as serveRedis } from "../../validation/redis/redis-server";
 async function runNative(): Promise<i32, never> {
   try {
     const port = try lookupU16("REDIS_NATIVE_PORT");
-    try await serveRedis(port, 4096usize);
+    try await serveRedis(port, 512usize);
   } catch (error: ParseIntegerError) {
     return 2i32;
   } catch (error: NetworkError) {

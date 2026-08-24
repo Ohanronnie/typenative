@@ -1,10 +1,9 @@
 
-@Sealed interface LocalOnly {
+interface LocalOnly {
 }
-@Conform(LocalOnly)
-struct LocalConformer {
+struct LocalConformer implements LocalOnly {
 }
-@Sealed class LocalBase {
+class LocalBase {
   public constructor() {
   }
 }

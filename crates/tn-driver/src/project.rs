@@ -120,6 +120,16 @@ pub struct ProjectConfig {
     pub sanitizers: Vec<Sanitizer>,
     #[serde(default)]
     pub link: LinkConfig,
+    #[serde(skip)]
+    pub(crate) support_mode: SupportMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SupportMode {
+    #[default]
+    None,
+    Runtime,
+    Startup,
 }
 
 fn default_out_dir() -> PathBuf {
@@ -165,6 +175,7 @@ pub fn load_project(input: Option<&Path>) -> Result<Project, ProjectError> {
                 emit: Emit::default(),
                 sanitizers: Vec::new(),
                 link: LinkConfig::default(),
+                support_mode: SupportMode::None,
             },
             config_path: None,
         });

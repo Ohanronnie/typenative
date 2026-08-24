@@ -1,0 +1,18 @@
+import { Task, TaskGroup } from "std/async";
+
+struct TaskFailure {
+  public rawCode: i32;
+}
+
+async function typedTask(): Task<i32, TaskFailure> {
+  return 42i32;
+}
+function typedTaskValue(): Task<i32, TaskFailure> {
+  return typedTask();
+}
+function main(): i32 {
+  let group = new TaskGroup();
+  group.spawn(typedTaskValue());
+  group.close();
+  return 0i32;
+}

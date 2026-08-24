@@ -1,0 +1,2 @@
+type Borrowed = Box<scope>;
+function after(): void {}

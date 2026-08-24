@@ -63,9 +63,9 @@ function main(): i32 {
     if (array.capacity<8usize || array.length !== 1usize) {
       return 66i32;
     }
-    queue.push(value);
-    queue.push(key);
-    deque.push(value);
+    queue.enqueue(value);
+    queue.enqueue(key);
+    deque.pushBack(value);
     deque.pushFront(key);
     heap.push(value);
     heap.push(key);
@@ -80,7 +80,7 @@ function main(): i32 {
     }
     canonical.set(key, value);
     ordered.set(key, value);
-    orderedValues.insert(key);
+    orderedValues.add(key);
     try {
       try canonicalSetValue.reserve(64usize);
     } catch (error: AllocError) {
@@ -89,14 +89,14 @@ function main(): i32 {
     if (canonicalSetValue.capacity<64usize) {
       return 46i32;
     }
-    canonicalSetValue.insert(key);
-    if (!canonicalSetValue.contains( & key)) {
+    canonicalSetValue.add(key);
+    if (!canonicalSetValue.has( & key)) {
       return 3i32;
     }
-    textSet.insert("key");
+    textSet.add("key");
     {
       const textKey: string = "key";
-      if (!textSet.contains( & textKey)) {
+      if (!textSet.has( & textKey)) {
         return 44i32;
       }
     }
@@ -111,20 +111,20 @@ function main(): i32 {
       }
     }
     {
-      const output = array.borrow(0usize);
+      const output = array.at(0usize);
       if (output === undefined) {
         return 5i32;
       }
       canonicalArrayOutput = * output!;
     }
     {
-      const output = array.borrow(0usize);
+      const output = array.at(0usize);
       if (output === undefined || * output! !== value) {
         return 53i32;
       }
     }
     {
-      const output = array.borrowMut(0usize);
+      const output = array.atMut(0usize);
       if (output === undefined) {
         return 54i32;
       }
@@ -154,26 +154,26 @@ function main(): i32 {
       if (peeked === undefined || * peeked! !== value) {
         return 54i32;
       }
-      const output = queue.pop();
+      const output = queue.dequeue();
       if (output === undefined) {
         return 7i32;
       }
       canonicalQueuePopOutput = output!;
     }
-    queue.push(7i32);
+    queue.enqueue(7i32);
     queue.reserve(6usize);
     if (queue.capacity<6usize || queue.length !== 2usize) {
       return 22i32;
     }
     {
-      const output = queue.pop();
+      const output = queue.dequeue();
       if (output === undefined) {
         return 12i32;
       }
       canonicalQueueSecondOutput = output!;
     }
     {
-      const output = queue.pop();
+      const output = queue.dequeue();
       if (output === undefined) {
         return 23i32;
       }
@@ -183,8 +183,8 @@ function main(): i32 {
     if (queue.capacity !== 0usize || queue.length !== 0usize) {
       return 24i32;
     }
-    textQueue.push("a");
-    textQueue.push("b");
+    textQueue.enqueue("a");
+    textQueue.enqueue("b");
     {
       const peeked = textQueue.peek();
       if (peeked === undefined) {
@@ -194,7 +194,7 @@ function main(): i32 {
       if (peekedBytes[0usize] !== 97u8) {
         return 56i32;
       }
-      const output = textQueue.pop();
+      const output = textQueue.dequeue();
       if (output === undefined) {
         return 25i32;
       }
@@ -208,7 +208,7 @@ function main(): i32 {
       return 27i32;
     }
     {
-      const output = deque.pop();
+      const output = deque.popFront();
       if (output === undefined) {
         return 8i32;
       }
@@ -225,7 +225,7 @@ function main(): i32 {
     if (deque.capacity !== 0usize || deque.length !== 0usize) {
       return 28i32;
     }
-    textDeque.push("b");
+    textDeque.pushBack("b");
     textDeque.pushFront("a");
     {
       const front = textDeque.peek();
@@ -292,7 +292,7 @@ function main(): i32 {
       return 65i32;
     }
     {
-      if (!canonical.contains( & key)) {
+      if (!canonical.has( & key)) {
         return 15i32;
       }
     }
@@ -302,7 +302,7 @@ function main(): i32 {
       }
     }
     {
-      const removed = canonical.remove( & key);
+      const removed = canonical.delete( & key);
       if (removed === undefined) {
         return 16i32;
       }
@@ -321,7 +321,7 @@ function main(): i32 {
       return 52i32;
     }
     {
-      if (!ordered.contains( & key)) {
+      if (!ordered.has( & key)) {
         return 20i32;
       }
       const output = ordered.get( & key);
@@ -329,12 +329,12 @@ function main(): i32 {
         return 20i32;
       }
       orderedMapOutput = * output!;
-      if (!orderedValues.contains( & key)) {
+      if (!orderedValues.has( & key)) {
         return 21i32;
       }
     }
     {
-      if (!canonicalSetValue.remove( & key)) {
+      if (!canonicalSetValue.delete( & key)) {
         return 17i32;
       }
     }
@@ -353,7 +353,7 @@ function main(): i32 {
     }
     map.set(key, value);
     {
-      if (!map.contains( & key)) {
+      if (!map.has( & key)) {
         return 1i32;
       }
     }
@@ -364,7 +364,7 @@ function main(): i32 {
       }
       legacyMapOutput = * output!;
     }
-    map.remove( & key);
+    map.delete( & key);
   }
   if (canonicalMapOutput !== value) {
     return 31i32;
@@ -423,8 +423,8 @@ function main(): i32 {
   let iterableQueue = new Queue<i32>({
     capacity: 2usize
   });
-  iterableQueue.push(16i32);
-  iterableQueue.push(26i32);
+  iterableQueue.enqueue(16i32);
+  iterableQueue.enqueue(26i32);
   let queueIterated: i32 = 0i32;
   for (const item of move iterableQueue) {
     queueIterated = queueIterated + item;
@@ -435,7 +435,7 @@ function main(): i32 {
   let iterableDeque = new Deque<i32>({
     capacity: 2usize
   });
-  iterableDeque.push(26i32);
+  iterableDeque.pushBack(26i32);
   iterableDeque.pushFront(16i32);
   let dequeIterated: i32 = 0i32;
   for (const item of move iterableDeque) {
@@ -471,8 +471,8 @@ function main(): i32 {
   let iterableSet = new Set<i32>({
     capacity: 2usize
   });
-  iterableSet.insert(16i32);
-  iterableSet.insert(26i32);
+  iterableSet.add(16i32);
+  iterableSet.add(26i32);
   let setIterated: i32 = 0i32;
   for (const item of move iterableSet) {
     setIterated = setIterated + item;
@@ -495,8 +495,8 @@ function main(): i32 {
   let iterableOrderedSet = new OrderedSet<i32>({
     capacity: 2usize
   });
-  iterableOrderedSet.insert(26i32);
-  iterableOrderedSet.insert(16i32);
+  iterableOrderedSet.add(26i32);
+  iterableOrderedSet.add(16i32);
   let orderedSetIterated: i32 = 0i32;
   for (const item of move iterableOrderedSet) {
     orderedSetIterated = orderedSetIterated * 100i32 + item;
@@ -521,7 +521,7 @@ function main(): i32 {
   let iterableTextSet = new Set<string>({
     capacity: 1usize
   });
-  iterableTextSet.insert("a");
+  iterableTextSet.add("a");
   let textSetIterated: i32 = 0i32;
   for (const item of iterableTextSet) {
     if (item.bytes()[0usize] !== 97u8) {

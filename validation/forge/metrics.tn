@@ -1,21 +1,17 @@
 import { fromStatic } from "std/bytes";
-import { closeUdp, resolveIpv4, udpBindChecked, udpSend, NetworkError } from "std/net";
+import { resolveIpv4, tryUdpBind, NetworkError } from "std/net";
 
 export function metricsProbe(): i32 {
-  let address: u32 = 0u32;
-  let resolution: i32 = 0i32;
-  unsafe {
-    resolution = resolveIpv4("127.0.0.1",( & mut address)as * mut u32);
-  }
-  if (resolution !== 0i32 || address === 0u32) {
-    return 1i32;
-  }
   try {
-    let socket = try udpBindChecked("127.0.0.1", 0u16);
+    const address = try resolveIpv4("127.0.0.1");
+    if (address === 0u32) {
+      return 1i32;
+    }
+    let socket = try tryUdpBind("127.0.0.1", 0u16);
     const packet = fromStatic("forge.metrics\n");
-    const sent = udpSend( & socket, packet.pointer, packet.length, "127.0.0.1", 9u16);
-    closeUdp( & mut socket);
-    return sent<0isize?3i32: 0i32;
+    try socket.send( & packet, "127.0.0.1", 9u16);
+    socket.close();
+    return 0i32;
   } catch (error: NetworkError) {
     return 2i32;
   }

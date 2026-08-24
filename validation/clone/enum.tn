@@ -1,9 +1,16 @@
 
-@Clone enum Value {
+enum Value {
   Number(i32), Text(string), Empty,
+  public function clone(): Value {
+    return switch(this) {
+      case Value.Number(value): Value.Number(value),
+      case Value.Text(text): Value.Text(text.clone()),
+      case Value.Empty: Value.Empty,
+    };
+  }
 }
 function main(): i32 {
-  const original = Value.Text(string.from("enum"));
+  const original = Value.Text(String("enum"));
   const copied = original.clone();
   return switch(copied) {
     case Value.Text(text): text === "enum"?42i32: 1i32, default: 2i32,

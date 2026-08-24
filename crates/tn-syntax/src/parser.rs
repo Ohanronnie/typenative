@@ -22,7 +22,6 @@ impl SyntaxKind {
     pub const ENUM_DECLARATION: Self = Self(1_011);
     pub const IMPL_DECLARATION: Self = Self(1_012);
     pub const EXTERN_BLOCK: Self = Self(1_013);
-    pub const MACRO_DECLARATION: Self = Self(1_030);
     pub const FIELD_DECLARATION: Self = Self(1_014);
     pub const METHOD_DECLARATION: Self = Self(1_015);
     pub const CONSTRUCTOR_DECLARATION: Self = Self(1_016);
@@ -39,6 +38,7 @@ impl SyntaxKind {
     pub const CATCH_CLAUSE: Self = Self(1_027);
     pub const ENUM_VARIANT: Self = Self(1_028);
     pub const SWITCH_ARM: Self = Self(1_029);
+    pub const TEST_REGISTRATION: Self = Self(1_030);
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -145,7 +145,26 @@ impl Parser<'_, '_> {
             self.attribute();
         }
         self.eat(TokenKind::Export);
+        if self.at(TokenKind::Identifier)
+            && self.current_text() == Some("test")
+            && self.nth(1) == Some(TokenKind::LeftParen)
+        {
+            self.test_registration();
+            return;
+        }
         self.declaration();
+    }
+
+    fn test_registration(&mut self) {
+        self.start(SyntaxKind::TEST_REGISTRATION);
+        self.expect(TokenKind::Identifier);
+        self.expect(TokenKind::LeftParen);
+        self.expect(TokenKind::StringLiteral);
+        self.expect(TokenKind::Comma);
+        self.expression();
+        self.expect(TokenKind::RightParen);
+        self.expect(TokenKind::Semicolon);
+        self.finish();
     }
 
     fn attribute(&mut self) {
@@ -249,7 +268,7 @@ impl Parser<'_, '_> {
                 self.function_declaration();
             }
             Some(TokenKind::Struct) => self.struct_declaration(),
-            Some(TokenKind::Class | TokenKind::Abstract | TokenKind::Final) => {
+            Some(TokenKind::Class | TokenKind::Abstract) => {
                 self.class_declaration();
             }
             Some(TokenKind::Interface) => self.interface_declaration(),
@@ -269,14 +288,26 @@ impl Parser<'_, '_> {
                 let name = self.current_text().unwrap_or("excluded").to_owned();
                 self.excluded_construct(&name);
             }
+            Some(TokenKind::Derives | TokenKind::Final | TokenKind::Macro) => {
+                let name = self.current_text().unwrap_or("excluded").to_owned();
+                self.excluded_construct(&name);
+            }
             Some(TokenKind::Declare) => self.foreign_declaration_block(false),
+            Some(TokenKind::Extern) if self.nth(1) == Some(TokenKind::Struct) => {
+                self.extern_struct_declaration();
+            }
+            Some(TokenKind::Extern)
+                if self.nth(1) == Some(TokenKind::StringLiteral)
+                    && self.nth(2) == Some(TokenKind::Function) =>
+            {
+                self.extern_function_declaration();
+            }
             Some(TokenKind::Extern)
                 if self.nth(1) == Some(TokenKind::StringLiteral)
                     && self.nth(2) == Some(TokenKind::LeftBrace) =>
             {
                 self.foreign_declaration_block(true);
             }
-            Some(TokenKind::Macro) => self.macro_declaration(),
             _ => self.error_and_recover(
                 "SYNTAX_EXPECTED_DECLARATION",
                 "expected a declaration",
@@ -295,42 +326,6 @@ impl Parser<'_, '_> {
                 ],
             ),
         }
-    }
-
-    fn macro_declaration(&mut self) {
-        self.start(SyntaxKind::MACRO_DECLARATION);
-        self.expect(TokenKind::Macro);
-        self.expect(TokenKind::Identifier);
-        self.expect(TokenKind::LeftParen);
-        if !self.at(TokenKind::RightParen) {
-            loop {
-                self.expect(TokenKind::Identifier);
-                self.expect(TokenKind::Colon);
-                if !self.eat(TokenKind::Identifier) {
-                    self.expect(TokenKind::Type);
-                }
-                if !self.eat(TokenKind::Comma) || self.at(TokenKind::RightParen) {
-                    break;
-                }
-            }
-        }
-        self.expect(TokenKind::RightParen);
-        self.expect(TokenKind::LeftBrace);
-        let mut depth = 1_u32;
-        while let Some(kind) = self.current() {
-            self.bump();
-            match kind {
-                TokenKind::LeftBrace => depth += 1,
-                TokenKind::RightBrace => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.finish();
     }
 
     fn const_declaration(&mut self) {
@@ -396,6 +391,17 @@ impl Parser<'_, '_> {
         self.expect(TokenKind::Struct);
         self.expect(TokenKind::Identifier);
         self.generic_parameters();
+        if self.eat(TokenKind::Implements) {
+            self.type_path();
+            while self.eat(TokenKind::Comma) {
+                self.type_path();
+            }
+        }
+        if self.at(TokenKind::Derives) {
+            self.excluded_construct("derives");
+            self.finish();
+            return;
+        }
         self.expect(TokenKind::LeftBrace);
         while self.current().is_some() && !self.at(TokenKind::RightBrace) {
             let before = self.cursor;
@@ -406,11 +412,42 @@ impl Parser<'_, '_> {
         self.finish();
     }
 
+    fn extern_struct_declaration(&mut self) {
+        self.start(SyntaxKind::STRUCT_DECLARATION);
+        self.expect(TokenKind::Extern);
+        self.expect(TokenKind::Struct);
+        self.expect(TokenKind::Identifier);
+        self.generic_parameters();
+        self.expect(TokenKind::LeftBrace);
+        while self.current().is_some() && !self.at(TokenKind::RightBrace) {
+            let before = self.cursor;
+            self.field_declaration(false);
+            self.ensure_progress(before);
+        }
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn extern_function_declaration(&mut self) {
+        self.start(SyntaxKind::FUNCTION_DECLARATION);
+        self.expect(TokenKind::Extern);
+        self.expect(TokenKind::StringLiteral);
+        self.expect(TokenKind::Function);
+        self.expect(TokenKind::Identifier);
+        self.generic_parameters();
+        self.parameter_list();
+        self.expect(TokenKind::Colon);
+        self.ty();
+        if self.at(TokenKind::Throws) {
+            self.throws_clause();
+        }
+        self.block();
+        self.finish();
+    }
+
     fn class_declaration(&mut self) {
         self.start(SyntaxKind::CLASS_DECLARATION);
-        if !self.eat(TokenKind::Abstract) {
-            self.eat(TokenKind::Final);
-        }
+        self.eat(TokenKind::Abstract);
         self.expect(TokenKind::Class);
         self.expect(TokenKind::Identifier);
         self.generic_parameters();
@@ -480,6 +517,12 @@ impl Parser<'_, '_> {
         self.expect(TokenKind::Interface);
         self.expect(TokenKind::Identifier);
         self.generic_parameters();
+        if self.eat(TokenKind::Implements) {
+            self.type_path();
+            while self.eat(TokenKind::Comma) {
+                self.type_path();
+            }
+        }
         self.expect(TokenKind::LeftBrace);
         while self.current().is_some() && !self.at(TokenKind::RightBrace) {
             let before = self.cursor;
@@ -495,6 +538,15 @@ impl Parser<'_, '_> {
         self.expect(TokenKind::Enum);
         self.expect(TokenKind::Identifier);
         self.generic_parameters();
+        if self.eat(TokenKind::Colon) {
+            self.ty();
+        }
+        if self.eat(TokenKind::Implements) {
+            self.type_path();
+            while self.eat(TokenKind::Comma) {
+                self.type_path();
+            }
+        }
         self.expect(TokenKind::LeftBrace);
         while self.current().is_some() && !self.at(TokenKind::RightBrace) {
             let before = self.cursor;
@@ -685,13 +737,17 @@ impl Parser<'_, '_> {
 
     fn method(&mut self, signature_only: bool) {
         self.start(SyntaxKind::METHOD_DECLARATION);
+        self.eat(TokenKind::Function);
         self.eat(TokenKind::Static);
         if !self.eat(TokenKind::Abstract) && !self.eat(TokenKind::Final) {
             self.eat(TokenKind::Override);
         }
-        if !self.eat(TokenKind::Mut) {
-            self.eat(TokenKind::Move);
+        if self.at(TokenKind::Mut) {
+            self.excluded_construct("mut");
+            self.finish();
+            return;
         }
+        self.eat(TokenKind::Move);
         self.eat(TokenKind::Unsafe);
         self.eat(TokenKind::Async);
         if !self.eat(TokenKind::Identifier) {
@@ -766,8 +822,10 @@ impl Parser<'_, '_> {
         self.start(SyntaxKind::GENERIC_ARGUMENT_LIST);
         self.expect(TokenKind::Less);
         loop {
-            if self.eat(TokenKind::Static) || self.eat(TokenKind::Scope) {
+            if self.eat(TokenKind::Static) {
                 // Explicit lifetime argument.
+            } else if self.at(TokenKind::Scope) {
+                self.obsolete_lifetime();
             } else {
                 self.ty();
             }
@@ -805,8 +863,8 @@ impl Parser<'_, '_> {
                 {
                     self.bump();
                 }
-                if !self.eat(TokenKind::Static) {
-                    self.eat(TokenKind::Scope);
+                if !self.eat(TokenKind::Static) && self.at(TokenKind::Scope) {
+                    self.obsolete_lifetime();
                 }
                 self.eat(TokenKind::Mut);
                 self.ty();
@@ -1577,6 +1635,15 @@ impl Parser<'_, '_> {
         self.diagnostics.push(diagnostic);
     }
 
+    fn obsolete_lifetime(&mut self) {
+        self.error_current(
+            "SYNTAX_OBSOLETE_LIFETIME",
+            "`scope` is not a public lifetime category",
+            "use lifetime elision or a named `lifetime` parameter",
+        );
+        self.bump();
+    }
+
     fn error_and_recover(&mut self, id: &str, message: &str, recovery: &[TokenKind]) {
         self.error_current(id, message, "unexpected syntax begins here");
         self.start(SyntaxKind::ERROR);
@@ -1674,7 +1741,7 @@ mod tests {
     fn parses_representative_declarations_losslessly() {
         assert_parses(
             r#"import { run } from "std/async";
-@Copy
+@logged
 export struct Point<T extends Display> {
   public x: T;
 }
@@ -1695,10 +1762,19 @@ function main(): void {
     }
 
     #[test]
-    fn parses_scope_lifetimes_on_references_and_nominals() {
-        assert_parses(
-            "struct View<lifetime a> { public value: &a i32; }\n\
-             function inspect(value: &scope i32, view: View<scope>): void { value; view; }\n",
+    fn rejects_public_scope_lifetimes_on_references_and_nominals() {
+        let parsed = parse(
+            "scope.tn",
+            b"struct View<lifetime a> { public value: &a i32; }\n\
+              function inspect(value: &scope i32, view: View<scope>): void { value; view; }\n",
+        );
+        assert_eq!(
+            parsed
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.condition.as_str() == "SYNTAX_OBSOLETE_LIFETIME")
+                .count(),
+            2
         );
     }
 
@@ -1707,6 +1783,15 @@ function main(): void {
         assert_parses(
             "declare extern \"C\" {\n  function puts(text: * mut u8): void;\n}\n\
              type Callback = extern \"C\" function(i32): void;\n",
+        );
+    }
+
+    #[test]
+    fn parses_canonical_foreign_layouts_and_c_exports() {
+        assert_parses(
+            "extern struct Pair { left: i32; right: i32; }\n\
+             enum Kind: u8 { Zero, Answer = 42, }\n\
+             export extern \"C\" function add(left: i32, right: i32): i32 { return left + right; }\n",
         );
     }
 

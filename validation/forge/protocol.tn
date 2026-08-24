@@ -1,8 +1,7 @@
 import { BytesMut, cursor, fromStatic, readU8, SliceError } from "std/bytes";
 import { Error } from "std/core";
 
-@Conform(Error)
-export enum ProtocolError {
+export enum ProtocolError implements Error {
   Truncated, Invalid,
 }
 export enum Command {

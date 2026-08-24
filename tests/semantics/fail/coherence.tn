@@ -1,5 +1,3 @@
 interface Marker {}
 
-@Conform(Marker)
-@Conform(Marker)
-struct Item {}
+struct Item implements Marker, Marker {}

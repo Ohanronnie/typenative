@@ -1,5 +1,4 @@
 import { nullPointer } from "std/alloc";
-import { Drop } from "std/core";
 import { c_size, c_ssize } from "std/ffi";
 
 declare extern "C" {
@@ -23,13 +22,13 @@ export struct Path {
     return this.text;
   }
 }
-@Drop export struct File {
+export struct File {
   private handle: i32;
   private closed: bool;
   public isOpen(): bool {
     return !this.closed && this.handle >= 0i32;
   }
-  public mut close(): void {
+  public close(): void {
     if (!this.closed) {
       unsafe {
         tn_file_close(this.handle);
@@ -57,11 +56,11 @@ export struct Path {
       return tn_file_write_all(this.handle, bytes, length);
     }
   }
-  mut drop(): void {
+  drop(): void {
     this.close();
   }
 }
-@Drop export struct Directory {
+export struct Directory {
   private handle: * mut u8;
   private closed: bool;
   public isOpen(): bool {
@@ -74,7 +73,7 @@ export struct Path {
       return tn_dir_next(this.handle, name, capacity, kind);
     }
   }
-  public mut close(): i32 {
+  public close(): i32 {
     if (this.closed) {
       return 0i32;
     }
@@ -84,16 +83,16 @@ export struct Path {
       return status;
     }
   }
-  mut drop(): void {
+  drop(): void {
     this.close();
   }
 }
 export struct FileError {
-  public code: i32;
+  public rawCode: i32;
 }
 function fileError(code: i32): FileError {
   return {
-    code: code
+    rawCode: code
   };
 }
 function openRead(path: & str): File {
@@ -112,14 +111,14 @@ function openWrite(path: & str): File {
     };
   }
 }
-export function openReadChecked(path: & static str): File throws FileError {
+export function tryOpenRead(path: & static str): File throws FileError {
   const file = openRead(path);
   if (!file.isOpen()) {
     throw fileError( - 1i32);
   }
   return file;
 }
-export function openWriteChecked(path: & static str): File throws FileError {
+export function tryOpenWrite(path: & static str): File throws FileError {
   const file = openWrite(path);
   if (!file.isOpen()) {
     throw fileError( - 1i32);
@@ -135,14 +134,14 @@ export function read(file: & File, bytes: * mut u8, length: usize): isize {
 export function write(file: & File, bytes: * const u8, length: usize): isize {
   return file.writeRaw(bytes, length);
 }
-export function readChecked(file: & File, bytes: * mut u8, length: usize): isize throws FileError {
+export function tryRead(file: & File, bytes: * mut u8, length: usize): isize throws FileError {
   const result = read(file, bytes, length);
   if (result<0isize) {
     throw fileError( - 1i32);
   }
   return result;
 }
-export function writeChecked(file: & File, bytes: * const u8, length: usize): isize throws FileError {
+export function tryWrite(file: & File, bytes: * const u8, length: usize): isize throws FileError {
   const result = write(file, bytes, length);
   if (result<0isize) {
     throw fileError( - 1i32);
@@ -211,7 +210,7 @@ function openDirectory(path: & str): Directory {
     };
   }
 }
-export function openDirectoryChecked(path: & str): Directory throws FileError {
+export function tryOpenDirectory(path: & str): Directory throws FileError {
   const directory = openDirectory(path);
   if (!directory.isOpen()) {
     throw fileError( - 1i32);

@@ -1,0 +1,2 @@
+macro make(name: identifier) { struct Generated {} }
+function after(): void {}

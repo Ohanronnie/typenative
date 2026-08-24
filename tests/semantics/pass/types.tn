@@ -2,8 +2,7 @@ interface Display {
   display(): void;
 }
 
-@Conform(Display)
-struct Point<T> {
+struct Point<T> implements Display {
   public value: T;
   public position: (i32, i32);
   display(): void {}
@@ -17,7 +16,7 @@ enum Choice<T> {
 
 class Base {}
 
-final class Derived extends Base implements Display {
+class Derived extends Base implements Display {
   public display(): void {}
 }
 

@@ -9,20 +9,143 @@ declare extern "C" {
   function readdir(directory: * mut u8): * mut u8;
   function closedir(directory: * mut u8): i32;
   function memcpy(destination: * mut u8, source: * const u8, length: c_size): * mut u8;
+  function kqueue(): i32;
+  function kevent(queue: i32, changes: * const u8, changeCount: i32, events: * mut u8, eventCount: i32, timeout: * const u8,): i32;
+  function close(handle: i32): i32;
 }
-@Intrinsic("is_null")
 export function platformIsNull<T>(pointer: * const T): bool {
   return false;
 }
-@Intrinsic("size_of")
 export function platformSizeOf<T>(): usize {
   return 0usize;
 }
-@Intrinsic("store_raw")
 export function platformStoreRaw<T>(pointer: * mut T, value: T): bool {
   return false;
 }
-@Intrinsic("borrow_element")
+function platformByteAddress(pointer: * const u8, offset: usize): * mut u8 {
+  unsafe {
+    return pointer as * mut u8;
+  }
+}
+struct DarwinReactor {
+  public queue: i32;
+}
+struct DarwinKevent {
+  public identifier: usize;
+  public filter: i16;
+  public flags: u16;
+  public filterFlags: u32;
+  public data: i64;
+  public userData: * mut u8;
+}
+struct DarwinTimespec {
+  public seconds: u64;
+  public nanoseconds: u64;
+}
+function darwinNullPointer<T>(): * mut T {
+  unsafe {
+    return 0usize as * mut T;
+  }
+}
+function darwinEvent(queue: i32, descriptor: i32, filter: i16, flags: u16): i32 {
+  unsafe {
+    let change: DarwinKevent = {
+      identifier: 0usize, filter: filter, flags: flags, filterFlags: 0u32, data: 0i64, userData: darwinNullPointer<u8>(),
+    };
+    platformStoreRaw<i32>(( & mut change)as * mut i32, descriptor);
+    const result = kevent(queue,( & change)as * const u8, 1i32, darwinNullPointer<u8>()as * mut u8, 0i32, darwinNullPointer<u8>()as * const u8,);
+    return result === 0i32?0i32: - platformLastError();
+  }
+}
+export function platformReactorCreate(): * mut u8 {
+  unsafe {
+    const queue = kqueue();
+    if (queue<0i32) {
+      return darwinNullPointer<u8>();
+    }
+    const handle = runtimeAlloc(8usize);
+    platformStoreRaw<DarwinReactor>(handle as * mut DarwinReactor, {
+      queue: queue,
+    });
+    return handle;
+  }
+}
+export function platformReactorWatch(handle: * mut u8, descriptor: i32, events: i32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const reactor = *(handle as * const DarwinReactor);
+    const flags = 1u16 | 4u16 | 32u16;
+    if ((events & 1i32) !== 0i32 && darwinEvent(reactor.queue, descriptor, - 1i16, flags) !== 0i32) {
+      return - platformLastError();
+    }
+    if ((events & 4i32) !== 0i32 && darwinEvent(reactor.queue, descriptor, - 2i16, flags) !== 0i32) {
+      return - platformLastError();
+    }
+    return 0i32;
+  }
+}
+export function platformReactorUnwatch(handle: * mut u8, descriptor: i32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const reactor = *(handle as * const DarwinReactor);
+    darwinEvent(reactor.queue, descriptor, - 1i16, 2u16);
+    darwinEvent(reactor.queue, descriptor, - 2i16, 2u16);
+    return 0i32;
+  }
+}
+export function platformReactorWait(handle: * mut u8, timeout: u64, ready: * mut i32, events: * mut i32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8)) {
+      return - 22i32;
+    }
+    const reactor = *(handle as * const DarwinReactor);
+    const event: DarwinKevent = {
+      identifier: 0usize, filter: 0i16, flags: 0u16, filterFlags: 0u32, data: 0i64, userData: darwinNullPointer<u8>(),
+    };
+    let wait: DarwinTimespec = {
+      seconds: timeout / 1000u64, nanoseconds:(timeout % 1000u64) * 1000000u64,
+    };
+    const result = kevent(reactor.queue, darwinNullPointer<u8>()as * const u8, 0i32,( & event)as * mut u8, 1i32,( & wait)as * const u8,);
+    if (result <= 0i32) {
+      return result === 0i32?0i32: - platformLastError();
+    }
+    if (!platformIsNull<i32>(ready as * const i32)) {
+      const identifier = *(platformByteAddress(( & event)as * const u8, 0usize)as * const i32);
+      platformStoreRaw<i32>(ready, identifier);
+    }
+    if (!platformIsNull<i32>(events as * const i32)) {
+      let mask = 0i32;
+      if (event.filter === - 1i16) {
+        mask = 1i32;
+      }
+      if (event.filter === - 2i16) {
+        mask = 4i32;
+      }
+      if ((event.flags & 32u16) !== 0u16) {
+        mask = mask | 16i32;
+      }
+      if ((event.flags & 8u16) !== 0u16) {
+        mask = mask | 8i32;
+      }
+      platformStoreRaw<i32>(events, mask);
+    }
+    return result;
+  }
+}
+export function platformReactorDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (!platformIsNull<u8>(handle as * const u8)) {
+      const reactor = *(handle as * const DarwinReactor);
+      close(reactor.queue);
+      runtimeFree(handle);
+    }
+    return 0i32;
+  }
+}
 function platformDirentByte(pointer: * const u8, index: usize): & u8 {
   unsafe {
     return & * pointer;
@@ -46,17 +169,14 @@ function direntU16(pointer: * const u8, index: usize): usize {
 // Darwin ARM64: dev_t is 32-bit, mode_t/nlink_t are 16-bit, and st_size is
 // the 64-bit field at byte offset 96. The four timespec values each occupy
 // sixteen bytes and use int64 seconds plus int64 nanoseconds.
-@Layout("C")
 struct DarwinSignedTimespec {
   public seconds: i64;
   public nanoseconds: i64;
 }
-@Layout("C")
 struct DarwinMonotonicTimespec {
   public seconds: u64;
   public nanoseconds: u64;
 }
-@Layout("C")
 struct DarwinStatLayout {
   public device: i32;
   public mode: u16;
@@ -120,15 +240,23 @@ function clockMonotonicNanosecondsValue(): u64 {
     return wholeSeconds + value.nanoseconds;
   }
 }
-@Export("tn_clock_monotonic_ns")
 export function clockMonotonicNanoseconds(): u64 {
   return clockMonotonicNanosecondsValue();
 }
-@Export("tn_clock_wall_ns")
 export function clockWallNanoseconds(): i64 {
   return clockWallNanosecondsValue();
 }
 function statError(): i32 {
+  unsafe {
+    const pointer = __error();
+    if (platformIsNull<i32>(pointer as * const i32)) {
+      return 5i32;
+    }
+    const code = *(pointer as * const i32);
+    return code > 0i32?code: 5i32;
+  }
+}
+export function platformLastError(): i32 {
   unsafe {
     const pointer = __error();
     if (platformIsNull<i32>(pointer as * const i32)) {
@@ -143,7 +271,6 @@ function modifiedNanoseconds(value: & DarwinStatLayout): i64 {
   const nanoseconds = value.modifyNanoseconds;
   return seconds * 1000000000i64 + nanoseconds;
 }
-@Export("tn_file_stat")
 export function fileStat(path: * const u8, size: * mut usize, modified: * mut i64, mode: * mut u32): i32 {
   unsafe {
     if (platformIsNull<u8>(path)) {
@@ -169,13 +296,11 @@ export function fileStat(path: * const u8, size: * mut usize, modified: * mut i6
     return 0i32;
   }
 }
-@Export("tn_dir_open")
 export function directoryOpen(path: * const u8): * mut u8 {
   unsafe {
     return opendir(path);
   }
 }
-@Export("tn_dir_next")
 export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32 {
   unsafe {
     if (platformIsNull<u8>(handle as * const u8) || platformIsNull<u8>(name as * const u8) || capacity === 0usize) {
@@ -201,7 +326,6 @@ export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize,
     return 1i32;
   }
 }
-@Export("tn_dir_close")
 export function directoryClose(handle: * mut u8): i32 {
   unsafe {
     return platformIsNull<u8>(handle as * const u8)?0i32: closedir(handle);

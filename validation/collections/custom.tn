@@ -1,8 +1,7 @@
 import { Heap, Map, OrderedMap, Set } from "std/collections";
 import { Equal, Hash, Ord, Ordering } from "std/core";
 
-@Conform(Hash, Equal, Ord)
-struct CollisionKey {
+struct CollisionKey implements Hash, Equal, Ord {
   public id: i32;
   public hash(): u64 {
     return 1u64;
@@ -46,7 +45,7 @@ function main(): i32 {
       return 1i32;
     }
   }
-  const removed = map.remove( & lookup);
+  const removed = map.delete( & lookup);
   if (removed === undefined) {
     return 2i32;
   }
@@ -54,16 +53,16 @@ function main(): i32 {
   if (removedValue !== 20i32 || map.length !== 2usize) {
     return 2i32;
   }
-  if (map.contains( & lookup)) {
+  if (map.has( & lookup)) {
     return 3i32;
   }
   let set = new Set<CollisionKey>({
     capacity: 8usize,
   });
   let setValue: CollisionKey = makeKey(3i32);
-  set.insert(move setValue);
+  set.add(move setValue);
   let setLookup: CollisionKey = makeKey(3i32);
-  if (!set.contains( & setLookup)) {
+  if (!set.has( & setLookup)) {
     return 4i32;
   }
   let ordered = new OrderedMap<CollisionKey, i32>({

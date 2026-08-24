@@ -1,4 +1,4 @@
-import { AllocError, Arc, boxNewChecked, boxNew, rcClone, rcNew, rcNewChecked } from "std/alloc";
+import { AllocError, Arc, boxNew, rcClone, rcNew, tryBoxNew, tryRcNew } from "std/alloc";
 import { c_size } from "std/ffi";
 
 declare extern "C" {
@@ -13,12 +13,12 @@ function main(): i32 {
     tn_runtime_clear_alloc_failure();
   }
   {
-    let value = string.from("box-failure");
+    let value = String("box-failure");
     unsafe {
       tn_runtime_fail_alloc_after(0usize);
     }
     try {
-      let ignored = try boxNewChecked(move value);
+      let ignored = try tryBoxNew(move value);
       return 10i32;
     } catch (error: AllocError) {
       unsafe {
@@ -30,12 +30,12 @@ function main(): i32 {
     }
   }
   {
-    let value = string.from("rc-failure");
+    let value = String("rc-failure");
     unsafe {
       tn_runtime_fail_alloc_after(0usize);
     }
     try {
-      let ignored = try rcNewChecked(move value);
+      let ignored = try tryRcNew(move value);
       return 12i32;
     } catch (error: AllocError) {
       unsafe {
@@ -47,7 +47,7 @@ function main(): i32 {
     }
   }
   {
-    let boxed = boxNew(string.from("box"));
+    let boxed = boxNew(String("box"));
   }
   unsafe {
     if (tn_runtime_free_count() !== 8u64) {
@@ -58,7 +58,7 @@ function main(): i32 {
     tn_runtime_reset_allocation_count();
   }
   {
-    let owner = new Arc(string.from("arc"));
+    let owner = new Arc(String("arc"));
     let clone = owner.clone();
     let weak = owner.downgrade();
     const upgraded = weak.upgrade();
@@ -75,7 +75,7 @@ function main(): i32 {
     tn_runtime_reset_allocation_count();
   }
   {
-    let owner = rcNew(string.from("rc"));
+    let owner = rcNew(String("rc"));
     let clone = rcClone( & owner);
   }
   unsafe {

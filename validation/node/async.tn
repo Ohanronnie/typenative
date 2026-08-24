@@ -1,22 +1,19 @@
 import { Bytes } from "std/bytes";
 struct Failure {
-  public code: i32;
+  public rawCode: i32;
 }
 function failure(): Failure {
   return {
-    code: 23i32,
+    rawCode: 23i32,
   };
 }
-@Export("immediate")
-async function immediate(value: i32): Promise<i32, never> {
+export async function immediate(value: i32): Promise<i32, never> {
   return value + 1i32;
 }
-@Export("asyncEcho")
-async function asyncEcho(value: Bytes): Promise<Bytes, never> {
+export async function asyncEcho(value: Bytes): Promise<Bytes, never> {
   return value;
 }
-@Export("asyncFail")
-async function asyncFail(value: i32): Promise<i32, Failure> {
+export async function asyncFail(value: i32): Promise<i32, Failure> {
   if (value >= 0i32) {
     throw failure();
   }

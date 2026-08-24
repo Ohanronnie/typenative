@@ -1,10 +1,9 @@
 import { NetworkError } from "std/net";
 import { servePort as serveRedis } from "../../validation/redis/redis-server";
 
-@Export("serve")
-async function serve(port: u16): Promise<i32, never> {
+export async function serve(port: u16): Promise<i32, never> {
   try {
-    try await serveRedis(port, 4096usize);
+    try await serveRedis(port, 512usize);
   } catch (error: NetworkError) {
     return 1i32;
   }

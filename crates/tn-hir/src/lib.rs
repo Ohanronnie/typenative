@@ -1,6 +1,5 @@
 //! Resolved `TypeNative` high-level intermediate representation.
 
-mod macros;
 mod module_graph;
 mod semantic;
 
@@ -47,76 +46,28 @@ pub enum DeclarationKind {
     Enum,
     Impl,
     ExternBlock,
-    Macro,
+    ExternStruct,
+    ExternFunction,
 }
 
 impl DeclarationKind {
     pub const fn namespace(self) -> Option<Namespace> {
         match self {
             Self::Const | Self::Static | Self::Function => Some(Namespace::Value),
-            Self::TypeAlias | Self::Struct | Self::Class | Self::Interface | Self::Enum => {
-                Some(Namespace::Type)
-            }
-            Self::Impl | Self::ExternBlock | Self::Macro => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum AttributeKind {
-    Copy,
-    Clone,
-    Drop,
-    Conform,
-    Sealed,
-    Layout,
-    Export,
-    Intrinsic,
-    Inline,
-    Test,
-    Expand,
-    Unknown(String),
-}
-
-impl AttributeKind {
-    pub fn parse(name: &str) -> Self {
-        match name {
-            "Copy" => Self::Copy,
-            "Clone" => Self::Clone,
-            "Drop" => Self::Drop,
-            "Conform" => Self::Conform,
-            "Sealed" => Self::Sealed,
-            "Layout" => Self::Layout,
-            "Export" => Self::Export,
-            "Intrinsic" => Self::Intrinsic,
-            "Inline" => Self::Inline,
-            "Test" => Self::Test,
-            "Expand" => Self::Expand,
-            other => Self::Unknown(other.to_owned()),
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Copy => "Copy",
-            Self::Clone => "Clone",
-            Self::Drop => "Drop",
-            Self::Conform => "Conform",
-            Self::Sealed => "Sealed",
-            Self::Layout => "Layout",
-            Self::Export => "Export",
-            Self::Intrinsic => "Intrinsic",
-            Self::Inline => "Inline",
-            Self::Test => "Test",
-            Self::Expand => "Expand",
-            Self::Unknown(name) => name,
+            Self::TypeAlias
+            | Self::Struct
+            | Self::Class
+            | Self::Interface
+            | Self::Enum
+            | Self::ExternStruct => Some(Namespace::Type),
+            Self::ExternFunction => Some(Namespace::Value),
+            Self::Impl | Self::ExternBlock => None,
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Attribute {
-    pub kind: AttributeKind,
     pub name: String,
     pub arguments: Vec<String>,
     pub span: SourceSpan,
@@ -227,6 +178,7 @@ pub enum Type {
     Str,
     Promise {
         result: Box<Type>,
+        error: Box<Type>,
         effects: Vec<DeclarationId>,
     },
     Nominal(DeclarationId, Vec<Type>),
@@ -251,6 +203,20 @@ pub enum Type {
     ErrorUnion(Vec<DeclarationId>),
     Error,
     Unknown,
+}
+
+/// Returns the statically known error declarations carried by a Promise error type.
+///
+/// Generic error parameters are intentionally left unresolved until a concrete
+/// specialization is available. Callers may pass the prior effect set so a
+/// substitution that remains generic does not discard information.
+pub fn promise_effects(error: &Type, prior: &[DeclarationId]) -> Vec<DeclarationId> {
+    match error {
+        Type::Nominal(id, _) => vec![*id],
+        Type::Primitive(PrimitiveType::Never) => Vec::new(),
+        Type::Generic(_) | Type::Error => prior.to_vec(),
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -340,7 +306,6 @@ pub struct Method {
     pub visibility: Visibility,
     pub receiver: ReceiverMode,
     pub is_abstract: bool,
-    pub is_final: bool,
     pub is_override: bool,
     pub span: SourceSpan,
 }
@@ -370,16 +335,19 @@ pub enum DefinitionData {
     TypeAlias(Type),
     Function(Function),
     Struct {
+        c_layout: bool,
+        interfaces: Vec<Type>,
         fields: Vec<Field>,
         methods: Vec<Method>,
     },
     Enum {
+        repr: Option<PrimitiveType>,
+        interfaces: Vec<Type>,
         variants: Vec<EnumVariant>,
         methods: Vec<Method>,
     },
     Interface {
         methods: Vec<Method>,
-        is_sealed: bool,
     },
     Class {
         base: Option<DeclarationId>,
@@ -388,8 +356,6 @@ pub enum DefinitionData {
         constructor: Option<Method>,
         methods: Vec<Method>,
         is_abstract: bool,
-        is_final: bool,
-        is_sealed: bool,
     },
     Implementation {
         interface: Option<Type>,
@@ -450,6 +416,8 @@ pub enum ResolvedValue {
     Local(HirLocalId),
     Declaration(DeclarationId),
     Member(MemberId),
+    StringLength,
+    StringByteLength,
     Closure(HirClosureId),
     Template(HirTemplateId),
 }
@@ -575,6 +543,7 @@ pub enum IterationWitness {
         into_iterator_method: MemberId,
         iterator_implementation: DeclarationId,
         next_method: MemberId,
+        next_receiver: ReceiverMode,
         iterator_type: Type,
         item_type: Type,
     },
@@ -629,6 +598,139 @@ pub struct BodyHir {
 }
 
 impl Program {
+    /// Resolves the external symbol name from the private compiler manifest. Ordinary exported
+    /// user declarations use their source name; bundled runtime declarations retain their stable
+    /// C ABI names without a source decorator.
+    pub fn export_name_for_declaration(&self, declaration: DeclarationId) -> String {
+        let Some(item) = self.graph.declaration(declaration) else {
+            return "exported".into();
+        };
+        let Some(name) = item.name.as_deref() else {
+            return "exported".into();
+        };
+        if self.graph.is_bundled_module(item.module, "runtime.tn") {
+            return runtime_export_name(name);
+        }
+        if self
+            .graph
+            .is_bundled_module(item.module, "platform/linux-x86_64.tn")
+            || self
+                .graph
+                .is_bundled_module(item.module, "platform/darwin-arm64.tn")
+        {
+            return platform_export_name(name);
+        }
+        name.into()
+    }
+
+    /// Returns whether a declaration is in the compiler-approved C-layout manifest.
+    pub fn has_c_layout(&self, declaration: DeclarationId) -> bool {
+        let Some(item) = self.graph.declaration(declaration) else {
+            return false;
+        };
+        if self.graph.is_bundled_module(item.module, "runtime.tn")
+            || self
+                .graph
+                .is_bundled_module(item.module, "platform/linux-x86_64.tn")
+            || self
+                .graph
+                .is_bundled_module(item.module, "platform/darwin-arm64.tn")
+        {
+            return true;
+        }
+        match self
+            .definition(declaration)
+            .map(|definition| &definition.data)
+        {
+            Some(DefinitionData::Struct { c_layout, .. }) => *c_layout,
+            Some(DefinitionData::Enum { repr, .. }) => repr.is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn implemented_interfaces(&self, declaration: DeclarationId) -> Vec<DeclarationId> {
+        let Some(definition) = self.definition(declaration) else {
+            return Vec::new();
+        };
+        let interfaces = match &definition.data {
+            DefinitionData::Struct { interfaces, .. }
+            | DefinitionData::Enum { interfaces, .. }
+            | DefinitionData::Class { interfaces, .. } => interfaces,
+            _ => return Vec::new(),
+        };
+        let mut result = interfaces
+            .iter()
+            .filter_map(|interface| match interface {
+                Type::Nominal(id, _) | Type::DynamicInterface(id, _) => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        result.sort_unstable();
+        result.dedup();
+        result
+    }
+
+    /// Returns the compiler-owned intrinsic operation for a trusted bundled declaration.
+    ///
+    /// This table is intentionally keyed by resolved module identity and declaration name. User
+    /// source cannot opt into an operation by spelling a decorator with the same name.
+    pub fn intrinsic_operation_for_declaration(
+        &self,
+        declaration: DeclarationId,
+    ) -> Option<&'static str> {
+        let item = self.graph.declaration(declaration)?;
+        let name = item.name.as_deref()?;
+        let bundled = |relative: &str| self.graph.is_bundled_module(item.module, relative);
+        if bundled("runtime.tn") {
+            return runtime_intrinsic(name);
+        }
+        if bundled("platform/linux-x86_64.tn") || bundled("platform/darwin-arm64.tn") {
+            return platform_intrinsic(name);
+        }
+        if bundled("sync.tn") {
+            return match name {
+                "borrowMut" => Some("borrow_mut_direct"),
+                "moveElement" => Some("move_element"),
+                "storeElement" => Some("store_element"),
+                "dropInitializedElements" => Some("drop_initialized_elements"),
+                _ => None,
+            };
+        }
+        if bundled("env.tn") {
+            return (name == "checkedU16").then_some("checked_u16");
+        }
+        if bundled("bytes.tn") {
+            return match name {
+                "stringFromRaw" => Some("string_from_raw"),
+                "strFromRawParts" => Some("str_from_raw_parts"),
+                "sliceFromRawParts" => Some("slice_from_raw_parts"),
+                "sliceLength" => Some("slice_length"),
+                _ => None,
+            };
+        }
+        if bundled("core.tn") {
+            return core_intrinsic(name);
+        }
+        if bundled("string.tn") {
+            return match name {
+                "fromRaw" => Some("string_from_raw"),
+                "borrowShared" => Some("borrow_shared_direct"),
+                "strFromRawParts" => Some("str_from_raw_parts"),
+                "sliceFromRawParts" => Some("slice_from_raw_parts"),
+                "PlatformUnsigned" => Some("usize"),
+                "OwnedString" => Some("string"),
+                _ => None,
+            };
+        }
+        if bundled("collections.tn") {
+            return collections_intrinsic(name);
+        }
+        if bundled("alloc.tn") {
+            return alloc_intrinsic(name);
+        }
+        None
+    }
+
     pub fn definition(&self, declaration: DeclarationId) -> Option<&Definition> {
         self.definitions
             .iter()
@@ -638,27 +740,146 @@ impl Program {
     pub fn intrinsic_type_declaration(&self, ty: &Type) -> Option<DeclarationId> {
         let key = intrinsic_type_key(ty)?;
         self.definitions.iter().find_map(|definition| {
-            let declaration = self.graph.declaration(definition.declaration)?;
-            declaration
-                .attributes
-                .iter()
-                .any(|attribute| {
-                    attribute.kind == AttributeKind::Intrinsic
-                        && attribute.arguments.as_slice() == [key]
-                })
+            (self.intrinsic_operation_for_declaration(definition.declaration) == Some(key))
                 .then_some(definition.declaration)
         })
     }
 
     pub fn intrinsic_type_for_declaration(&self, declaration: DeclarationId) -> Option<Type> {
-        let declaration = self.graph.declaration(declaration)?;
-        declaration.attributes.iter().find_map(|attribute| {
-            (attribute.kind == AttributeKind::Intrinsic)
-                .then(|| attribute.arguments.first())
-                .flatten()
-                .and_then(|key| intrinsic_type_from_key(key))
-        })
+        self.intrinsic_operation_for_declaration(declaration)
+            .and_then(intrinsic_type_from_key)
     }
+}
+
+fn runtime_intrinsic(name: &str) -> Option<&'static str> {
+    match name {
+        "isNullIntrinsic" => Some("is_null"),
+        "nullPointerIntrinsic" => Some("null_pointer"),
+        "borrowElement" | "borrowElementI32" => Some("borrow_element"),
+        "sizeOfIntrinsic" => Some("size_of"),
+        "storeRawIntrinsic" => Some("store_raw"),
+        "platformSockAddrFamily" => Some("platform_sockaddr_family"),
+        "platformSocketReuseAddressOption" => Some("platform_socket_reuse_address_option"),
+        "platformSocketLevel" => Some("platform_socket_level"),
+        "callRaw" => Some("call_raw"),
+        "callRawVoid" => Some("call_raw_void"),
+        "callRawPointer" => Some("call_raw_pointer"),
+        "atomicUsizeLoad" => Some("atomic_usize_load"),
+        "atomicUsizeCompareExchange" => Some("atomic_usize_compare_exchange"),
+        "atomicFence" => Some("atomic_fence"),
+        "byteAddress" => Some("byte_address"),
+        "byteAddressI32" => Some("byte_address_i32"),
+        _ => None,
+    }
+}
+
+fn platform_intrinsic(name: &str) -> Option<&'static str> {
+    match name {
+        "platformIsNull" => Some("is_null"),
+        "platformSizeOf" => Some("size_of"),
+        "platformStoreRaw" => Some("store_raw"),
+        "platformDirentByte" => Some("borrow_element"),
+        "platformByteAddress" => Some("byte_address"),
+        _ => None,
+    }
+}
+
+fn core_intrinsic(name: &str) -> Option<&'static str> {
+    match name {
+        "atomicI32Load" => Some("atomic_i32_load"),
+        "atomicI32Store" => Some("atomic_i32_store"),
+        "atomicI32FetchAdd" => Some("atomic_i32_fetch_add"),
+        "atomicI32CompareExchange" => Some("atomic_i32_compare_exchange"),
+        "atomicU64Load" => Some("atomic_u64_load"),
+        "atomicU64Store" => Some("atomic_u64_store"),
+        "atomicU64FetchAdd" => Some("atomic_u64_fetch_add"),
+        "atomicU64CompareExchange" => Some("atomic_u64_compare_exchange"),
+        "atomicUsizeLoad" => Some("atomic_usize_load"),
+        "atomicUsizeStore" => Some("atomic_usize_store"),
+        "atomicUsizeFetchAdd" => Some("atomic_usize_fetch_add"),
+        "atomicUsizeCompareExchange" => Some("atomic_usize_compare_exchange"),
+        _ => None,
+    }
+}
+
+fn collections_intrinsic(name: &str) -> Option<&'static str> {
+    match name {
+        "sizeOf" => Some("size_of"),
+        "isString" => Some("is_string"),
+        "isCopy" => Some("is_copy"),
+        "elementInitialized" => Some("element_initialized"),
+        "moveElement" => Some("move_element"),
+        "dropElement" => Some("drop_element"),
+        "dropValue" => Some("drop_value"),
+        "storeElement" => Some("store_element"),
+        "dropInitializedElements" => Some("drop_initialized_elements"),
+        "borrowElement" => Some("borrow_element"),
+        "borrowElementMut" => Some("borrow_element_mut"),
+        "sliceFromRawParts" => Some("slice_from_raw_parts"),
+        _ => None,
+    }
+}
+
+fn alloc_intrinsic(name: &str) -> Option<&'static str> {
+    match name {
+        "sizeOf" => Some("size_of"),
+        "isNull" | "isNullIntrinsic" => Some("is_null"),
+        "nullPointer" | "nullPointerIntrinsic" => Some("null_pointer"),
+        "borrowShared" => Some("borrow_shared_storage"),
+        "storeRaw" => Some("store_raw"),
+        "dropValue" => Some("drop_value"),
+        "u64ToUsize" => Some("u64_to_usize"),
+        "usizeToU64" => Some("usize_to_u64"),
+        "arcClone" => Some("arc_clone"),
+        "weakUpgrade" => Some("weak_upgrade"),
+        "borrowMut" => Some("borrow_mut_storage"),
+        _ => None,
+    }
+}
+
+fn runtime_export_name(name: &str) -> String {
+    let suffix = match name {
+        name if name.starts_with("async") => format!("runtime_async_{}", snake_case(&name[5..])),
+        "promiseWait" => "runtime_promise_wait".into(),
+        "promiseTakeI32" => "runtime_promise_take_i32".into(),
+        name if name.starts_with("rawPromise") => {
+            format!("promise_{}", snake_case(&name[10..]))
+        }
+        name if name.starts_with("taskGroup") => {
+            format!("task_group_{}", snake_case(&name[9..]))
+        }
+        "threadSpawnRawPointerExport" => "thread_spawn_raw_pointer".into(),
+        "conditionCreate" => "cond_create".into(),
+        "conditionWait" => "cond_wait".into(),
+        "conditionSignal" => "cond_signal".into(),
+        "conditionBroadcast" => "cond_broadcast".into(),
+        "conditionDestroy" => "cond_destroy".into(),
+        _ => snake_case(name),
+    };
+    format!("tn_{suffix}")
+}
+
+fn platform_export_name(name: &str) -> String {
+    let suffix = match name {
+        name if name.starts_with("directory") => format!("dir_{}", snake_case(&name[9..])),
+        _ => snake_case(name),
+    };
+    format!("tn_{suffix}")
+}
+
+fn snake_case(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 4);
+    for (index, character) in name.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index != 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
 }
 
 fn intrinsic_type_key(ty: &Type) -> Option<&'static str> {

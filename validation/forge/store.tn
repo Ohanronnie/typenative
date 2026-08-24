@@ -1,6 +1,6 @@
 import { fromStatic } from "std/bytes";
 import { Map } from "std/collections";
-import { FileError, close, metadata, openWriteChecked, remove, writeAll } from "std/fs";
+import { FileError, close, metadata, remove, tryOpenWrite, writeAll } from "std/fs";
 
 export struct ArtifactStore {
   public count: i32;
@@ -20,7 +20,7 @@ export function storeProbe(): i32 throws FileError {
       return 1i32;
     }
   }
-  let file = try openWriteChecked("/tmp/typenative-forge-artifact");
+  let file = try tryOpenWrite("/tmp/typenative-forge-artifact");
   const marker = fromStatic("forge-artifact\n");
   try writeAll( & file, marker.pointer, marker.length);
   close( & mut file);

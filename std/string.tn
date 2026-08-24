@@ -7,41 +7,42 @@ declare extern "C" {
   function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
   function tn_string_equals(left: * const u8, leftLength: c_size, right: * const u8, rightLength: c_size): i32;
   function tn_string_length(bytes: * const u8): c_size;
+  function tn_string_scalar_length(bytes: * const u8): c_size;
   function tn_string_to_ascii_upper(text: * const u8): * mut u8;
   function tn_parse_ascii(bytes: * const u8, length: c_size, value: * mut c_size, offset: * mut c_size): i32;
 }
-@Intrinsic("string_from_raw")
 export function fromRaw(pointer: * mut u8, length: usize): string {
   return "";
 }
 export struct Utf8Error {
   public offset: usize;
 }
-@Intrinsic("borrow_shared")
 function borrowShared<T>(pointer: * const T): & T {
   unsafe {
     return & * pointer;
   }
 }
-@Intrinsic("slice_from_raw_parts")
 function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
   unsafe {
     return & *(pointer as * const[T]);
   }
 }
-@Intrinsic("usize")
+function strFromRawParts(pointer: * const u8, length: usize): & str {
+  unsafe {
+    return & *(pointer as * const str);
+  }
+}
 struct PlatformUnsigned {
   public static parseAscii(value: Bytes): usize throws ParseIntegerError {
     return try parseAscii(value);
   }
 }
-@Intrinsic("string")
 struct OwnedString {
-  public static from(text: & str): string {
-    return fromStatic(text);
-  }
   public static fromUtf8(value: Bytes): string throws Utf8Error {
     return try fromUtf8(value);
+  }
+  public static fromUtf8Lossy(value: Bytes): string {
+    return fromUtf8Lossy(value);
   }
   public toAsciiUppercase(): string {
     unsafe {
@@ -59,7 +60,8 @@ struct OwnedString {
   }
   public asStr(): & str {
     unsafe {
-      return borrowShared<str>(this as * const str);
+      const pointer = this as * const u8;
+      return strFromRawParts(pointer, tn_string_length(pointer));
     }
   }
   public bytes(): &[u8] {
@@ -68,11 +70,9 @@ struct OwnedString {
       return sliceFromRawParts<u8>(pointer, tn_string_length(pointer));
     }
   }
-  public byteLength(): usize {
-    unsafe {
-      return tn_string_length(this as * const u8);
-    }
-  }
+}
+export function String(value: & str): string {
+  return fromStatic(value);
 }
 declare extern "C" {
   function tn_utf8_decode(bytes: * const u8, length: c_size, offset: c_size, codepoint: * mut u32, next: * mut c_size): i32;
@@ -87,7 +87,7 @@ export struct Chars {
 function bytes(text: & str): Bytes {
   unsafe {
     return {
-      pointer: text as * const u8, length: tn_string_length(text as * const u8),
+      pointer: text as * const u8, length: text.byteLength,
     };
   }
 }
@@ -99,9 +99,17 @@ function fromUtf8(value: Bytes): string throws Utf8Error {
     return fromRaw(tn_string_from_bytes(value.pointer, value.length), value.length);
   }
 }
+function fromUtf8Lossy(value: Bytes): string {
+  unsafe {
+    if (tn_utf8_validate(value.pointer, value.length) !== 0i32) {
+      return fromRaw(tn_string_from_bytes(value.pointer, value.length), value.length);
+    }
+    return fromStatic("�");
+  }
+}
 function length(value: string): usize {
   unsafe {
-    return tn_string_length(value as * const u8);
+    return tn_string_scalar_length(value as * const u8);
   }
 }
 function emptyOwned(): string {
@@ -140,7 +148,7 @@ function isValidUtf8(text: & static str): bool {
 }
 function fromStatic(text: & str): string {
   unsafe {
-    const length = tn_string_length(text as * const u8);
+    const length = text.byteLength;
     return fromRaw(tn_string_from_bytes(text as * const u8, length), length);
   }
 }
@@ -171,7 +179,7 @@ function utf8Error(offset: usize): Utf8Error {
 function sliceOwned(text: & static str, start: usize, end: usize): string throws Utf8Error {
   unsafe {
     const length = tn_string_length(text as * const u8);
-    if (start > end || end > length || end - start === 18446744073709551615usize) {
+    if (start > end || end > length || end - start === ~0usize) {
       throw utf8Error(start);
     }
     const capacity = end - start + 1usize;

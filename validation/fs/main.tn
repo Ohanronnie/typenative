@@ -25,7 +25,7 @@ function missingPathCheck(): i32 {
   try {
     const ignored = try metadata("/tmp/typenative-fs-does-not-exist");
   } catch (error: FileError) {
-    missing = error.code !== 0i32;
+    missing = error.rawCode !== 0i32;
   }
   if (!missing) {
     return 3i32;

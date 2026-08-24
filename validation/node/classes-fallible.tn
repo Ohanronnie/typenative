@@ -1,23 +1,21 @@
 import { Bytes } from "std/bytes";
 struct Failure {
-  public code: i32;
+  public rawCode: i32;
 }
 function failure(): Failure {
   return {
-    code: 17i32,
+    rawCode: 17i32,
   };
 }
-@Export("syncFail")
-function syncFail(): i32 throws Failure {
+export function syncFail(): i32 throws Failure {
   throw failure();
 }
-@Drop
-@Export class Holder {
+export class Holder {
   public constructor() {
   }
   public echo(value: Bytes): Bytes throws Failure {
     return value;
   }
-  mut drop(): void {
+  drop(): void {
   }
 }

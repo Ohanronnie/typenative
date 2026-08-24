@@ -211,7 +211,7 @@ require(json_items["native"]["medianMilliseconds"] <= json_workload["maximumNati
 
 redis_workload = budget["workloads"]["redis"]
 redis_env = redis_report["workload"]
-for field in ("pipelinedPingCount", "nonPipelinedPingCount", "concurrentClients", "largeValueBytes"):
+for field in ("pipelinedPingCount", "nonPipelinedPingCount", "concurrentClients", "largeValueBytes", "internalTrials"):
     require(redis_env[field] == redis_workload[field], f"Redis {field} workload changed")
 require(redis_env["randomizedSetCount"] == redis_workload["operationCount"], "Redis SET workload changed")
 require(redis_env["randomizedGetCount"] == redis_workload["operationCount"], "Redis GET workload changed")
@@ -256,7 +256,7 @@ require(addon_summary["pipelinedPingPerSecond"]["median"] >= rust_summary["pipel
 require(native_summary["randomSetPerSecond"]["median"] >= rust_summary["randomSetPerSecond"]["median"] * redis_workload["minimumNativeRustSetRatio"], "Redis native SET throughput is below 95% of Rust")
 require(native_summary["randomGetPerSecond"]["median"] >= rust_summary["randomGetPerSecond"]["median"] * redis_workload["minimumNativeRustGetRatio"], "Redis native GET throughput is below 95% of Rust")
 require(native_summary["nonPipelinedPingLatencyMicroseconds"]["median"] <= rust_summary["nonPipelinedPingLatencyMicroseconds"]["median"] * redis_workload["maximumNativeRustLatencyRatio"], "Redis native non-pipelined latency exceeds Rust by more than 5%")
-native_rust_ratio = redis_report["comparisons"]["nativeVersusRustPipelinedPing"]["ratio"]
+native_rust_ratio = redis_report["comparisons"]["nativeVersusRustPipelinedPing"]["aggregateRatio"]
 require(native_rust_ratio["confidenceInterval95"][0] >= redis_workload["minimumNativeRustPipelinedRatio"], "Redis native/Rust paired throughput ratio does not establish the 5% margin at 95% confidence")
 require(redis_items["native"]["artifactBytes"] < redis_items["rust"]["artifactBytes"], "Redis native binary is not smaller than Rust")
 require(native_summary["pipelinedPingPerSecond"]["median"] >= javascript_summary["pipelinedPingPerSecond"]["median"], "Redis native pipelined median is below handwritten Node")
@@ -316,7 +316,7 @@ summary = {
     "compilerTimings": http_report["compilerTimings"],
     "allocationCount": allocation_status,
     "redisPingAllocationCount": redis_allocation_status,
-    "confidenceMethod": "95% Student-t interval with nine shuffled samples; t(0.975, n-1) approximated as 2.306 for nine samples",
+    "confidenceMethod": "deterministic percentile-bootstrap 95% intervals; paired comparisons use the ratio of summed fixed-work durations",
 }
 with open(summary_path, "w", encoding="utf-8") as stream:
     json.dump(summary, stream, indent=2)

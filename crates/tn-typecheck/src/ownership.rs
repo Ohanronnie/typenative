@@ -1,9 +1,7 @@
 use crate::CheckResult;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
-use tn_hir::{
-    AttributeKind, DeclarationId, DeclarationKind, DefinitionData, ImportClause, Program, Type,
-};
+use tn_hir::{DeclarationId, DefinitionData, Program, Type};
 use tn_mir::{
     Body, BorrowKind, Completion, LocalId, Operand, Place, Projection, Rvalue, StatementKind,
     TerminatorKind, validate,
@@ -127,8 +125,14 @@ impl OwnershipFacts {
             Type::String => true,
             Type::Nominal(id, _) => self.drop.contains(id),
             Type::Optional(inner) | Type::Array(inner, _) => self.has_drop(inner),
-            Type::Promise { result, effects } => {
-                self.has_drop(result) || effects.iter().any(|effect| self.drop.contains(effect))
+            Type::Promise {
+                result,
+                error,
+                effects,
+            } => {
+                self.has_drop(result)
+                    || self.has_drop(error)
+                    || effects.iter().any(|effect| self.drop.contains(effect))
             }
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().any(|element| self.has_drop(element))
@@ -160,8 +164,14 @@ impl OwnershipFacts {
             Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
                 self.is_send(inner)
             }
-            Type::Promise { result, effects } => {
-                self.is_send(result) && effects.iter().all(|effect| self.send.contains(effect))
+            Type::Promise {
+                result,
+                error,
+                effects,
+            } => {
+                self.is_send(result)
+                    && self.is_send(error)
+                    && effects.iter().all(|effect| self.send.contains(effect))
             }
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_send(element))
@@ -186,8 +196,14 @@ impl OwnershipFacts {
             Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
                 self.is_sync(inner)
             }
-            Type::Promise { result, effects } => {
-                self.is_sync(result) && effects.iter().all(|effect| self.sync.contains(effect))
+            Type::Promise {
+                result,
+                error,
+                effects,
+            } => {
+                self.is_sync(result)
+                    && self.is_sync(error)
+                    && effects.iter().all(|effect| self.sync.contains(effect))
             }
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_sync(element))
@@ -203,49 +219,6 @@ impl OwnershipFacts {
 #[allow(clippy::too_many_lines)]
 pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
     let mut facts = OwnershipFacts::default();
-    for definition in &program.definitions {
-        for marker in ["Copy", "Drop", "Send", "Sync"] {
-            if has_marker(program, definition.declaration, marker) {
-                match marker {
-                    "Copy" => {
-                        facts.copy.insert(definition.declaration);
-                    }
-                    "Drop" => {
-                        facts.drop.insert(definition.declaration);
-                    }
-                    "Send" => {
-                        facts.send.insert(definition.declaration);
-                    }
-                    "Sync" => {
-                        facts.sync.insert(definition.declaration);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    for definition in &program.definitions {
-        if matches!(
-            definition.data,
-            DefinitionData::Struct { .. }
-                | DefinitionData::Enum { .. }
-                | DefinitionData::Class { .. }
-        ) {
-            for interface in declared_conformances(program, definition.declaration) {
-                insert_fact(program, &mut facts, interface, definition.declaration);
-            }
-        }
-        if let DefinitionData::Implementation {
-            interface: Some(Type::Nominal(interface, _)),
-            target: Type::Nominal(target, _),
-            ..
-        } = &definition.data
-        {
-            insert_fact(program, &mut facts, *interface, *target);
-        }
-    }
-    let explicit_send = facts.send.clone();
-    let explicit_sync = facts.sync.clone();
     let structural = program
         .definitions
         .iter()
@@ -259,11 +232,53 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
         })
         .map(|definition| definition.declaration)
         .collect::<BTreeSet<_>>();
-    facts.send.extend(structural.iter().copied());
-    facts.sync.extend(structural.iter().copied());
+
+    // Capabilities are properties of representation, never source declarations. Classes own
+    // identity and therefore always participate in automatic destruction; value aggregates earn
+    // destruction only when one of their stored values owns resources.
+    for definition in &program.definitions {
+        if matches!(definition.data, DefinitionData::Class { .. }) {
+            facts.drop.insert(definition.declaration);
+        }
+        let has_destructor = match &definition.data {
+            DefinitionData::Struct { methods, .. }
+            | DefinitionData::Enum { methods, .. }
+            | DefinitionData::Class { methods, .. } => {
+                methods.iter().any(|method| method.name == "drop")
+            }
+            _ => false,
+        };
+        if has_destructor {
+            facts.drop.insert(definition.declaration);
+        }
+    }
+
+    // Empty aggregates are the stable capability seeds. Starting from an empty capability set keeps
+    // recursive aggregates conservative: a cycle with no finite, capability-bearing base does
+    // not prove itself Copy, Send, or Sync.
+    for definition in &program.definitions {
+        let empty = match &definition.data {
+            DefinitionData::Struct { fields, .. } => fields.is_empty(),
+            DefinitionData::Enum { variants, .. } => {
+                variants.iter().all(|variant| variant.fields.is_empty())
+            }
+            DefinitionData::Class { fields, .. } => fields.is_empty(),
+            _ => false,
+        };
+        if empty {
+            if matches!(
+                definition.data,
+                DefinitionData::Struct { .. } | DefinitionData::Enum { .. }
+            ) {
+                facts.copy.insert(definition.declaration);
+            }
+            facts.send.insert(definition.declaration);
+            facts.sync.insert(definition.declaration);
+        }
+    }
+
     loop {
-        let mut remove_send = Vec::new();
-        let mut remove_sync = Vec::new();
+        let mut changed = false;
         for definition in &program.definitions {
             if !structural.contains(&definition.declaration) {
                 continue;
@@ -278,52 +293,47 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
                     .collect::<Vec<_>>(),
                 _ => unreachable!("structural set contains only aggregate definitions"),
             };
-            if !explicit_send.contains(&definition.declaration)
-                && !field_types
-                    .iter()
-                    .all(|ty| structurally_thread_safe(ty, false, &facts))
-            {
-                remove_send.push(definition.declaration);
+            let has_destructor = match &definition.data {
+                DefinitionData::Struct { methods, .. }
+                | DefinitionData::Enum { methods, .. }
+                | DefinitionData::Class { methods, .. } => {
+                    methods.iter().any(|method| method.name == "drop")
+                }
+                _ => false,
+            };
+            let copyable = matches!(
+                definition.data,
+                DefinitionData::Struct { .. } | DefinitionData::Enum { .. }
+            ) && !has_destructor
+                && field_types.iter().all(|ty| facts.is_copy(ty));
+            if copyable && facts.copy.insert(definition.declaration) {
+                changed = true;
             }
-            if !explicit_sync.contains(&definition.declaration)
-                && !field_types
-                    .iter()
-                    .all(|ty| structurally_thread_safe(ty, true, &facts))
+            if field_types
+                .iter()
+                .all(|ty| structurally_thread_safe(ty, false, &facts))
+                && facts.send.insert(definition.declaration)
             {
-                remove_sync.push(definition.declaration);
+                changed = true;
+            }
+            if field_types
+                .iter()
+                .all(|ty| structurally_thread_safe(ty, true, &facts))
+                && facts.sync.insert(definition.declaration)
+            {
+                changed = true;
+            }
+            if field_types.iter().any(|ty| facts.has_drop(ty))
+                && facts.drop.insert(definition.declaration)
+            {
+                changed = true;
             }
         }
-        if remove_send.is_empty() && remove_sync.is_empty() {
-            break;
-        }
-        let before = (facts.send.len(), facts.sync.len());
-        for declaration in remove_send {
-            facts.send.remove(&declaration);
-        }
-        for declaration in remove_sync {
-            facts.sync.remove(&declaration);
-        }
-        if before == (facts.send.len(), facts.sync.len()) {
+        if !changed {
             break;
         }
     }
     facts
-}
-
-fn has_marker(program: &Program, target: DeclarationId, requested: &str) -> bool {
-    let Some(declaration) = program.graph.declaration(target) else {
-        return false;
-    };
-    declaration.attributes.iter().any(|attribute| {
-        (attribute.kind.as_str() == requested
-            && !matches!(requested, "Send" | "Sync")
-            && attribute.arguments.is_empty())
-            || (attribute.kind == AttributeKind::Conform
-                && attribute
-                    .arguments
-                    .iter()
-                    .any(|argument| argument == requested))
-    })
 }
 
 /// Returns canonical interface declarations attached to a nominal type.
@@ -332,64 +342,23 @@ pub(crate) fn declared_conformances(
     nominal: DeclarationId,
 ) -> Vec<DeclarationId> {
     let mut interfaces = Vec::new();
-    if let Some(definition) = program.definition(nominal)
-        && let DefinitionData::Class {
-            interfaces: declared,
-            ..
-        } = &definition.data
-    {
-        interfaces.extend(declared.iter().filter_map(|ty| match ty {
-            Type::Nominal(id, _) | Type::DynamicInterface(id, _) => Some(*id),
+    if let Some(definition) = program.definition(nominal) {
+        let declared = match &definition.data {
+            DefinitionData::Struct { interfaces, .. }
+            | DefinitionData::Enum { interfaces, .. }
+            | DefinitionData::Class { interfaces, .. } => Some(interfaces),
             _ => None,
-        }));
-    }
-    let Some(declaration) = program.graph.declaration(nominal) else {
-        return interfaces;
-    };
-    for attribute in declaration
-        .attributes
-        .iter()
-        .filter(|attribute| attribute.kind == AttributeKind::Conform)
-    {
-        for argument in &attribute.arguments {
-            if let Some(interface) = resolve_interface_name(program, declaration.module, argument) {
-                interfaces.push(interface);
-            }
+        };
+        if let Some(declared) = declared {
+            interfaces.extend(declared.iter().filter_map(|ty| match ty {
+                Type::Nominal(id, _) | Type::DynamicInterface(id, _) => Some(*id),
+                _ => None,
+            }));
         }
     }
     interfaces.sort_unstable();
     interfaces.dedup();
     interfaces
-}
-
-fn resolve_interface_name(
-    program: &Program,
-    module_id: tn_hir::ModuleId,
-    name: &str,
-) -> Option<DeclarationId> {
-    let module = program.graph.module(module_id)?;
-    if let Some(local) = module.declarations.iter().find(|declaration| {
-        declaration.kind == DeclarationKind::Interface && declaration.name.as_deref() == Some(name)
-    }) {
-        return Some(local.id);
-    }
-    module.imports.iter().find_map(|import| {
-        let ImportClause::Named(names) = &import.clause else {
-            return None;
-        };
-        let imported = names.iter().find(|item| item.local == name)?;
-        program
-            .graph
-            .module(import.target)?
-            .declarations
-            .iter()
-            .find(|declaration| {
-                declaration.kind == DeclarationKind::Interface
-                    && declaration.exported
-                    && declaration.name.as_deref() == Some(imported.imported.as_str())
-            })
-            .map(|declaration| declaration.id)
-    })
 }
 
 fn structurally_thread_safe(ty: &Type, sync: bool, facts: &OwnershipFacts) -> bool {
@@ -412,8 +381,13 @@ fn structurally_thread_safe(ty: &Type, sync: bool, facts: &OwnershipFacts) -> bo
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             structurally_thread_safe(inner, sync, facts)
         }
-        Type::Promise { result, effects } => {
+        Type::Promise {
+            result,
+            error,
+            effects,
+        } => {
             structurally_thread_safe(result, sync, facts)
+                && structurally_thread_safe(error, sync, facts)
                 && effects.iter().all(|effect| {
                     let marker = if sync { &facts.sync } else { &facts.send };
                     marker.contains(effect)
@@ -436,33 +410,6 @@ fn structurally_thread_safe(ty: &Type, sync: bool, facts: &OwnershipFacts) -> bo
         Type::RawPointer { .. } | Type::DynamicInterface(_, _) | Type::Error | Type::Unknown => {
             false
         }
-    }
-}
-
-fn insert_fact(
-    program: &Program,
-    facts: &mut OwnershipFacts,
-    interface: DeclarationId,
-    target: DeclarationId,
-) {
-    let name = program
-        .graph
-        .declaration(interface)
-        .and_then(|declaration| declaration.name.as_deref());
-    match name {
-        Some("Copy") => {
-            facts.copy.insert(target);
-        }
-        Some("Drop") => {
-            facts.drop.insert(target);
-        }
-        Some("Send") => {
-            facts.send.insert(target);
-        }
-        Some("Sync") => {
-            facts.sync.insert(target);
-        }
-        _ => {}
     }
 }
 
@@ -728,7 +675,9 @@ fn contains_non_static_borrow(ty: &Type) -> bool {
         | Type::Array(inner, _)
         | Type::Slice(inner)
         | Type::RawPointer { pointee: inner, .. } => contains_non_static_borrow(inner),
-        Type::Promise { result, .. } => contains_non_static_borrow(result),
+        Type::Promise { result, error, .. } => {
+            contains_non_static_borrow(result) || contains_non_static_borrow(error)
+        }
         Type::Function(function) => {
             function.parameters.iter().any(contains_non_static_borrow)
                 || contains_non_static_borrow(&function.result)
@@ -1247,10 +1196,33 @@ fn place_root_type<'body>(body: &'body Body, place: &Place) -> Option<&'body Typ
 }
 
 fn is_optional_payload_move(body: &Body, place: &Place) -> bool {
-    matches!(
+    if matches!(
         (place.projection.as_slice(), place_root_type(body, place)),
         ([Projection::Downcast(1)], Some(Type::Optional(_)))
-    )
+    ) {
+        return true;
+    }
+    if place.projection.is_empty() {
+        return false;
+    }
+    body.blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .any(|statement| {
+            let StatementKind::Assign(destination, rvalue) = &statement.kind else {
+                return false;
+            };
+            if destination.local != place.local || !destination.projection.is_empty() {
+                return false;
+            }
+            let Rvalue::Use(Operand::Move(source)) = rvalue.as_ref() else {
+                return false;
+            };
+            matches!(
+                (source.projection.as_slice(), place_root_type(body, source)),
+                ([Projection::Downcast(1)], Some(Type::Optional(_)))
+            )
+        })
 }
 
 fn last_uses(body: &Body) -> BTreeMap<LocalId, usize> {

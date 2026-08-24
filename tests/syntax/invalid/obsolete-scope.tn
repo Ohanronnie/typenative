@@ -1,0 +1,2 @@
+function inspect(value: &scope i32): void { value; }
+function after(): void {}

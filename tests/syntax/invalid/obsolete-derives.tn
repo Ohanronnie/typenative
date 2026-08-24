@@ -1,0 +1,2 @@
+struct Value derives Copy {}
+function after(): void {}

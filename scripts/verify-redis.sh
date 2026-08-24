@@ -148,6 +148,8 @@ def read_response(sock):
     prefix = line[:1]
     if prefix in (b"+", b"-", b":"):
         return line
+    if prefix == b"*" and line == b"*0\r\n":
+        return line
     if prefix != b"$":
         raise AssertionError(f"unexpected RESP prefix: {line!r}")
     length = int(line[1:-2])
@@ -190,6 +192,15 @@ with socket.create_connection(("127.0.0.1", PORT), timeout=2) as sock:
     assert command(sock, "DEL", "user") == b":1\r\n"
     assert command(sock, "GET", "user") == b"$-1\r\n"
     assert command(sock, "UNKNOWN") == b"-ERR unknown command\r\n"
+    assert command(sock, "PING", "hello") == b"$5\r\nhello\r\n"
+    assert command(sock, "ECHO", "echo") == b"$4\r\necho\r\n"
+    assert command(sock, "SET", "counter", "1") == b"+OK\r\n"
+    assert command(sock, "INCR", "counter") == b":2\r\n"
+    assert command(sock, "EXISTS", "counter") == b":1\r\n"
+    assert command(sock, "EXPIRE", "counter", "2") == b":1\r\n"
+    ttl = command(sock, "TTL", "counter")
+    assert ttl.startswith(b":") and int(ttl[1:-2]) >= 0
+    assert command(sock, "COMMAND") == b"*0\r\n"
 
     pipelined = frame("SET", "pipeline", "ok") + frame("GET", "pipeline")
     sock.sendall(pipelined)
@@ -219,6 +230,7 @@ with socket.create_connection(("127.0.0.1", PORT), timeout=2) as sock:
     assert command(sock, "GET", "large") == b"$12000\r\n" + large_value + b"\r\n"
 
 
+
 assert_closes(b"*1\r\n$1\r\n\xff\r\n")
 assert_closes(b"*1\r\n$536870913\r\n")
 assert_closes(b"*1\r\n$4\r\nPI")
@@ -234,6 +246,9 @@ def concurrent_round(index):
 
 with ThreadPoolExecutor(max_workers=16) as executor:
     list(executor.map(concurrent_round, range(32)))
+
+with socket.create_connection(("127.0.0.1", PORT), timeout=2) as sock:
+    assert command(sock, "QUIT") == b"+OK\r\n"
 PY
 }
 

@@ -16,12 +16,10 @@ function escape(): &i32 {
   return borrowed;
 }
 
-interface Drop { mut drop(): void; }
-@Conform(Drop)
 struct Pair {
   public first: string;
   public second: string;
-  mut drop(): void {}
+  drop(): void {}
 }
 
 function implicitAssignment(value: string): void {

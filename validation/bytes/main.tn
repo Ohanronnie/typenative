@@ -1,7 +1,8 @@
-import { borrow, BytesMut, SliceError } from "std/bytes";
-import { StringMap } from "std/collections";
+import { BytesMut, SliceError } from "std/bytes";
+import { Map } from "std/collections";
+import { Utf8Error } from "std/string";
 
-function main(): i32 {
+function main(): i32 throws Utf8Error | SliceError {
   let bytes = new BytesMut({
     capacity: 4usize
   });
@@ -9,53 +10,38 @@ function main(): i32 {
   bytes.push(98u8);
   bytes.push(99u8);
   {
-    const root = borrow( & bytes);
-    if (root.length() !== 3usize || root.get(0usize)! !== 97u8) {
+    const root = bytes.asBytes();
+    if (root.length !== 3usize || root.get(0usize)! !== 97u8) {
       return 1i32;
     }
     if (root.get(3usize) !== undefined) {
       return 2i32;
     }
-    const empty = root.view(1usize, 1usize)!;
-    if (empty.length() !== 0usize || empty.get(0usize) !== undefined) {
+    const empty = try root.slice(1usize, 1usize);
+    if (empty.length !== 0usize || empty.get(0usize) !== undefined) {
       return 3i32;
     }
-    const tail = root.view(1usize, 3usize)!;
-    const nested = tail.view(0usize, 1usize)!;
-    const repeated = root.view(1usize, 2usize)!;
+    const tail = try root.slice(1usize, 3usize);
+    const nested = try tail.slice(0usize, 1usize);
+    const repeated = try root.slice(1usize, 2usize);
     if (nested.get(0usize)! !== 98u8 || repeated.get(0usize)! !== 98u8) {
       return 4i32;
     }
-    if (root.view(2usize, 4usize) !== undefined) {
-      return 5i32;
-    }
-    const text = tail.utf8()!;
-    const hashedText = tail.hashedUtf8()!;
-    const asciiKeyText = tail.asciiKeyUtf8()!;
-    if (!text.equalsText("bc") || !text.equalsAsciiIgnoreCase("BC")) {
+    const text = try String.fromUtf8(tail);
+    if (text !== "bc") {
       return 6i32;
     }
-    if (!hashedText.equalsText("bc") || hashedText.hash() !== text.hash()) {
-      return 15i32;
-    }
-    if (asciiKeyText.key() !== 144115188075873090u64 || !asciiKeyText.view().equalsText("bc")) {
-      return 18i32;
-    }
-    const owned: string = text.toOwned();
+    const owned: string = text.clone();
     if (owned !== "bc") {
       return 7i32;
     }
-    let values = new StringMap<string>({
+    let values = new Map<string, string>({
       capacity: 8usize
     });
-    values.setBorrowed( & hashedText, string.from("found"));
+    values.set(text.clone(), String("found"));
     const found = values.get( & text);
-    if (found === undefined || found!.byteLength() !== 5usize) {
+    if (found === undefined || found!.byteLength !== 5usize) {
       return 8i32;
-    }
-    const hashedFound = values.getHashed( & hashedText);
-    if (hashedFound === undefined || hashedFound!.byteLength() !== 5usize) {
-      return 16i32;
     }
   }
   bytes.discardPrefix(1usize);
@@ -66,38 +52,19 @@ function main(): i32 {
     capacity: 1usize
   });
   invalid.push(255u8);
-  {
-    const invalidView = borrow( & invalid);
-    if (invalidView.utf8() !== undefined) {
-      return 10i32;
-    }
-    if (invalidView.hashedUtf8() !== undefined) {
-      return 17i32;
-    }
-    if (invalidView.asciiKeyUtf8() !== undefined) {
-      return 19i32;
-    }
+  try {
+    const ignored = try String.fromUtf8(invalid.asBytes());
+    return 10i32;
+  } catch (error: Utf8Error) {
   }
   let multibyte = new BytesMut({
     capacity: 2usize
   });
   multibyte.push(195u8);
   multibyte.push(169u8);
-  {
-    const multibyteView = borrow( & multibyte);
-    if (multibyteView.utf8() === undefined) {
-      return 23i32;
-    }
-    const multibyteText = multibyteView.asciiKeyUtf8();
-    if (multibyteText === undefined) {
-      return 20i32;
-    }
-    if (multibyteText!.key() !== 0u64) {
-      return 21i32;
-    }
-    if (multibyteView.hashedUtf8() === undefined) {
-      return 22i32;
-    }
+  const multibyteText = try String.fromUtf8(multibyte.asBytes());
+  if (multibyteText !== "é") {
+    return 20i32;
   }
   try {
     const valid = try bytes.slice(0usize, 2usize);

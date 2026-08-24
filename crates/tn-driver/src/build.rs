@@ -1,3 +1,4 @@
+use crate::project::SupportMode;
 use crate::{Emit, LinkConfig, Profile, Project, ProjectConfig, Sanitizer, Target};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -5,10 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tn_diagnostics::Diagnostic;
-use tn_hir::{
-    AttributeKind, DeclarationId, DefinitionData, ImportClause, Namespace, PrimitiveType, Program,
-    Type, Visibility,
-};
+use tn_hir::{DeclarationId, DefinitionData, Namespace, PrimitiveType, Program, Type, Visibility};
 use tn_mir::{Callable, GenericBody, Instance, MonomorphizedBody};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -119,29 +117,80 @@ pub fn build_project_with_timings(
         .collect::<Vec<_>>();
     timings.record("mir-drop", started);
     let drop_callables = drop_layouts(&program);
-    let root = executable.as_ref().map(|(entry, _)| Instance {
-        callable: Callable::function(*entry),
-        type_arguments: Vec::new(),
-        effects: function_effects(&program, Callable::function(*entry)),
-    });
+    let root = match project.config.support_mode {
+        SupportMode::Startup => support_startup_entry(&program),
+        SupportMode::None | SupportMode::Runtime => {
+            executable.as_ref().map(|(entry, _)| Instance {
+                callable: Callable::function(*entry),
+                type_arguments: Vec::new(),
+                effects: function_effects(&program, Callable::function(*entry)),
+            })
+        }
+    };
     let entry_instance = root.clone();
     let mut roots = root.iter().cloned().collect::<Vec<_>>();
-    if project.config.emit != Emit::Executable {
-        roots.extend(
-            exported_functions(&program)
-                .into_iter()
-                .filter(|(_, function)| function.generics.is_empty())
-                .map(|(declaration, function)| {
-                    instance_for_function(Callable::function(declaration.id), function)
-                }),
-        );
-        if project.config.emit == Emit::NodeAddon {
-            for (_, function) in exported_functions(&program) {
-                for parameter in &function.parameters {
+    roots.extend(drop_roots(&program, &drop_callables));
+    match project.config.support_mode {
+        SupportMode::Startup => {}
+        SupportMode::Runtime => roots.extend(runtime_support_functions(&program).into_iter().map(
+            |(declaration, function)| {
+                instance_for_function(Callable::function(declaration.id), function)
+            },
+        )),
+        SupportMode::None if project.config.emit != Emit::Executable => {
+            roots.extend(
+                entry_exported_functions(&program)
+                    .into_iter()
+                    .filter(|(_, function)| function.generics.is_empty())
+                    .map(|(declaration, function)| {
+                        instance_for_function(Callable::function(declaration.id), function)
+                    }),
+            );
+        }
+        SupportMode::None => {}
+    }
+    if project.config.support_mode == SupportMode::None && project.config.emit == Emit::NodeAddon {
+        for (_, function) in entry_exported_functions(&program) {
+            for parameter in &function.parameters {
+                push_node_drop_roots(&program, &drop_callables, &parameter.ty, &mut roots);
+            }
+            push_node_drop_roots(&program, &drop_callables, &function.result, &mut roots);
+            for effect in &function.effects {
+                push_node_drop_roots(
+                    &program,
+                    &drop_callables,
+                    &Type::Nominal(*effect, Vec::new()),
+                    &mut roots,
+                );
+            }
+        }
+        for (declaration, definition) in entry_exported_classes(&program) {
+            let DefinitionData::Class {
+                constructor,
+                methods,
+                ..
+            } = &definition.data
+            else {
+                continue;
+            };
+            if let Some(drop_callable) = drop_callables.get(&declaration.id).copied()
+                && let Some(drop_method) = methods.iter().find(|method| {
+                    Some(method.id) == drop_callable.member && method.function.generics.is_empty()
+                })
+            {
+                roots.push(instance_for_function(drop_callable, &drop_method.function));
+            }
+            if let Some(constructor) = constructor {
+                for parameter in &constructor.function.parameters {
                     push_node_drop_roots(&program, &drop_callables, &parameter.ty, &mut roots);
                 }
-                push_node_drop_roots(&program, &drop_callables, &function.result, &mut roots);
-                for effect in &function.effects {
+                push_node_drop_roots(
+                    &program,
+                    &drop_callables,
+                    &constructor.function.result,
+                    &mut roots,
+                );
+                for effect in &constructor.function.effects {
                     push_node_drop_roots(
                         &program,
                         &drop_callables,
@@ -150,91 +199,54 @@ pub fn build_project_with_timings(
                     );
                 }
             }
-            for (declaration, definition) in exported_classes(&program) {
-                let DefinitionData::Class {
-                    constructor,
-                    methods,
-                    ..
-                } = &definition.data
-                else {
-                    continue;
-                };
-                if let Some(drop_callable) = drop_callables.get(&declaration.id).copied()
-                    && let Some(drop_method) = methods.iter().find(|method| {
-                        Some(method.id) == drop_callable.member
+            for method in methods {
+                for parameter in &method.function.parameters {
+                    push_node_drop_roots(&program, &drop_callables, &parameter.ty, &mut roots);
+                }
+                push_node_drop_roots(
+                    &program,
+                    &drop_callables,
+                    &method.function.result,
+                    &mut roots,
+                );
+                for effect in &method.function.effects {
+                    push_node_drop_roots(
+                        &program,
+                        &drop_callables,
+                        &Type::Nominal(*effect, Vec::new()),
+                        &mut roots,
+                    );
+                }
+            }
+            if let Some(constructor) = constructor
+                && constructor.visibility == Visibility::Public
+                && constructor.function.generics.is_empty()
+            {
+                roots.push(instance_for_function(
+                    Callable {
+                        declaration: declaration.id,
+                        member: Some(constructor.id),
+                    },
+                    &constructor.function,
+                ));
+            }
+            roots.extend(
+                methods
+                    .iter()
+                    .filter(|method| {
+                        method.visibility == Visibility::Public
                             && method.function.generics.is_empty()
                     })
-                {
-                    roots.push(instance_for_function(drop_callable, &drop_method.function));
-                }
-                if let Some(constructor) = constructor {
-                    for parameter in &constructor.function.parameters {
-                        push_node_drop_roots(&program, &drop_callables, &parameter.ty, &mut roots);
-                    }
-                    push_node_drop_roots(
-                        &program,
-                        &drop_callables,
-                        &constructor.function.result,
-                        &mut roots,
-                    );
-                    for effect in &constructor.function.effects {
-                        push_node_drop_roots(
-                            &program,
-                            &drop_callables,
-                            &Type::Nominal(*effect, Vec::new()),
-                            &mut roots,
-                        );
-                    }
-                }
-                for method in methods {
-                    for parameter in &method.function.parameters {
-                        push_node_drop_roots(&program, &drop_callables, &parameter.ty, &mut roots);
-                    }
-                    push_node_drop_roots(
-                        &program,
-                        &drop_callables,
-                        &method.function.result,
-                        &mut roots,
-                    );
-                    for effect in &method.function.effects {
-                        push_node_drop_roots(
-                            &program,
-                            &drop_callables,
-                            &Type::Nominal(*effect, Vec::new()),
-                            &mut roots,
-                        );
-                    }
-                }
-                if let Some(constructor) = constructor
-                    && constructor.visibility == Visibility::Public
-                    && constructor.function.generics.is_empty()
-                {
-                    roots.push(instance_for_function(
-                        Callable {
-                            declaration: declaration.id,
-                            member: Some(constructor.id),
-                        },
-                        &constructor.function,
-                    ));
-                }
-                roots.extend(
-                    methods
-                        .iter()
-                        .filter(|method| {
-                            method.visibility == Visibility::Public
-                                && method.function.generics.is_empty()
-                        })
-                        .map(|method| {
-                            instance_for_function(
-                                Callable {
-                                    declaration: declaration.id,
-                                    member: Some(method.id),
-                                },
-                                &method.function,
-                            )
-                        }),
-                );
-            }
+                    .map(|method| {
+                        instance_for_function(
+                            Callable {
+                                declaration: declaration.id,
+                                member: Some(method.id),
+                            },
+                            &method.function,
+                        )
+                    }),
+            );
         }
     }
     roots.sort();
@@ -263,7 +275,7 @@ pub fn build_project_with_timings(
         }
     }
     if project.config.emit == Emit::NodeAddon {
-        for (declaration, function) in exported_functions(&program) {
+        for (declaration, function) in entry_exported_functions(&program) {
             if !function.is_async && !function.effects.is_empty() {
                 layouts.abi_wrappers.insert(
                     Callable::function(declaration.id),
@@ -294,7 +306,7 @@ pub fn build_project_with_timings(
                 );
             }
         }
-        for (declaration, definition) in exported_classes(&program) {
+        for (declaration, definition) in entry_exported_classes(&program) {
             let DefinitionData::Class {
                 constructor,
                 methods,
@@ -375,9 +387,12 @@ pub fn build_project_with_timings(
         }
     }
     if project.config.emit != Emit::NodeAddon {
-        for (declaration, _) in exported_functions(&program) {
+        for (declaration, _) in entry_exported_functions(&program) {
             let callable = Callable::function(declaration.id);
-            layouts.exports.insert(callable, exported_name(declaration));
+            layouts.exports.insert(
+                callable,
+                program.export_name_for_declaration(declaration.id),
+            );
         }
     }
     let target = project.config.target.triple();
@@ -450,15 +465,64 @@ fn exported_functions(program: &Program) -> Vec<(&tn_hir::Declaration, &tn_hir::
                 return None;
             };
             let declaration = program.graph.declaration(definition.declaration)?;
-            declaration
-                .attributes
-                .iter()
-                .any(|attribute| attribute.kind == AttributeKind::Export)
-                .then_some((declaration, function))
+            declaration.exported.then_some((declaration, function))
         })
         .collect::<Vec<_>>();
     functions.sort_by(|left, right| left.0.name.cmp(&right.0.name));
     functions
+}
+
+fn is_entry_declaration(program: &Program, declaration: DeclarationId) -> bool {
+    program
+        .graph
+        .module(program.graph.entry)
+        .is_some_and(|module| {
+            module
+                .declarations
+                .iter()
+                .any(|entry| entry.id == declaration)
+        })
+}
+
+fn entry_exported_functions(program: &Program) -> Vec<(&tn_hir::Declaration, &tn_hir::Function)> {
+    exported_functions(program)
+        .into_iter()
+        .filter(|(declaration, _)| is_entry_declaration(program, declaration.id))
+        .collect()
+}
+
+fn runtime_support_functions(program: &Program) -> Vec<(&tn_hir::Declaration, &tn_hir::Function)> {
+    exported_functions(program)
+        .into_iter()
+        .filter(|(declaration, function)| {
+            function.generics.is_empty()
+                && (program
+                    .graph
+                    .is_bundled_module(declaration.module, "runtime.tn")
+                    || program
+                        .graph
+                        .is_bundled_module(declaration.module, "platform/linux-x86_64.tn")
+                    || program
+                        .graph
+                        .is_bundled_module(declaration.module, "platform/darwin-arm64.tn"))
+        })
+        .collect()
+}
+
+fn support_startup_entry(program: &Program) -> Option<Instance> {
+    let module = program.graph.module(program.graph.entry)?;
+    let declaration = module
+        .declarations
+        .iter()
+        .find(|declaration| declaration.name.as_deref() == Some("main"))?;
+    let definition = program.definition(declaration.id)?;
+    let DefinitionData::Function(function) = &definition.data else {
+        return None;
+    };
+    Some(instance_for_function(
+        Callable::function(declaration.id),
+        function,
+    ))
 }
 
 fn exported_classes(program: &Program) -> Vec<(&tn_hir::Declaration, &tn_hir::Definition)> {
@@ -470,26 +534,18 @@ fn exported_classes(program: &Program) -> Vec<(&tn_hir::Declaration, &tn_hir::De
                 return None;
             };
             let declaration = program.graph.declaration(definition.declaration)?;
-            declaration
-                .attributes
-                .iter()
-                .any(|attribute| attribute.kind == AttributeKind::Export)
-                .then_some((declaration, definition))
+            declaration.exported.then_some((declaration, definition))
         })
         .collect::<Vec<_>>();
     classes.sort_by(|left, right| left.0.name.cmp(&right.0.name));
     classes
 }
 
-fn exported_name(declaration: &tn_hir::Declaration) -> String {
-    declaration
-        .attributes
-        .iter()
-        .find(|attribute| attribute.kind == AttributeKind::Export)
-        .and_then(|attribute| attribute.arguments.first())
-        .cloned()
-        .or_else(|| declaration.name.clone())
-        .unwrap_or_else(|| "exported".into())
+fn entry_exported_classes(program: &Program) -> Vec<(&tn_hir::Declaration, &tn_hir::Definition)> {
+    exported_classes(program)
+        .into_iter()
+        .filter(|(declaration, _)| is_entry_declaration(program, declaration.id))
+        .collect()
 }
 
 fn instance_for_function(callable: Callable, function: &tn_hir::Function) -> Instance {
@@ -581,15 +637,8 @@ fn write_c_header(program: &Program, path: &Path) -> Result<(), BuildError> {
         "#ifndef TYPENATIVE_GENERATED_H\n#define TYPENATIVE_GENERATED_H\n\n#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n",
     );
     write_c_layouts(program, &mut output)?;
-    for (declaration, function) in exported_functions(program) {
-        let symbol = declaration
-            .attributes
-            .iter()
-            .find(|attribute| attribute.kind == AttributeKind::Export)
-            .and_then(|attribute| attribute.arguments.first())
-            .cloned()
-            .or_else(|| declaration.name.clone())
-            .unwrap_or_else(|| "tn_export".into());
+    for (declaration, function) in entry_exported_functions(program) {
+        let symbol = program.export_name_for_declaration(declaration.id);
         let parameters = function
             .parameters
             .iter()
@@ -619,13 +668,7 @@ fn write_c_layouts(program: &Program, output: &mut String) -> Result<(), BuildEr
         .iter()
         .filter_map(|definition| {
             let declaration = program.graph.declaration(definition.declaration)?;
-            let repr_c = declaration.attributes.iter().any(|attribute| {
-                attribute.kind == AttributeKind::Layout
-                    && attribute
-                        .arguments
-                        .first()
-                        .is_some_and(|argument| argument == "C")
-            });
+            let repr_c = program.has_c_layout(declaration.id);
             if !repr_c {
                 return None;
             }
@@ -669,18 +712,7 @@ fn write_c_layouts(program: &Program, output: &mut String) -> Result<(), BuildEr
 }
 
 fn declaration_has_repr_c(program: &Program, declaration: DeclarationId) -> bool {
-    program
-        .graph
-        .declaration(declaration)
-        .is_some_and(|declaration| {
-            declaration.attributes.iter().any(|attribute| {
-                attribute.kind == AttributeKind::Layout
-                    && attribute
-                        .arguments
-                        .first()
-                        .is_some_and(|argument| argument == "C")
-            })
-        })
+    program.has_c_layout(declaration)
 }
 
 fn c_type(program: &Program, ty: &Type) -> String {
@@ -727,21 +759,25 @@ fn write_node_declarations(program: &Program, path: &Path) -> Result<(), BuildEr
 }
 
 fn validate_exports(program: &Program, emit: Emit) -> Result<(), BuildError> {
+    let Some(entry_module) = program.graph.module(program.graph.entry) else {
+        return Err(BuildError::Message("entry module is missing".into()));
+    };
+    let entry_declarations = entry_module
+        .declarations
+        .iter()
+        .map(|declaration| declaration.id)
+        .collect::<std::collections::BTreeSet<_>>();
     for definition in &program.definitions {
         let Some(declaration) = program.graph.declaration(definition.declaration) else {
             continue;
         };
-        let Some(attribute) = declaration
-            .attributes
-            .iter()
-            .find(|attribute| attribute.kind == AttributeKind::Export)
-        else {
+        if !declaration.exported || !entry_declarations.contains(&declaration.id) {
             continue;
-        };
+        }
         let DefinitionData::Function(function) = &definition.data else {
             if emit == Emit::SharedLibrary {
                 return Err(BuildError::Message(format!(
-                    "@Export is valid for functions in shared-library emission: {}",
+                    "exported declarations must be functions for shared-library emission: {}",
                     declaration.name.as_deref().unwrap_or("<anonymous>")
                 )));
             }
@@ -772,13 +808,9 @@ fn validate_exports(program: &Program, emit: Emit) -> Result<(), BuildError> {
             }
             continue;
         };
-        if !attribute.arguments.is_empty() && attribute.arguments.len() != 1 {
-            return Err(BuildError::Message(format!(
-                "@Export accepts at most one symbol argument on `{}`",
-                declaration.name.as_deref().unwrap_or("<anonymous>")
-            )));
-        }
-        if !definition.generics.is_empty() || !function.generics.is_empty() {
+        if matches!(emit, Emit::SharedLibrary | Emit::NodeAddon)
+            && (!definition.generics.is_empty() || !function.generics.is_empty())
+        {
             return Err(BuildError::Message(format!(
                 "exported function `{}` must be non-generic",
                 declaration.name.as_deref().unwrap_or("<anonymous>")
@@ -1144,18 +1176,7 @@ fn layouts(
                     fields: fields.iter().map(|field| field.ty.clone()).collect(),
                 },
                 DefinitionData::Enum { variants, .. } => {
-                    let c_repr = program
-                        .graph
-                        .declaration(definition.declaration)
-                        .is_some_and(|declaration| {
-                            declaration.attributes.iter().any(|attribute| {
-                                attribute.kind == AttributeKind::Layout
-                                    && attribute
-                                        .arguments
-                                        .first()
-                                        .is_some_and(|argument| argument == "C")
-                            })
-                        });
+                    let c_repr = program.has_c_layout(definition.declaration);
                     tn_codegen_llvm::NominalKind::Enum {
                         variants: variants
                             .iter()
@@ -1231,7 +1252,17 @@ fn layouts(
         .definitions
         .iter()
         .filter_map(|definition| match &definition.data {
-            DefinitionData::TypeAlias(ty) => Some((definition.declaration, ty.clone())),
+            DefinitionData::TypeAlias(ty) => Some((
+                definition.declaration,
+                tn_codegen_llvm::AliasLayout {
+                    parameters: definition
+                        .generics
+                        .iter()
+                        .map(|parameter| parameter.name.clone())
+                        .collect(),
+                    body: ty.clone(),
+                },
+            )),
             _ => None,
         })
         .collect();
@@ -1309,15 +1340,10 @@ fn layouts(
                     return None;
                 };
                 let declaration = program.graph.declaration(definition.declaration)?;
-                let attribute = declaration
-                    .attributes
-                    .iter()
-                    .find(|attribute| attribute.kind == AttributeKind::Export)?;
-                let name = attribute
-                    .arguments
-                    .first()
-                    .cloned()
-                    .or_else(|| declaration.name.clone())?;
+                if !declaration.exported {
+                    return None;
+                }
+                let name = program.export_name_for_declaration(declaration.id);
                 if !definition.generics.is_empty() || !function.generics.is_empty() {
                     return None;
                 }
@@ -1333,18 +1359,8 @@ fn layouts(
 }
 
 fn inline_callables(program: &Program) -> std::collections::BTreeSet<Callable> {
-    program
-        .definitions
-        .iter()
-        .filter_map(|definition| {
-            let declaration = program.graph.declaration(definition.declaration)?;
-            declaration
-                .attributes
-                .iter()
-                .any(|attribute| attribute.kind == AttributeKind::Inline)
-                .then_some(Callable::function(definition.declaration))
-        })
-        .collect()
+    let _ = program;
+    std::collections::BTreeSet::new()
 }
 
 fn async_function_layouts(
@@ -1390,6 +1406,20 @@ fn async_function_layouts(
                 }
             }
             DefinitionData::Implementation { methods, .. } => {
+                for method in methods
+                    .iter()
+                    .filter(|method| method.function.is_async && !method.function.is_generator)
+                {
+                    functions.insert(
+                        Callable {
+                            declaration: definition.declaration,
+                            member: Some(method.id),
+                        },
+                        function_type(&method.function),
+                    );
+                }
+            }
+            DefinitionData::Struct { methods, .. } | DefinitionData::Enum { methods, .. } => {
                 for method in methods
                     .iter()
                     .filter(|method| method.function.is_async && !method.function.is_generator)
@@ -1485,6 +1515,35 @@ fn drop_layouts(program: &Program) -> std::collections::BTreeMap<DeclarationId, 
     drops
 }
 
+fn drop_roots(
+    program: &Program,
+    drops: &std::collections::BTreeMap<DeclarationId, Callable>,
+) -> Vec<Instance> {
+    drops
+        .iter()
+        .filter_map(|(declaration, callable)| {
+            let definition = program.definition(*declaration)?;
+            if !definition.generics.is_empty() {
+                return None;
+            }
+            let methods = match &definition.data {
+                DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. } => {
+                    methods
+                }
+                _ => return None,
+            };
+            let method = methods
+                .iter()
+                .find(|method| Some(method.id) == callable.member)?;
+            method
+                .function
+                .generics
+                .is_empty()
+                .then(|| instance_for_function(*callable, &method.function))
+        })
+        .collect()
+}
+
 fn drop_implementations(program: &Program) -> Vec<tn_mir::DropImplementation> {
     let mut implementations = Vec::new();
     for definition in &program.definitions {
@@ -1552,14 +1611,13 @@ fn drop_implementations(program: &Program) -> Vec<tn_mir::DropImplementation> {
 }
 
 fn has_drop_attribute(program: &Program, declaration: DeclarationId) -> bool {
-    program
-        .graph
-        .declaration(declaration)
-        .is_some_and(|declaration| {
-            declaration.attributes.iter().any(|attribute| {
-                attribute.kind == AttributeKind::Drop && attribute.arguments.is_empty()
-            })
-        })
+    program.definition(declaration).is_some_and(|definition| {
+        matches!(
+            &definition.data,
+            DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. }
+                if methods.iter().any(|method| method.name == "drop")
+        )
+    })
 }
 
 fn class_vtable(
@@ -1626,21 +1684,7 @@ fn witness_layouts(
                 witnesses.insert((*interface, *target), entries);
             }
             DefinitionData::Struct { methods, .. } => {
-                let Some(declaration) = program.graph.declaration(definition.declaration) else {
-                    continue;
-                };
-                let mut interface_ids = declaration
-                    .attributes
-                    .iter()
-                    .filter(|attribute| attribute.kind == AttributeKind::Conform)
-                    .flat_map(|attribute| {
-                        attribute.arguments.iter().filter_map(|name| {
-                            resolve_interface_name(program, declaration.module, name)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                interface_ids.sort_unstable();
-                interface_ids.dedup();
+                let interface_ids = program.implemented_interfaces(definition.declaration);
                 for interface in interface_ids {
                     let Some(DefinitionData::Interface {
                         methods: interface_methods,
@@ -1667,32 +1711,8 @@ fn witness_layouts(
                     witnesses.insert((interface, definition.declaration), entries);
                 }
             }
-            DefinitionData::Class { interfaces, .. } => {
-                let mut interface_ids = interfaces
-                    .iter()
-                    .filter_map(|interface| match interface {
-                        Type::Nominal(interface, _) | Type::DynamicInterface(interface, _) => {
-                            Some(*interface)
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                if let Some(declaration) = program.graph.declaration(definition.declaration) {
-                    let module = declaration.module;
-                    for attribute in declaration
-                        .attributes
-                        .iter()
-                        .filter(|attribute| attribute.kind == AttributeKind::Conform)
-                    {
-                        for name in &attribute.arguments {
-                            if let Some(interface) = resolve_interface_name(program, module, name) {
-                                interface_ids.push(interface);
-                            }
-                        }
-                    }
-                }
-                interface_ids.sort_unstable();
-                interface_ids.dedup();
+            DefinitionData::Class { .. } => {
+                let interface_ids = program.implemented_interfaces(definition.declaration);
                 for interface in interface_ids {
                     let Some(DefinitionData::Interface {
                         methods: interface_methods,
@@ -1720,40 +1740,6 @@ fn witness_layouts(
         }
     }
     witnesses
-}
-
-fn resolve_interface_name(
-    program: &Program,
-    module_id: tn_hir::ModuleId,
-    name: &str,
-) -> Option<DeclarationId> {
-    let module = program.graph.module(module_id)?;
-    module
-        .declarations
-        .iter()
-        .find(|declaration| {
-            declaration.kind == tn_hir::DeclarationKind::Interface
-                && declaration.name.as_deref() == Some(name)
-        })
-        .map(|declaration| declaration.id)
-        .or_else(|| {
-            module.imports.iter().find_map(|import| {
-                let ImportClause::Named(names) = &import.clause else {
-                    return None;
-                };
-                let imported = names.iter().find(|item| item.local == name)?;
-                program
-                    .graph
-                    .module(import.target)?
-                    .declarations
-                    .iter()
-                    .find(|declaration| {
-                        declaration.kind == tn_hir::DeclarationKind::Interface
-                            && declaration.name.as_deref() == Some(imported.imported.as_str())
-                    })
-                    .map(|declaration| declaration.id)
-            })
-        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1960,6 +1946,11 @@ fn compile_support_object(
     output: &Path,
 ) -> Result<(), BuildError> {
     let root = source.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let support_mode = if source == runtime_source(project.config.target) {
+        SupportMode::Runtime
+    } else {
+        SupportMode::Startup
+    };
     let support = Project {
         root,
         entry: source.clone(),
@@ -1971,6 +1962,7 @@ fn compile_support_object(
             emit: Emit::Object,
             sanitizers: project.config.sanitizers.clone(),
             link: LinkConfig::default(),
+            support_mode,
         },
         config_path: None,
     };
@@ -2017,13 +2009,13 @@ fn startup_source_text(entry: &str, mode: EntryMode) -> String {
     );
     match mode {
         EntryMode::Void => format!(
-            "{preamble}(): void;\n}}\n@Export(\"main\")\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    {entry}();\n  }}\n  return 0i32;\n}}\n"
+            "{preamble}(): void;\n}}\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    {entry}();\n  }}\n  return 0i32;\n}}\n"
         ),
         EntryMode::Integer => format!(
-            "{preamble}(): i32;\n}}\n@Export(\"main\")\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    return {entry}();\n  }}\n}}\n"
+            "{preamble}(): i32;\n}}\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    return {entry}();\n  }}\n}}\n"
         ),
         EntryMode::FallibleVoid | EntryMode::FallibleInteger => format!(
-            "{preamble}(): EntryResult;\n  function tn_runtime_free(pointer: * mut u8): void;\n}}\n@Layout(\"C\")\nstruct EntryResult {{\n  public failed: u64;\n  public payload: u64;\n}}\n@Export(\"main\")\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    let result = {entry}();\n    if (result.failed !== 0u64) {{\n      const errorField = & mut result.payload;\n      tn_runtime_free(*(errorField as * mut * mut u8));\n      return 1i32;\n    }}\n    {}\n  }}\n}}\n",
+            "{preamble}(): EntryResult;\n  function tn_runtime_free(pointer: * mut u8): void;\n}}\nextern struct EntryResult {{\n  public failed: u64;\n  public payload: u64;\n}}\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    let result = {entry}();\n    if (result.failed !== 0u64) {{\n      const errorField = & mut result.payload;\n      tn_runtime_free(*(errorField as * mut * mut u8));\n      return 1i32;\n    }}\n    {}\n  }}\n}}\n",
             if matches!(mode, EntryMode::FallibleInteger) {
                 "const valueField = & mut result.payload;\n    return *(valueField as * mut i32);"
             } else {

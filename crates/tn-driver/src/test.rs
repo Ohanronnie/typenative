@@ -23,11 +23,12 @@ impl TestRun {
 struct TestCase {
     module: PathBuf,
     name: String,
+    callback: String,
     function: Function,
     effects: Vec<String>,
 }
 
-/// Runs every top-level function marked with `@Test`.
+/// Runs every function registered with a top-level `test("name", callback)` call.
 ///
 /// # Errors
 ///
@@ -72,20 +73,33 @@ pub fn run_tests(project: &Project, filter: Option<&str>) -> Result<TestRun, Bui
 fn discover_tests(program: &Program) -> Vec<TestCase> {
     let mut tests = Vec::new();
     for module in &program.graph.modules {
-        for name in attribute_test_names(module) {
-            let Some(declaration) = module
+        for (name, callback) in registered_tests(module) {
+            let callback_name = callback
+                .trim()
+                .strip_prefix("async ")
+                .unwrap_or(callback.trim())
+                .trim();
+            let declaration = module
                 .declarations
                 .iter()
-                .find(|declaration| declaration.name.as_deref() == Some(&name))
-            else {
-                continue;
-            };
-            let Some(definition) = program.definition(declaration.id) else {
-                continue;
-            };
-            let DefinitionData::Function(function) = &definition.data else {
-                continue;
-            };
+                .find(|declaration| declaration.name.as_deref() == Some(callback_name));
+            let function = declaration
+                .and_then(|declaration| program.definition(declaration.id))
+                .and_then(|definition| match &definition.data {
+                    DefinitionData::Function(function) => Some(function.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| Function {
+                    parameters: Vec::new(),
+                    result: Type::Primitive(tn_hir::PrimitiveType::Void),
+                    effects: Vec::new(),
+                    generics: Vec::new(),
+                    is_async: callback.contains("async") || callback.contains("await"),
+                    is_generator: false,
+                    is_unsafe: false,
+                    body_start: 0,
+                    body_end: 0,
+                });
             let effects = function
                 .effects
                 .iter()
@@ -95,7 +109,8 @@ fn discover_tests(program: &Program) -> Vec<TestCase> {
             tests.push(TestCase {
                 module: module.path.clone(),
                 name,
-                function: function.clone(),
+                callback,
+                function,
                 effects,
             });
         }
@@ -108,48 +123,70 @@ fn discover_tests(program: &Program) -> Vec<TestCase> {
     tests
 }
 
-fn attribute_test_names(module: &Module) -> BTreeSet<String> {
+fn registered_tests(module: &Module) -> BTreeSet<(String, String)> {
     let lexed = lex(&module.path.to_string_lossy(), module.source.as_bytes());
     let significant = lexed
         .tokens
         .iter()
         .filter(|token| !token.kind.is_trivia())
         .collect::<Vec<_>>();
-    let mut names = BTreeSet::new();
+    let mut tests = BTreeSet::new();
     let mut depth = 0_u32;
     let mut index = 0;
     while index < significant.len() {
         match significant[index].kind {
             TokenKind::LeftBrace => depth += 1,
             TokenKind::RightBrace => depth = depth.saturating_sub(1),
-            TokenKind::At if depth == 0 => {
-                let mut declaration_index = index + 2;
-                while significant
-                    .get(declaration_index)
-                    .is_some_and(|token| matches!(token.kind, TokenKind::Async | TokenKind::Unsafe))
-                {
-                    declaration_index += 1;
-                }
-                if significant
-                    .get(index + 1)
-                    .is_some_and(|token| token.kind == TokenKind::Identifier)
+            TokenKind::Identifier
+                if depth == 0
+                    && &module.source[significant[index].range.clone()] == "test"
                     && significant
                         .get(index + 1)
-                        .is_some_and(|token| &module.source[token.range.clone()] == "Test")
-                    && significant
-                        .get(declaration_index)
-                        .is_some_and(|token| token.kind == TokenKind::Function)
-                    && let Some(name) = significant.get(declaration_index + 1)
-                    && name.kind == TokenKind::Identifier
-                {
-                    names.insert(module.source[name.range.clone()].to_owned());
+                        .is_some_and(|token| token.kind == TokenKind::LeftParen)
+                    && let Some(name) = significant.get(index + 2)
+                    && name.kind == TokenKind::StringLiteral =>
+            {
+                let Some(comma) = significant[index + 3..]
+                    .iter()
+                    .position(|token| token.kind == TokenKind::Comma)
+                    .map(|offset| index + 3 + offset)
+                else {
+                    index += 1;
+                    continue;
+                };
+                let mut nested = 1_u32;
+                let mut close = comma + 1;
+                while close < significant.len() {
+                    match significant[close].kind {
+                        TokenKind::LeftParen => nested += 1,
+                        TokenKind::RightParen => {
+                            nested = nested.saturating_sub(1);
+                            if nested == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    close += 1;
+                }
+                if let Some(callback_end) = significant.get(close) {
+                    let callback_start = significant[comma + 1].range.start;
+                    let callback = module.source[callback_start..callback_end.range.start]
+                        .trim()
+                        .to_owned();
+                    tests.insert((
+                        module.source[name.range.clone()]
+                            .trim_matches('"')
+                            .to_owned(),
+                        callback,
+                    ));
                 }
             }
             _ => {}
         }
         index += 1;
     }
-    names
+    tests
 }
 
 fn run_one(project: &Project, program: &Program, test: &TestCase) -> Result<bool, BuildError> {
@@ -189,14 +226,22 @@ fn run_one(project: &Project, program: &Program, test: &TestCase) -> Result<bool
             } else {
                 format!(" throws {}", test.effects.join(" | "))
             };
+            let callback = test.callback.trim();
+            let invocation = if callback.chars().all(|character| {
+                character.is_ascii_alphanumeric() || character == '_' || character == '.'
+            }) {
+                format!("{callback}()")
+            } else {
+                format!("({callback})()")
+            };
             let call = if async_test {
                 "  const promise = ".to_owned()
-                    + &test.name
-                    + "();\n  unsafe { tn_runtime_promise_wait(promise as *mut u8); tn_runtime_async_destroy(promise as *mut u8); }\n"
+                    + &invocation
+                    + ";\n  unsafe { tn_runtime_promise_wait(promise as *mut u8); tn_runtime_async_destroy(promise as *mut u8); }\n"
             } else if test.effects.is_empty() {
-                format!("  {}();\n", test.name)
+                format!("  {invocation};\n")
             } else {
-                format!("  try {}();\n", test.name)
+                format!("  try {invocation};\n")
             };
             if async_test {
                 source.insert_str(

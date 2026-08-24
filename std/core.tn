@@ -1,8 +1,3 @@
-export interface Copy {
-}
-export interface Clone {
-  clone(): Self;
-}
 export interface Hash {
   hash(): u64;
 }
@@ -18,59 +13,41 @@ export interface Ord<Rhs> {
 export enum MemoryOrder {
   Relaxed, Acquire, Release, AcquireRelease, SeqCst,
 }
-@Intrinsic("atomic_i32_load")
 function atomicI32Load(pointer: * const i32, order: MemoryOrder): i32 {
   return 0i32;
 }
-@Intrinsic("atomic_i32_store")
 function atomicI32Store(pointer: * mut i32, value: i32, order: MemoryOrder): i32 {
   return 0i32;
 }
-@Intrinsic("atomic_i32_fetch_add")
 function atomicI32FetchAdd(pointer: * mut i32, delta: i32, order: MemoryOrder): i32 {
   return 0i32;
 }
-@Intrinsic("atomic_i32_compare_exchange")
 function atomicI32CompareExchange(pointer: * mut i32, expected: * mut i32, desired: i32, success: MemoryOrder, failure: MemoryOrder,): bool {
   return false;
 }
-@Intrinsic("atomic_u64_load")
 function atomicU64Load(pointer: * const u64, order: MemoryOrder): u64 {
   return 0u64;
 }
-@Intrinsic("atomic_u64_store")
 function atomicU64Store(pointer: * mut u64, value: u64, order: MemoryOrder): u64 {
   return 0u64;
 }
-@Intrinsic("atomic_u64_fetch_add")
 function atomicU64FetchAdd(pointer: * mut u64, delta: u64, order: MemoryOrder): u64 {
   return 0u64;
 }
-@Intrinsic("atomic_u64_compare_exchange")
 function atomicU64CompareExchange(pointer: * mut u64, expected: * mut u64, desired: u64, success: MemoryOrder, failure: MemoryOrder,): bool {
   return false;
 }
-@Intrinsic("atomic_usize_load")
 function atomicUsizeLoad(pointer: * const usize, order: MemoryOrder): usize {
   return 0usize;
 }
-@Intrinsic("atomic_usize_store")
 function atomicUsizeStore(pointer: * mut usize, value: usize, order: MemoryOrder): usize {
   return 0usize;
 }
-@Intrinsic("atomic_usize_fetch_add")
 function atomicUsizeFetchAdd(pointer: * mut usize, delta: usize, order: MemoryOrder): usize {
   return 0usize;
 }
-@Intrinsic("atomic_usize_compare_exchange")
 function atomicUsizeCompareExchange(pointer: * mut usize, expected: * mut usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
   return false;
-}
-export interface Drop {
-}
-export interface Send {
-}
-export interface Sync {
 }
 export interface Error {
 }
@@ -78,19 +55,19 @@ export interface AsyncDisposable {
   move async dispose(): Promise<void, never>;
 }
 export interface Iterator<Item> {
-  mut next(): Item | undefined;
+  next(): Item | undefined;
 }
 export interface IntoIterator<Item, Iter extends Iterator<Item> > {
   move intoIterator(): Iter;
 }
 export interface Iterable<Item> {
-  mut next(): Item | undefined;
+  next(): Item | undefined;
 }
 export interface AsyncIterator<Item> {
-  mut async next(): Promise<Item | undefined, never>;
+  async next(): Promise<Item | undefined, never>;
 }
 export interface AsyncIterable<Item> {
-  mut async next(): Promise<Item | undefined, never>;
+  async next(): Promise<Item | undefined, never>;
 }
 export struct ParseIntegerError {
   public offset: usize;
@@ -114,12 +91,12 @@ export class AtomicI32 {
       return atomicI32Store(( & mut this.value)as * mut i32, value, order);
     }
   }
-  public mut fetchAdd(delta: i32, order: MemoryOrder): i32 {
+  public fetchAdd(delta: i32, order: MemoryOrder): i32 {
     unsafe {
       return atomicI32FetchAdd(( & mut this.value)as * mut i32, delta, order);
     }
   }
-  public mut compareExchange(expected: i32, desired: i32, success: MemoryOrder, failure: MemoryOrder,): bool {
+  public compareExchange(expected: i32, desired: i32, success: MemoryOrder, failure: MemoryOrder,): bool {
     let observed = expected;
     unsafe {
       return atomicI32CompareExchange(( & mut this.value)as * mut i32,( & mut observed)as * mut i32, desired, success, failure,);
@@ -141,12 +118,12 @@ export class AtomicU64 {
       return atomicU64Store(( & mut this.value)as * mut u64, value, order);
     }
   }
-  public mut fetchAdd(delta: u64, order: MemoryOrder): u64 {
+  public fetchAdd(delta: u64, order: MemoryOrder): u64 {
     unsafe {
       return atomicU64FetchAdd(( & mut this.value)as * mut u64, delta, order);
     }
   }
-  public mut compareExchange(expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder,): bool {
+  public compareExchange(expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder,): bool {
     let observed = expected;
     unsafe {
       return atomicU64CompareExchange(( & mut this.value)as * mut u64,( & mut observed)as * mut u64, desired, success, failure,);
@@ -168,12 +145,12 @@ export class AtomicUsize {
       return atomicUsizeStore(( & mut this.value)as * mut usize, value, order);
     }
   }
-  public mut fetchAdd(delta: usize, order: MemoryOrder): usize {
+  public fetchAdd(delta: usize, order: MemoryOrder): usize {
     unsafe {
       return atomicUsizeFetchAdd(( & mut this.value)as * mut usize, delta, order);
     }
   }
-  public mut compareExchange(expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
+  public compareExchange(expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
     let observed = expected;
     unsafe {
       return atomicUsizeCompareExchange(( & mut this.value)as * mut usize,( & mut observed)as * mut usize, desired, success, failure,);

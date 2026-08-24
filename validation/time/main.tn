@@ -71,10 +71,10 @@ function durationChecks(): i32 {
   if (Duration.fromMicroseconds(3u64).nanoseconds() !== 3000u64 || Duration.fromMilliseconds(4u64).microseconds() !== 4000u64 || Duration.fromSeconds(2u64).milliseconds() !== 2000u64) {
     return 11i32;
   }
-  const maximumDuration = Duration.fromSeconds(18446744073709551615u64);
+  const maximumDuration = Duration.fromSeconds(~0u64);
   const oneNanosecond = Duration.fromNanoseconds(1u64);
   const saturated = maximumDuration.saturatingAdd(oneNanosecond);
-  if (saturated.nanoseconds() !== 18446744073709551615u64) {
+  if (saturated.nanoseconds() !== ~0u64) {
     return 12i32;
   }
   const shortDuration = Duration.fromNanoseconds(1u64);

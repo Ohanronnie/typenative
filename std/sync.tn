@@ -1,6 +1,4 @@
-import { Drop } from "std/core";
 import { c_size } from "std/ffi";
-
 declare extern "C" {
   function tn_mutex_create(): * mut u8;
   function tn_mutex_lock(handle: * mut u8): i32;
@@ -30,31 +28,27 @@ declare extern "C" {
   function tn_channel_close(handle: * mut u8): i32;
   function tn_channel_destroy(handle: * mut u8): i32;
 }
-@Intrinsic("borrow_mut")
 function borrowMut<T>(pointer: * mut T): & mut T {
   unsafe {
     return & mut * pointer;
   }
 }
-@Intrinsic("move_element")
 function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
   unsafe {
     return * pointer;
   }
 }
-@Intrinsic("store_element")
 function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
   return false;
 }
-@Intrinsic("drop_initialized_elements")
 function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
   return false;
 }
-@Drop export struct MutexGuard<T> {
+export struct MutexGuard<T> {
   private handle: * mut u8;
   private value: & mut T;
   private locked: bool;
-  mut drop(): void {
+  drop(): void {
     if (this.locked) {
       unsafe {
         tn_mutex_unlock(this.handle);
@@ -68,7 +62,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
     }
   }
 }
-@Drop export class Mutex<T> {
+export class Mutex<T> {
   private handle: * mut u8;
   private value: T;
   private closed: bool;
@@ -79,7 +73,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
     this.value = move value;
     this.closed = false;
   }
-  mut drop(): void {
+  drop(): void {
     if (!this.closed) {
       unsafe {
         tn_mutex_destroy(this.handle);
@@ -97,7 +91,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       };
     }
   }
-  public mut destroy(): void {
+  public destroy(): void {
     if (!this.closed) {
       unsafe {
         tn_mutex_destroy(this.handle);
@@ -106,11 +100,11 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
     }
   }
 }
-@Drop struct RwLock<T> {
+struct RwLock<T> {
   private handle: * mut u8;
   private value: T;
   private closed: bool;
-  mut drop(): void {
+  drop(): void {
     if (!this.closed) {
       unsafe {
         tn_rwlock_destroy(this.handle);
@@ -132,7 +126,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       return tn_rwlock_unlock(this.handle);
     }
   }
-  public mut destroy(): i32 {
+  public destroy(): i32 {
     if (this.closed) {
       return 0i32;
     }
@@ -143,14 +137,14 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
     }
   }
 }
-@Drop export struct Channel<T> {
+export struct Channel<T> {
   private handle: * mut u8;
   private storage: * mut u8;
   private initialized: * mut u8;
   private capacity: usize;
   private closed: bool;
   private destroyed: bool;
-  mut drop(): void {
+  drop(): void {
     if (!this.destroyed) {
       unsafe {
         dropInitializedElements<T>(this.storage as * mut T, this.capacity, this.initialized);
@@ -159,26 +153,26 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       this.destroyed = true;
     }
   }
-  public mut send(value: T): i32 {
+  public send(value: T): i32 {
     if (this.closed || this.destroyed) {
       return 32i32;
     }
     unsafe {
       const index = tn_channel_send_index_begin(this.handle);
-      if (index === 18446744073709551615usize) {
+      if (index === ~0usize) {
         return 32i32;
       }
       storeElement<T>(this.storage as * mut T, index as usize, this.initialized, move value);
       return tn_channel_send_index_commit(this.handle);
     }
   }
-  public mut receive(): T | undefined {
+  public receive(): T | undefined {
     if (this.destroyed) {
       return undefined;
     }
     unsafe {
       const index = tn_channel_receive_index_begin(this.handle);
-      if (index === 18446744073709551615usize) {
+      if (index === ~0usize) {
         return undefined;
       }
       const value = moveElement<T>(this.storage as * mut T, index as usize, this.initialized);
@@ -186,7 +180,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       return value;
     }
   }
-  public mut close(): i32 {
+  public close(): i32 {
     if (this.closed || this.destroyed) {
       return 0i32;
     }
@@ -198,7 +192,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       return status;
     }
   }
-  public mut destroy(): i32 {
+  public destroy(): i32 {
     if (this.destroyed) {
       return 0i32;
     }
@@ -212,10 +206,10 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
     }
   }
 }
-@Drop export struct Condition {
+export struct Condition {
   private handle: * mut u8;
   private closed: bool;
-  mut drop(): void {
+  drop(): void {
     if (!this.closed) {
       unsafe {
         tn_cond_destroy(this.handle);
@@ -237,7 +231,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       return tn_cond_broadcast(this.handle);
     }
   }
-  public mut destroy(): i32 {
+  public destroy(): i32 {
     if (this.closed) {
       return 0i32;
     }
@@ -248,10 +242,10 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
     }
   }
 }
-@Drop export struct Barrier {
+export struct Barrier {
   private handle: * mut u8;
   private closed: bool;
-  mut drop(): void {
+  drop(): void {
     if (!this.closed) {
       unsafe {
         tn_barrier_destroy(this.handle);
@@ -263,7 +257,7 @@ function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized
       return tn_barrier_wait(this.handle);
     }
   }
-  public mut destroy(): i32 {
+  public destroy(): i32 {
     if (this.closed) {
       return 0i32;
     }

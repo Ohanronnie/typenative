@@ -11,9 +11,9 @@ function main(): i32 {
     let values = new Array<string>({
       capacity: 2usize,
     });
-    values.push(string.from("first"));
-    values.push(string.from("second"));
-    const borrowed = values.borrow(0usize);
+    values.push(String("first"));
+    values.push(String("second"));
+    const borrowed = values.at(0usize);
     if (borrowed === undefined || borrowed! !== "first") {
       return 1i32;
     }

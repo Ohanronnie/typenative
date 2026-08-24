@@ -1,39 +1,36 @@
 import { isNull, rawAlloc, rawFree } from "std/alloc";
-import { cancel, cancelGroup, closeTaskGroup, destroyPromise, enterGroup, isGroupCancelled, leaveGroup, promise, runI32, waitGroup, waitResult, TaskGroup } from "std/async";
+import { runI32 } from "std/async";
 import { fromStatic } from "std/bytes";
-import { AsyncIterable, Clone, Copy, Drop, Iterable, Send, Sync } from "std/core";
+import { AsyncIterable, Iterable } from "std/core";
 
-@Copy struct CopyWitness {
+struct CopyWitness {
   public value: i32;
 }
-@Clone struct CloneWitness {
+struct CloneWitness {
   public value: string;
 }
-@Drop struct DropWitness {
+struct DropWitness {
   public value: i32;
-  mut drop(): void {
+  drop(): void {
     this.value = 0i32;
   }
 }
-@Conform(Send, unsafe)
 struct SendWitness {
   public pointer: * mut i32;
 }
-@Conform(Sync, unsafe)
 struct SyncWitness {
   public pointer: * mut i32;
 }
-@Layout("C")
 struct AbiWitness {
   public left: i32;
   public right: i32;
 }
 struct FeatureError {
-  public code: i32;
+  public rawCode: i32;
 }
 function featureError(code: i32): FeatureError {
   return {
-    code: code,
+    rawCode: code,
   };
 }
 function* values(): Iterable<i32> {
@@ -59,7 +56,7 @@ async function errorProbe(): Promise<i32, never> {
     const ignored = try await fallibleValue();
     return ignored;
   } catch (error: FeatureError) {
-    return error.code === 9i32?0i32: 1i32;
+    return error.rawCode === 9i32?0i32: 1i32;
   }
 }
 export function featureProbe(): i32 {
@@ -71,7 +68,7 @@ export function featureProbe(): i32 {
     return 1i32;
   }
   const cloneSource: CloneWitness = {
-    value: string.from("clone"),
+    value: String("clone"),
   };
   if (cloneSource.value !== "clone") {
     return 2i32;

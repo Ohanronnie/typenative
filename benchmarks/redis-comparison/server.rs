@@ -4,13 +4,19 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::{Duration, Instant};
 
 const MAXIMUM_BULK_LENGTH: usize = 536_870_912;
 const MAXIMUM_PARTS: usize = 1_024;
 const MAXIMUM_BATCH: usize = 1_024;
 const READ_CAPACITY: usize = 4 * 1_024;
 
-type Database = Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>;
+struct DatabaseState {
+    values: HashMap<Vec<u8>, Vec<u8>>,
+    expirations: HashMap<Vec<u8>, Instant>,
+}
+
+type Database = Arc<RwLock<DatabaseState>>;
 
 #[derive(Clone, Copy)]
 struct ParsedCommand {
@@ -129,59 +135,213 @@ fn append_decimal(output: &mut Vec<u8>, mut value: usize) {
     output.extend_from_slice(&digits[start..]);
 }
 
-fn execute(input: &[u8], parsed: &ParsedCommand, database: &Database, output: &mut Vec<u8>) {
+fn append_bulk(output: &mut Vec<u8>, value: &[u8]) {
+    output.push(b'$');
+    append_decimal(output, value.len());
+    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(value);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn append_integer(output: &mut Vec<u8>, value: usize) {
+    output.push(b':');
+    append_decimal(output, value);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn purge_expired(state: &mut DatabaseState, key: &[u8]) {
+    let expired = state
+        .expirations
+        .get(key)
+        .is_some_and(|deadline| Instant::now() >= *deadline);
+    if expired {
+        state.values.remove(key);
+        state.expirations.remove(key);
+    }
+}
+
+fn execute(
+    input: &[u8],
+    parsed: &ParsedCommand,
+    database: &Database,
+    output: &mut Vec<u8>,
+) -> bool {
     let command = part(input, parsed, 0);
+    if command.eq_ignore_ascii_case(b"ECHO") {
+        if parsed.count < 2 {
+            output.extend_from_slice(b"-ERR ECHO requires a message\r\n");
+        } else {
+            append_bulk(output, part(input, parsed, 1));
+        }
+        return false;
+    }
     if command.eq_ignore_ascii_case(b"PING") {
-        output.extend_from_slice(b"+PONG\r\n");
-        return;
+        if parsed.count >= 2 {
+            append_bulk(output, part(input, parsed, 1));
+        } else {
+            output.extend_from_slice(b"+PONG\r\n");
+        }
+        return false;
     }
     if command.eq_ignore_ascii_case(b"SET") {
         if parsed.count < 3 {
             output.extend_from_slice(b"-ERR SET requires a key and value\r\n");
-            return;
+            return false;
         }
         let key = part(input, parsed, 1).to_vec();
         let value = part(input, parsed, 2).to_vec();
-        database
+        let mut state = database
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, value);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.values.insert(key.clone(), value);
+        state.expirations.remove(&key);
         output.extend_from_slice(b"+OK\r\n");
-        return;
+        return false;
     }
     if command.eq_ignore_ascii_case(b"GET") {
         if parsed.count < 2 {
             output.extend_from_slice(b"-ERR GET requires a key\r\n");
-            return;
+            return false;
         }
-        let database = database
-            .read()
+        let key = part(input, parsed, 1);
+        let mut state = database
+            .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(value) = database.get(part(input, parsed, 1)) {
-            output.push(b'$');
-            append_decimal(output, value.len());
-            output.extend_from_slice(b"\r\n");
-            output.extend_from_slice(value);
-            output.extend_from_slice(b"\r\n");
+        purge_expired(&mut state, key);
+        if let Some(value) = state.values.get(key) {
+            append_bulk(output, value);
         } else {
             output.extend_from_slice(b"$-1\r\n");
         }
-        return;
+        return false;
     }
     if command.eq_ignore_ascii_case(b"DEL") {
         if parsed.count < 2 {
             output.extend_from_slice(b"-ERR DEL requires a key\r\n");
-            return;
+            return false;
         }
-        let removed = database
+        let mut state = database
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(part(input, parsed, 1))
-            .is_some();
-        output.extend_from_slice(if removed { b":1\r\n" } else { b":0\r\n" });
-        return;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut removed = 0;
+        for index in 1..parsed.count.min(3) {
+            let key = part(input, parsed, index);
+            purge_expired(&mut state, key);
+            if state.values.remove(key).is_some() {
+                removed += 1;
+            }
+            state.expirations.remove(key);
+        }
+        append_integer(output, removed);
+        return false;
+    }
+    if command.eq_ignore_ascii_case(b"EXISTS") {
+        let mut state = database
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut found = 0;
+        for index in 1..parsed.count.min(3) {
+            let key = part(input, parsed, index);
+            purge_expired(&mut state, key);
+            if state.values.contains_key(key) {
+                found += 1;
+            }
+        }
+        append_integer(output, found);
+        return false;
+    }
+    if command.eq_ignore_ascii_case(b"INCR") {
+        if parsed.count < 2 {
+            output.extend_from_slice(b"-ERR INCR requires a key\r\n");
+            return false;
+        }
+        let key = part(input, parsed, 1);
+        let mut state = database
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        purge_expired(&mut state, key);
+        let value = match state.values.get(key) {
+            None => 0,
+            Some(value) => match unsigned_integer(value) {
+                Some(value) => value,
+                None => {
+                    output.extend_from_slice(b"-ERR value is not an integer\r\n");
+                    return false;
+                }
+            },
+        };
+        let Some(next) = value.checked_add(1) else {
+            output.extend_from_slice(b"-ERR increment or decrement would overflow\r\n");
+            return false;
+        };
+        let mut encoded = Vec::with_capacity(20);
+        append_decimal(&mut encoded, next);
+        state.values.insert(key.to_vec(), encoded);
+        state.expirations.remove(key);
+        append_integer(output, next);
+        return false;
+    }
+    if command.eq_ignore_ascii_case(b"EXPIRE") {
+        if parsed.count < 3 {
+            output.extend_from_slice(b"-ERR EXPIRE requires a key and seconds\r\n");
+            return false;
+        }
+        let key = part(input, parsed, 1);
+        let Some(seconds) = unsigned_integer(part(input, parsed, 2)) else {
+            output.extend_from_slice(b"-ERR value is not an integer\r\n");
+            return false;
+        };
+        let mut state = database
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        purge_expired(&mut state, key);
+        if !state.values.contains_key(key) {
+            output.extend_from_slice(b":0\r\n");
+            return false;
+        }
+        let duration = Duration::from_secs(seconds as u64);
+        state
+            .expirations
+            .insert(key.to_vec(), Instant::now() + duration);
+        output.extend_from_slice(b":1\r\n");
+        return false;
+    }
+    if command.eq_ignore_ascii_case(b"TTL") {
+        if parsed.count < 2 {
+            output.extend_from_slice(b"-ERR TTL requires a key\r\n");
+            return false;
+        }
+        let key = part(input, parsed, 1);
+        let mut state = database
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        purge_expired(&mut state, key);
+        if !state.values.contains_key(key) {
+            output.extend_from_slice(b":-2\r\n");
+            return false;
+        }
+        let Some(deadline) = state.expirations.get(key).copied() else {
+            output.extend_from_slice(b":-1\r\n");
+            return false;
+        };
+        output.push(b':');
+        append_decimal(
+            output,
+            deadline.saturating_duration_since(Instant::now()).as_secs() as usize,
+        );
+        output.extend_from_slice(b"\r\n");
+        return false;
+    }
+    if command.eq_ignore_ascii_case(b"COMMAND") {
+        output.extend_from_slice(b"*0\r\n");
+        return false;
+    }
+    if command.eq_ignore_ascii_case(b"QUIT") {
+        output.extend_from_slice(b"+OK\r\n");
+        return true;
     }
     output.extend_from_slice(b"-ERR unknown command\r\n");
+    false
 }
 
 fn serve_connection(mut stream: TcpStream, database: &Database) -> io::Result<()> {
@@ -202,12 +362,16 @@ fn serve_connection(mut stream: TcpStream, database: &Database) -> io::Result<()
             output.clear();
             let mut commands = 0;
             let mut incomplete = false;
+            let mut should_close = false;
             while commands < MAXIMUM_BATCH && consumed < input.len() {
                 match parse_command(&input, consumed) {
                     ParseResult::Complete(parsed) => {
-                        execute(&input, &parsed, database, &mut output);
+                        should_close = execute(&input, &parsed, database, &mut output);
                         consumed = parsed.consumed;
                         commands += 1;
+                        if should_close {
+                            break;
+                        }
                     }
                     ParseResult::Incomplete => {
                         incomplete = true;
@@ -218,6 +382,9 @@ fn serve_connection(mut stream: TcpStream, database: &Database) -> io::Result<()
             }
             if !output.is_empty() {
                 stream.write_all(&output)?;
+            }
+            if should_close {
+                return Ok(());
             }
             if incomplete {
                 break;
@@ -239,7 +406,10 @@ fn main() -> io::Result<()> {
         .parse::<u16>()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    let database = Arc::new(RwLock::new(HashMap::new()));
+    let database = Arc::new(RwLock::new(DatabaseState {
+        values: HashMap::new(),
+        expirations: HashMap::new(),
+    }));
     for stream in listener.incoming() {
         let stream = stream?;
         let connection_database = Arc::clone(&database);

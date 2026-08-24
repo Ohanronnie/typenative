@@ -13,11 +13,11 @@ function main(): i32 {
     let map = new Map<string, string>({
       capacity: 8usize,
     });
-    if (!map.set(string.from("key"), string.from("first"))) {
+    map.set(String("key"), String("first")).set(String("key"), String("second"));
+    const query: string = "key";
+    const stored = map.get( & query);
+    if (stored === undefined || stored! !== "second") {
       return 1i32;
-    }
-    if (map.set(string.from("key"), string.from("second"))) {
-      return 2i32;
     }
   }
   unsafe {
@@ -30,9 +30,9 @@ function main(): i32 {
     let map = new Map<string, string>({
       capacity: 8usize,
     });
-    map.set(string.from("key"), string.from("value"));
+    map.set(String("key"), String("value"));
     const query: string = "key";
-    const removed = map.remove( & query);
+    const removed = map.delete( & query);
     if (removed === undefined || map.length !== 0usize) {
       return 4i32;
     }
@@ -41,7 +41,7 @@ function main(): i32 {
     }
   }
   unsafe {
-    if (tn_runtime_free_count() !== 11u64) {
+    if (tn_runtime_free_count() !== 10u64) {
       return 6i32;
     }
     tn_runtime_reset_allocation_count();
@@ -50,15 +50,15 @@ function main(): i32 {
     let map = new Map<string, string>({
       capacity: 8usize,
     });
-    map.set(string.from("one"), string.from("1"));
-    map.set(string.from("two"), string.from("2"));
+    map.set(String("one"), String("1"));
+    map.set(String("two"), String("2"));
     map.clear();
     if (map.length !== 0usize) {
       return 7i32;
     }
   }
   unsafe {
-    if (tn_runtime_free_count() !== 12u64) {
+    if (tn_runtime_free_count() !== 11u64) {
       return 8i32;
     }
     tn_runtime_reset_allocation_count();
@@ -72,8 +72,8 @@ function main(): i32 {
     } catch (error: AllocError) {
       return 9i32;
     }
-    map.set(string.from("one"), string.from("1"));
-    map.set(string.from("two"), string.from("2"));
+    map.set(String("one"), String("1"));
+    map.set(String("two"), String("2"));
     try {
       try map.shrinkToFit();
     } catch (error: AllocError) {
@@ -84,7 +84,7 @@ function main(): i32 {
     }
   }
   unsafe {
-    if (tn_runtime_free_count() !== 24u64) {
+    if (tn_runtime_free_count() !== 21u64) {
       return 12i32;
     }
     tn_runtime_reset_allocation_count();
@@ -93,9 +93,9 @@ function main(): i32 {
     let map = new Map<string, string>({
       capacity: 8usize,
     });
-    map.set(string.from("one"), string.from("1"));
-    map.set(string.from("two"), string.from("2"));
-    map.set(string.from("three"), string.from("3"));
+    map.set(String("one"), String("1"));
+    map.set(String("two"), String("2"));
+    map.set(String("three"), String("3"));
     let seen: i32 = 0i32;
     for (const entry of move map) {
       seen = seen + 1i32;
@@ -108,7 +108,7 @@ function main(): i32 {
     }
   }
   unsafe {
-    if (tn_runtime_free_count() !== 15u64) {
+    if (tn_runtime_free_count() !== 14u64) {
       return 14i32;
     }
   }

@@ -43,12 +43,10 @@ async function serveClientTask(stream: TcpStream): Promise<void, never> {
 }
 async function serve(endpoint: Endpoint): Promise<i32, NetworkError> {
   await using listener = try new TcpListener(endpoint);
-  using clients = new TaskGroup<RedisError>();
+  using clients = new TaskGroup();
   while (true) {
     const stream = try await listener.accept();
-    if (!clients.spawn(serveClientTask(move stream))) {
-      return 1i32;
-    }
+    clients.spawn(serveClientTask(move stream));
   }
   return 0i32;
 }

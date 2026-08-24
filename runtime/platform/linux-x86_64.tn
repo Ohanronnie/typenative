@@ -9,20 +9,128 @@ declare extern "C" {
   function readdir(directory: * mut u8): * mut u8;
   function closedir(directory: * mut u8): i32;
   function memcpy(destination: * mut u8, source: * const u8, length: c_size): * mut u8;
+  function epoll_create1(flags: i32): i32;
+  function epoll_ctl(queue: i32, operation: i32, descriptor: i32, event: * const u8): i32;
+  function epoll_wait(queue: i32, events: * mut u8, maximum: i32, timeout: i32): i32;
+  function close(handle: i32): i32;
 }
-@Intrinsic("is_null")
 export function platformIsNull<T>(pointer: * const T): bool {
   return false;
 }
-@Intrinsic("size_of")
 export function platformSizeOf<T>(): usize {
   return 0usize;
 }
-@Intrinsic("store_raw")
 export function platformStoreRaw<T>(pointer: * mut T, value: T): bool {
   return false;
 }
-@Intrinsic("borrow_element")
+function platformByteAddress(pointer: * const u8, offset: usize): * mut u8 {
+  unsafe {
+    return pointer as * mut u8;
+  }
+}
+struct LinuxReactor {
+  public queue: i32;
+}
+struct LinuxEpollEvent {
+  public events: i32;
+  public data0: i32;
+  public data1: i32;
+}
+function linuxNullPointer<T>(): * mut T {
+  unsafe {
+    return 0usize as * mut T;
+  }
+}
+function linuxEventMask(events: i32): i32 {
+  let mask = 0i32;
+  if ((events & 1i32) !== 0i32) {
+    mask = mask | 1i32;
+  }
+  if ((events & 4i32) !== 0i32) {
+    mask = mask | 4i32;
+  }
+  mask = mask | 8i32 | 16i32;
+  return mask;
+}
+export function platformReactorCreate(): * mut u8 {
+  unsafe {
+    const queue = epoll_create1(0i32);
+    if (queue<0i32) {
+      return linuxNullPointer<u8>();
+    }
+    const handle = runtimeAlloc(4usize);
+    platformStoreRaw<LinuxReactor>(handle as * mut LinuxReactor, {
+      queue: queue,
+    });
+    return handle;
+  }
+}
+export function platformReactorWatch(handle: * mut u8, descriptor: i32, events: i32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const reactor = *(handle as * const LinuxReactor);
+    const event: LinuxEpollEvent = {
+      events: linuxEventMask(events), data0: descriptor, data1: 0i32,
+    };
+    if (epoll_ctl(reactor.queue, 1i32, descriptor,( & event)as * const u8) === 0i32) {
+      return 0i32;
+    }
+    if (platformLastError() === 17i32 && epoll_ctl(reactor.queue, 3i32, descriptor,( & event)as * const u8) === 0i32) {
+      return 0i32;
+    }
+    return - platformLastError();
+  }
+}
+export function platformReactorUnwatch(handle: * mut u8, descriptor: i32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8)) {
+      return 22i32;
+    }
+    const reactor = *(handle as * const LinuxReactor);
+    epoll_ctl(reactor.queue, 2i32, descriptor, linuxNullPointer<u8>()as * const u8);
+    return 0i32;
+  }
+}
+export function platformReactorWait(handle: * mut u8, timeout: u64, ready: * mut i32, events: * mut i32): i32 {
+  unsafe {
+    if (platformIsNull<u8>(handle as * const u8)) {
+      return - 22i32;
+    }
+    const reactor = *(handle as * const LinuxReactor);
+    const maximum = 2147483647u64;
+    let milliseconds = timeout;
+    if (milliseconds > maximum) {
+      milliseconds = maximum;
+    }
+    let event: LinuxEpollEvent = {
+      events: 0i32, data0: 0i32, data1: 0i32,
+    };
+    const milliseconds32 = *(( & milliseconds)as * const i32);
+    const result = epoll_wait(reactor.queue,( & mut event)as * mut u8, 1i32, milliseconds32);
+    if (result <= 0i32) {
+      return result === 0i32?0i32: - platformLastError();
+    }
+    if (!platformIsNull<i32>(ready as * const i32)) {
+      platformStoreRaw<i32>(ready, event.data0);
+    }
+    if (!platformIsNull<i32>(events as * const i32)) {
+      platformStoreRaw<i32>(events, event.events);
+    }
+    return result;
+  }
+}
+export function platformReactorDestroy(handle: * mut u8): i32 {
+  unsafe {
+    if (!platformIsNull<u8>(handle as * const u8)) {
+      const reactor = *(handle as * const LinuxReactor);
+      close(reactor.queue);
+      runtimeFree(handle);
+    }
+    return 0i32;
+  }
+}
 function platformDirentByte(pointer: * const u8, index: usize): & u8 {
   unsafe {
     return & * pointer;
@@ -47,17 +155,14 @@ function direntU16(pointer: * const u8, index: usize): usize {
 // count, offsets, block sizes, and block counts. st_size is at byte offset
 // 48; each timespec stores signed int64 seconds and nanoseconds at offsets
 // 72/80, 88/96, and 104/112.
-@Layout("C")
 struct LinuxSignedTimespec {
   public seconds: i64;
   public nanoseconds: i64;
 }
-@Layout("C")
 struct LinuxMonotonicTimespec {
   public seconds: u64;
   public nanoseconds: u64;
 }
-@Layout("C")
 struct LinuxStatLayout {
   public device: u64;
   public inode: u64;
@@ -118,15 +223,23 @@ function clockMonotonicNanosecondsValue(): u64 {
     return wholeSeconds + value.nanoseconds;
   }
 }
-@Export("tn_clock_monotonic_ns")
 export function clockMonotonicNanoseconds(): u64 {
   return clockMonotonicNanosecondsValue();
 }
-@Export("tn_clock_wall_ns")
 export function clockWallNanoseconds(): i64 {
   return clockWallNanosecondsValue();
 }
 function statError(): i32 {
+  unsafe {
+    const pointer = __errno_location();
+    if (platformIsNull<i32>(pointer as * const i32)) {
+      return 5i32;
+    }
+    const code = *(pointer as * const i32);
+    return code > 0i32?code: 5i32;
+  }
+}
+export function platformLastError(): i32 {
   unsafe {
     const pointer = __errno_location();
     if (platformIsNull<i32>(pointer as * const i32)) {
@@ -141,7 +254,6 @@ function modifiedNanoseconds(value: & LinuxStatLayout): i64 {
   const nanoseconds = value.modifyNanoseconds;
   return seconds * 1000000000i64 + nanoseconds;
 }
-@Export("tn_file_stat")
 export function fileStat(path: * const u8, size: * mut usize, modified: * mut i64, mode: * mut u32): i32 {
   unsafe {
     if (platformIsNull<u8>(path)) {
@@ -167,13 +279,11 @@ export function fileStat(path: * const u8, size: * mut usize, modified: * mut i6
     return 0i32;
   }
 }
-@Export("tn_dir_open")
 export function directoryOpen(path: * const u8): * mut u8 {
   unsafe {
     return opendir(path);
   }
 }
-@Export("tn_dir_next")
 export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32 {
   unsafe {
     if (platformIsNull<u8>(handle as * const u8) || platformIsNull<u8>(name as * const u8) || capacity === 0usize) {
@@ -203,7 +313,6 @@ export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize,
     return 1i32;
   }
 }
-@Export("tn_dir_close")
 export function directoryClose(handle: * mut u8): i32 {
   unsafe {
     return platformIsNull<u8>(handle as * const u8)?0i32: closedir(handle);

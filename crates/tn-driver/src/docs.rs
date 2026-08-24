@@ -1,8 +1,6 @@
 use crate::{BuildError, Project};
 use std::fmt::Write;
-use tn_hir::{
-    AttributeKind, Declaration, DefinitionData, Function, Method, Program, Type, Visibility,
-};
+use tn_hir::{Declaration, DefinitionData, Function, Method, Program, Type, Visibility};
 
 /// Produces deterministic Markdown API documentation for the public declarations in a project.
 ///
@@ -39,14 +37,7 @@ fn render_program(program: &Program) -> Result<String, BuildError> {
         let mut declarations = module
             .declarations
             .iter()
-            .filter(|declaration| {
-                (declaration.exported
-                    || declaration
-                        .attributes
-                        .iter()
-                        .any(|attribute| attribute.kind == AttributeKind::Export))
-                    && declaration.name.is_some()
-            })
+            .filter(|declaration| declaration.exported && declaration.name.is_some())
             .collect::<Vec<_>>();
         declarations
             .sort_by(|left, right| left.name.cmp(&right.name).then(left.kind.cmp(&right.kind)));
@@ -156,7 +147,6 @@ fn render_declaration(
             constructor,
             methods,
             is_abstract,
-            is_final,
             ..
         } => {
             writeln!(
@@ -170,9 +160,6 @@ fn render_declaration(
             }
             if *is_abstract {
                 output.push_str(" abstract");
-            }
-            if *is_final {
-                output.push_str(" final");
             }
             output.push_str(" {\n");
             for field in fields {
@@ -355,19 +342,11 @@ fn type_display(program: &Program, ty: &Type) -> String {
         Type::Primitive(primitive) => format!("{primitive:?}").to_lowercase(),
         Type::String => "string".into(),
         Type::Str => "str".into(),
-        Type::Promise { result, effects } => {
-            let error = if effects.is_empty() {
-                "never".to_owned()
-            } else {
-                effects
-                    .iter()
-                    .map(|effect| declaration_name(program, *effect))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            };
-            let output = format!("Promise<{}, {}>", type_display(program, result), error);
-            output
-        }
+        Type::Promise { result, error, .. } => format!(
+            "Promise<{}, {}>",
+            type_display(program, result),
+            type_display(program, error)
+        ),
         Type::Nominal(declaration, arguments) => render_nominal(program, *declaration, arguments),
         Type::Optional(inner) => format!("{}?", type_display(program, inner)),
         Type::Array(inner, length) => format!("[{}; {length}]", type_display(program, inner)),

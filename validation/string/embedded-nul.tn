@@ -3,7 +3,7 @@ import { Map } from "std/collections";
 import { Utf8Error } from "std/string";
 
 function main(): i32 {
-  const embedded = string.from("a\0b");
+  const embedded = String("a\0b");
   const bytes: &[u8] = embedded.bytes();
   if (bytes[0usize] !== 97u8 || bytes[1usize] !== 0u8 || bytes[2usize] !== 98u8) {
     return 1i32;
@@ -16,7 +16,7 @@ function main(): i32 {
     capacity: 4usize,
   });
   map.set(embedded.clone(), 42i32);
-  const lookup = string.from("a\0b");
+  const lookup = String("a\0b");
   const found = map.get( & lookup);
   if (found === undefined) {
     return 3i32;
@@ -44,7 +44,7 @@ function main(): i32 {
   invalid.push(226u8);
   invalid.push(40u8);
   try {
-    const ignored = try string.fromUtf8(invalid.asBytes());
+    const ignored = try String.fromUtf8(invalid.asBytes());
     return 6i32;
   } catch (error: Utf8Error) {
     if (error.offset !== 0usize) {

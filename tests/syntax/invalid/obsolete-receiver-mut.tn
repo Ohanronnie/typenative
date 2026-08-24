@@ -1,0 +1,2 @@
+struct Value { public mut run(): void {} }
+function after(): void {}

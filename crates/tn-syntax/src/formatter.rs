@@ -1,4 +1,4 @@
-use crate::{TokenKind, lex};
+use crate::{TokenKind, lex, parse};
 use tn_diagnostics::Diagnostic;
 
 #[derive(Clone, Debug)]
@@ -19,6 +19,13 @@ pub fn format(file: &str, bytes: &[u8]) -> FormatResult {
         return FormatResult {
             output: lexed.source.into(),
             diagnostics: lexed.diagnostics,
+        };
+    }
+    let parsed = parse(file, bytes);
+    if !parsed.diagnostics.is_empty() {
+        return FormatResult {
+            output: lexed.source.into(),
+            diagnostics: parsed.diagnostics,
         };
     }
     let mut writer = Writer::default();
@@ -638,25 +645,17 @@ function main(): void {
     }
 
     #[test]
-    fn formats_typed_declaration_macros_without_rewriting_placeholders() {
+    fn rejects_obsolete_source_macros_before_formatting() {
         let formatted = format(
             "macros.tn",
             b"macro getter(name:identifier,field:identifier,value:type){public {{name}}():{{value}}{return this.{{field}};}} @Expand(getter,getValue,value,i32)struct Counter{public value:i32;}",
         );
-        assert!(formatted.is_success(), "{:?}", formatted.diagnostics);
-        assert!(formatted.output.contains("{{name}}"));
-        assert!(formatted.output.contains("{{value}}"));
-        assert!(formatted.output.contains("{{field}}"));
+        assert!(!formatted.is_success(), "source macros must be rejected");
         assert!(
             formatted
-                .output
-                .contains("@Expand(getter, getValue, value, i32)\nstruct Counter"),
-            "{}",
-            formatted.output
-        );
-        assert_eq!(
-            formatted.output,
-            format("macros.tn", formatted.output.as_bytes()).output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.condition.as_str() == "SYNTAX_EXCLUDED_CONSTRUCT")
         );
     }
 }

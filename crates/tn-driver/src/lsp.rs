@@ -167,6 +167,7 @@ fn semantic_diagnostics(source: &str) -> Vec<LspDiagnostic> {
             emit: crate::Emit::Executable,
             sanitizers: Vec::new(),
             link: crate::LinkConfig::default(),
+            support_mode: super::project::SupportMode::None,
         },
         config_path: None,
     };

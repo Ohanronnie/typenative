@@ -24,7 +24,7 @@ class JsonParser {
   private isHexDigit(value: u8): bool {
     return this.isDigit(value) ||(value >= 65u8 && value <= 70u8) ||(value >= 97u8 && value <= 102u8);
   }
-  private mut skipWhitespace(): void {
+  private skipWhitespace(): void {
     while (this.offset<this.input.length) {
       const value = this.current();
       if (value !== 32u8 && value !== 10u8 && value !== 13u8 && value !== 9u8) {
@@ -33,14 +33,14 @@ class JsonParser {
       this.offset += 1usize;
     }
   }
-  private mut consume(expected: u8): bool {
+  private consume(expected: u8): bool {
     if (this.offset >= this.input.length || this.current() !== expected) {
       return false;
     }
     this.offset += 1usize;
     return true;
   }
-  private mut parseString(): bool {
+  private parseString(): bool {
     if (!this.consume(34u8)) {
       return false;
     }
@@ -78,28 +78,28 @@ class JsonParser {
     }
     return false;
   }
-  private mut parseTrue(): bool {
+  private parseTrue(): bool {
     if (this.consume(116u8) && this.consume(114u8) && this.consume(117u8) && this.consume(101u8)) {
       this.checksum += 4usize;
       return true;
     }
     return false;
   }
-  private mut parseFalse(): bool {
+  private parseFalse(): bool {
     if (this.consume(102u8) && this.consume(97u8) && this.consume(108u8) && this.consume(115u8) && this.consume(101u8)) {
       this.checksum += 5usize;
       return true;
     }
     return false;
   }
-  private mut parseNull(): bool {
+  private parseNull(): bool {
     if (this.consume(110u8) && this.consume(117u8) && this.consume(108u8) && this.consume(108u8)) {
       this.checksum += 4usize;
       return true;
     }
     return false;
   }
-  private mut parseNumber(): bool {
+  private parseNumber(): bool {
     const start = this.offset;
     if (this.offset<this.input.length && this.current() === 45u8) {
       this.offset += 1usize;
@@ -144,7 +144,7 @@ class JsonParser {
     }
     return this.offset > start;
   }
-  private mut parseArray(): bool {
+  private parseArray(): bool {
     if (!this.consume(91u8)) {
       return false;
     }
@@ -167,7 +167,7 @@ class JsonParser {
     }
     return false;
   }
-  private mut parseObject(): bool {
+  private parseObject(): bool {
     if (!this.consume(123u8)) {
       return false;
     }
@@ -198,7 +198,7 @@ class JsonParser {
     }
     return false;
   }
-  private mut parseValue(): bool {
+  private parseValue(): bool {
     this.skipWhitespace();
     if (this.offset >= this.input.length) {
       return false;
@@ -224,7 +224,7 @@ class JsonParser {
     }
     return this.parseNumber();
   }
-  public mut parseMany(iterations: i32): usize {
+  public parseMany(iterations: i32): usize {
     let iteration: i32 = 0i32;
     let total: usize = 0usize;
     while (iteration<iterations) {
@@ -241,8 +241,7 @@ class JsonParser {
     return total;
   }
 }
-@Export("parseMany")
-function parseMany(input: Bytes, iterations: i32): usize {
+export function parseMany(input: Bytes, iterations: i32): usize {
   let parser = new JsonParser(input);
   return parser.parseMany(iterations);
 }

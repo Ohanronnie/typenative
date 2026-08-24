@@ -490,13 +490,17 @@ fn validate_suspend(
     errors: &mut Vec<MirValidationError>,
 ) {
     let promise = operand_type(body, block, value, initialized, errors);
-    let Some(Type::Promise { result, effects }) = promise else {
+    let Some(Type::Promise {
+        result, effects, ..
+    }) = promise
+    else {
         if let Some(actual_type) = promise {
             errors.push(MirValidationError::TypeMismatch {
                 block,
                 actual_type,
                 expected_type: Type::Promise {
                     result: Box::new(Type::Error),
+                    error: Box::new(Type::Primitive(PrimitiveType::Never)),
                     effects: Vec::new(),
                 },
             });
@@ -556,6 +560,7 @@ fn types_compatible(actual: &Type, expected: &Type) -> bool {
         return true;
     }
     match (actual, expected) {
+        (Type::String, Type::Str) | (Type::Str, Type::String) => true,
         (
             Type::Reference {
                 mutable: actual_mutable,

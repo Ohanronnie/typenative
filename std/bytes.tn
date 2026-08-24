@@ -1,23 +1,16 @@
-import { AllocError, isNull, rawAlloc, rawRealloc, tryRawRealloc } from "std/alloc";
-import { Drop } from "std/core";
+import { isNull, rawAlloc, rawRealloc, tryRawRealloc } from "std/alloc";
 import { c_size, c_ssize } from "std/ffi";
 
 declare extern "C" {
   function tn_string_length(bytes: * const u8): c_size;
   function tn_utf8_validate(bytes: * const u8, length: c_size): i32;
-  function tn_utf8_validate_and_hash(bytes: * const u8, length: c_size, hash: * mut u64): i32;
-  function tn_utf8_validate_and_ascii_key(bytes: * const u8, length: c_size, key: * mut u64): i32;
   function tn_bytes_copy(source: * const u8, length: c_size, destination: * mut u8): c_size;
   function tn_bytes_read_u8(bytes: * const u8, length: c_size, index: c_size, value: * mut u8): i32;
   function tn_bytes_read_u8_mut(bytes: * const u8, length: c_size, index: c_size, value: * mut u8): i32;
   function tn_bytes_write_u8(bytes: * mut u8, length: c_size, index: c_size, value: u8): i32;
   function tn_bytes_slice(bytes: * const u8, length: c_size, start: c_size, end: c_size): * const u8;
   function tn_bytes_slice_mut(bytes: * mut u8, length: c_size, start: c_size, end: c_size): * const u8;
-  function tn_bytes_find_crlf(bytes: * const u8, length: c_size, start: c_size): c_size;
-  function tn_bytes_has_crlf_at(bytes: * const u8, length: c_size, index: c_size): i32;
-  function tn_bytes_parse_unsigned_line(bytes: * const u8, length: c_size, start: c_size, marker: u8, value: * mut c_size, next: * mut c_size): i32;
-  function tn_bytes_equal_ascii_ignore_case(left: * const u8, leftLength: c_size, right: * const u8): i32;
-  function tn_bytes_equal_string(left: * const u8, leftLength: c_size, right: * const u8): i32;
+  function tn_bytes_equal_ascii_ignore_case(left: * const u8, leftLength: c_size, right: * const u8, rightLength: c_size): i32;
   function tn_bytes_move_at(bytes: * mut u8, length: c_size, sourceOffset: c_size, destinationOffset: c_size, count: c_size): i32;
   function tn_bytes_append_ascii(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8, textLength: c_size): c_size;
   function tn_bytes_try_append_string(buffer: * mut u8, capacity: c_size, length: c_size, text: * const u8): c_size;
@@ -26,13 +19,6 @@ declare extern "C" {
   function tn_bytes_append_decimal(buffer: * mut u8, capacity: c_size, length: c_size, value: c_ssize): c_size;
   function tn_bytes_append_usize(buffer: * mut u8, capacity: c_size, length: c_size, value: c_size): c_size;
   function tn_bytes_hash(bytes: * const u8, length: c_size): u64;
-  function tn_parse_ascii(bytes: * const u8, length: c_size, value: * mut c_size, offset: * mut c_size): i32;
-  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
-  function tn_string_equals(left: * const u8, leftLength: c_size, right: * const u8, rightLength: c_size): i32;
-}
-@Intrinsic("string_from_raw")
-function stringFromRaw(pointer: * mut u8, length: usize): string {
-  return "";
 }
 function strPointer(text: & str): * const u8 {
   unsafe {
@@ -44,13 +30,16 @@ function stringPointer(text: string): * const u8 {
     return text as * const u8;
   }
 }
-@Intrinsic("slice_from_raw_parts")
 function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
   unsafe {
     return & *(pointer as * const[T]);
   }
 }
-@Intrinsic("slice_length")
+function strFromRawParts(pointer: * const u8, length: usize): & str {
+  unsafe {
+    return & *(pointer as * const str);
+  }
+}
 function sliceLength<T>(value: &[T]): usize {
   return 0usize;
 }
@@ -60,11 +49,47 @@ export struct Bytes {
   public get(index: usize): u8 | undefined {
     return readValue( & this, index);
   }
-  public slice(start: usize, end: usize): Bytes {
+  public slice(start: usize, end: usize): Bytes throws SliceError {
+    if (start > end || end > this.length) {
+      throw sliceError(start, end, this.length);
+    }
     unsafe {
       return {
         pointer: tn_bytes_slice(this.pointer, this.length, start, end), length: end - start,
       };
+    }
+  }
+  public trySlice(start: usize, end: usize): Bytes | undefined {
+    if (start > end || end > this.length) {
+      return undefined;
+    }
+    unsafe {
+      return {
+        pointer: tn_bytes_slice(this.pointer, this.length, start, end), length: end - start,
+      };
+    }
+  }
+  public isValidUtf8(): bool {
+    unsafe {
+      return tn_utf8_validate(this.pointer, this.length) !== 0i32;
+    }
+  }
+  public asStr(): & str | undefined {
+    if (!this.isValidUtf8()) {
+      return undefined;
+    }
+    unsafe {
+      return strFromRawParts(this.pointer, this.length);
+    }
+  }
+  public hash(): u64 {
+    unsafe {
+      return tn_bytes_hash(this.pointer, this.length);
+    }
+  }
+  public equalsAsciiIgnoreCase(text: & str): bool {
+    unsafe {
+      return tn_bytes_equal_ascii_ignore_case(this.pointer, this.length, text as * const u8, text.byteLength) !== 0i32;
     }
   }
   public asSlice(): &[u8] {
@@ -86,7 +111,7 @@ function sliceError(start: usize, end: usize, length: usize): SliceError {
     start: start, end: end, length: length,
   };
 }
-@Drop export class BytesMut {
+export class BytesMut {
   public pointer: * mut u8;
   public length: usize;
   public capacity: usize;
@@ -97,12 +122,12 @@ function sliceError(start: usize, end: usize, length: usize): SliceError {
     this.length = 0;
     this.capacity = options.capacity;
   }
-  mut drop(): void {
+  drop(): void {
     unsafe {
       tn_runtime_free(this.pointer);
     }
   }
-  public mut push(value: u8): void {
+  public push(value: u8): void {
     push( & mut this, value);
   }
   public get(index: usize): u8 | undefined {
@@ -121,10 +146,10 @@ function sliceError(start: usize, end: usize, length: usize): SliceError {
       };
     }
   }
-  public mut reserve(capacity: usize): void {
+  public reserve(capacity: usize): void {
     reserve( & mut this, capacity);
   }
-  public mut discardPrefix(count: usize): void {
+  public discardPrefix(count: usize): void {
     if (count >= this.length) {
       this.length = 0usize;
     } else {
@@ -134,301 +159,23 @@ function sliceError(start: usize, end: usize, length: usize): SliceError {
       this.length = this.length - count;
     }
   }
-  public mut appendDecimal(value: number): void {
+  public appendDecimal(value: number): void {
     appendDecimal( & mut this, value);
   }
-  public mut appendUnsignedDecimal(value: usize): void {
+  public appendUnsignedDecimal(value: usize): void {
     appendUnsignedDecimal( & mut this, value);
   }
-  public mut appendString(text: string): void {
+  public appendString(text: string): void {
     appendString( & mut this, text);
   }
-  public mut appendSafeString(text: string): void {
+  public appendSafeString(text: string): void {
     appendSafeString( & mut this, text);
   }
-  public mut append(bytes: Bytes): void {
+  public append(bytes: Bytes): void {
     appendBytes( & mut this, bytes);
   }
-  public mut appendAscii(text: & str): void {
+  public appendAscii(text: & str): void {
     appendAscii( & mut this, text);
-  }
-}
-@Copy export struct ByteView<lifetime a> {
-  private data: * const u8;
-  private count: usize;
-  public length(): usize {
-    return this.count;
-  }
-  public get(index: usize): u8 | undefined {
-    if (index >= this.length()) {
-      return undefined;
-    }
-    let value: u8 = 0u8;
-    {
-      const output = & mut value;
-      unsafe {
-        tn_bytes_read_u8(this.data, this.count, index, output as * mut u8);
-      }
-    }
-    return value;
-  }
-  public subview(start: usize, end: usize): ByteView<a > throws SliceError {
-    if (start > end || end > this.length()) {
-      throw sliceError(start, end, this.length());
-    }
-    unsafe {
-      return {
-        data: tn_bytes_slice(this.data, this.count, start, end), count: end - start,
-      };
-    }
-  }
-  public view(start: usize, end: usize): ByteView<a > | undefined {
-    if (start > end || end > this.length()) {
-      return undefined;
-    }
-    unsafe {
-      return {
-        data: tn_bytes_slice(this.data, this.count, start, end), count: end - start,
-      };
-    }
-  }
-  public findCrlf(start: usize): usize | undefined {
-    let found: usize = 18446744073709551615usize;
-    unsafe {
-      found = tn_bytes_find_crlf(this.data, this.count, start);
-    }
-    if (found === 18446744073709551615usize) {
-      return undefined;
-    }
-    return found;
-  }
-  public hasCrlfAt(index: usize): bool {
-    unsafe {
-      return tn_bytes_has_crlf_at(this.data, this.count, index) !== 0i32;
-    }
-  }
-  public parseUnsignedLine(start: usize, marker: u8): ParsedUnsignedLine {
-    let value: usize = 0usize;
-    let next: usize = 0usize;
-    let code: i32 = 0i32;
-    {
-      const valueOutput = & mut value;
-      const nextOutput = & mut next;
-      unsafe {
-        code = tn_bytes_parse_unsigned_line(this.data, this.count, start, marker, valueOutput as * mut usize, nextOutput as * mut usize);
-      }
-    }
-    let status = ByteLineStatus.InvalidNumber;
-    if (code === 0i32) {
-      status = ByteLineStatus.Complete;
-    } else if (code === 1i32) {
-      status = ByteLineStatus.Incomplete;
-    } else if (code === 2i32) {
-      status = ByteLineStatus.InvalidMarker;
-    }
-    return {
-      status: status, value: value, next: next
-    };
-  }
-  public isValidUtf8(): bool {
-    unsafe {
-      return tn_utf8_validate(this.pointer(), this.length()) !== 0i32;
-    }
-  }
-  public equalsAsciiIgnoreCase(text: & str): bool {
-    unsafe {
-      return tn_bytes_equal_ascii_ignore_case(this.data, this.count, text as * const u8) !== 0i32;
-    }
-  }
-  public equalsText(text: & str): bool {
-    unsafe {
-      return tn_bytes_equal_string(this.data, this.count, text as * const u8) !== 0i32;
-    }
-  }
-  public hash(): u64 {
-    unsafe {
-      return tn_bytes_hash(this.pointer(), this.length());
-    }
-  }
-  public parseUnsigned(): usize | undefined {
-    let parsed: usize = 0usize;
-    let offset: usize = 0usize;
-    let status: i32 = 0i32;
-    {
-      const output = & mut parsed;
-      const errorOutput = & mut offset;
-      unsafe {
-        status = tn_parse_ascii(this.pointer(), this.length(), output as * mut usize, errorOutput as * mut usize);
-      }
-    }
-    if (status !== 0i32) {
-      return undefined;
-    }
-    return parsed;
-  }
-  public utf8(): Utf8View<a > | undefined {
-    if (!this.isValidUtf8()) {
-      return undefined;
-    }
-    return {
-      data: this.data, count: this.count
-    };
-  }
-  public hashedUtf8(): HashedUtf8View<a > | undefined {
-    let hash: u64 = 0u64;
-    {
-      const output = & mut hash;
-      unsafe {
-        if (tn_utf8_validate_and_hash(this.data, this.count, output as * mut u64) === 0i32) {
-          return undefined;
-        }
-      }
-    }
-    return {
-      text: {
-        data: this.data, count: this.count
-      }, hashValue: hash
-    };
-  }
-  public asciiKeyUtf8(): AsciiKeyUtf8View<a > | undefined {
-    let key: u64 = 0u64;
-    {
-      const output = & mut key;
-      unsafe {
-        if (tn_utf8_validate_and_ascii_key(this.data, this.count, output as * mut u64) === 0i32) {
-          return undefined;
-        }
-      }
-    }
-    return {
-      text: {
-        data: this.data, count: this.count
-      }, keyValue: key
-    };
-  }
-  public toOwnedUtf8(): string | undefined {
-    if (!this.isValidUtf8()) {
-      return undefined;
-    }
-    return copyToOwned(this.pointer(), this.length());
-  }
-  private pointer(): * const u8 {
-    return this.data;
-  }
-}
-@Copy export enum ByteLineStatus {
-  Complete, Incomplete, InvalidMarker, InvalidNumber,
-}
-@Copy export struct ParsedUnsignedLine {
-  public readonly status: ByteLineStatus;
-  public readonly value: usize;
-  public readonly next: usize;
-  public isIncomplete(): bool {
-    return switch(this.status) {
-      case ByteLineStatus.Incomplete: true, default: false,
-    };
-  }
-  public hasInvalidMarker(): bool {
-    return switch(this.status) {
-      case ByteLineStatus.InvalidMarker: true, default: false,
-    };
-  }
-  public hasInvalidNumber(): bool {
-    return switch(this.status) {
-      case ByteLineStatus.InvalidNumber: true, default: false,
-    };
-  }
-}
-@Copy export struct Utf8View<lifetime a> {
-  private data: * const u8;
-  private count: usize;
-  public length(): usize {
-    return this.count;
-  }
-  public get(index: usize): u8 | undefined {
-    if (index >= this.count) {
-      return undefined;
-    }
-    let value: u8 = 0u8;
-    {
-      const output = & mut value;
-      unsafe {
-        tn_bytes_read_u8(this.data, this.count, index, output as * mut u8);
-      }
-    }
-    return value;
-  }
-  public subview(start: usize, end: usize): ByteView<a > throws SliceError {
-    if (start > end || end > this.count) {
-      throw sliceError(start, end, this.count);
-    }
-    unsafe {
-      return {
-        data: tn_bytes_slice(this.data, this.count, start, end), count: end - start,
-      };
-    }
-  }
-  public equalsAsciiIgnoreCase(text: & str): bool {
-    unsafe {
-      return tn_bytes_equal_ascii_ignore_case(this.data, this.count, text as * const u8) !== 0i32;
-    }
-  }
-  public equalsText(text: & str): bool {
-    unsafe {
-      return tn_bytes_equal_string(this.data, this.count, text as * const u8) !== 0i32;
-    }
-  }
-  public hash(): u64 {
-    unsafe {
-      return tn_bytes_hash(this.data, this.count);
-    }
-  }
-  public hashed(): HashedUtf8View<a> {
-    return {
-      text: this, hashValue: this.hash()
-    };
-  }
-  public toOwned(): string {
-    return copyToOwned(this.data, this.count);
-  }
-}
-@Copy export struct HashedUtf8View<lifetime a> {
-  public readonly text: Utf8View<a>;
-  private hashValue: u64;
-  public view(): Utf8View<a> {
-    return this.text;
-  }
-  public hash(): u64 {
-    return this.hashValue;
-  }
-  public equalsText(text: & str): bool {
-    return this.text.equalsText(text);
-  }
-  public toOwned(): string {
-    return this.text.toOwned();
-  }
-}
-@Copy export struct AsciiKeyUtf8View<lifetime a> {
-  public readonly text: Utf8View<a>;
-  private keyValue: u64;
-  public view(): Utf8View<a> {
-    return this.text;
-  }
-  public key(): u64 {
-    return this.keyValue;
-  }
-}
-function copyToOwned(pointer: * const u8, length: usize): string {
-  unsafe {
-    const result = tn_string_from_bytes(pointer, length);
-    return stringFromRaw(result, length);
-  }
-}
-export function borrow<lifetime a>(buffer: & a BytesMut): ByteView<a> {
-  unsafe {
-    return {
-      data: buffer.pointer as * const u8, count: buffer.length
-    };
   }
 }
 export struct Cursor {
@@ -444,7 +191,7 @@ export struct Cursor {
     }
     return length - this.offset;
   }
-  public mut readU8(value: & mut u8): bool {
+  public readU8(value: & mut u8): bool {
     if (this.offset >= sliceLength<u8>(this.bytes)) {
       return false;
     }
@@ -463,7 +210,7 @@ export struct Cursor {
     }
     return true;
   }
-  public mut advance(count: usize): bool {
+  public advance(count: usize): bool {
     const length = sliceLength<u8>(this.bytes);
     if (this.offset >= length || count > length - this.offset) {
       return false;
@@ -485,7 +232,7 @@ export function empty(): Bytes {
 export function fromStatic(text: & static str): Bytes {
   unsafe {
     return {
-      pointer: text as * const u8, length: tn_string_length(text as * const u8)
+      pointer: text as * const u8, length: text.byteLength
     };
   }
 }
@@ -503,11 +250,6 @@ export function copyTo(source: & Bytes, destination: * mut u8): usize {
   unsafe {
     return tn_bytes_copy(source.pointer, source.length, destination);
   }
-}
-function allocationError(): AllocError {
-  return {
-    code: 12i32
-  };
 }
 function reserve(bytes: & mut BytesMut, capacity: usize): void {
   unsafe {
@@ -546,37 +288,24 @@ export function tryReserve(bytes: & mut BytesMut, capacity: usize): bool {
 }
 export function appendAscii(bytes: & mut BytesMut, text: & str): void {
   const textPointer = strPointer(text);
-  unsafe {
-    const appended = tn_bytes_try_append_string(bytes.pointer, bytes.capacity, bytes.length, textPointer);
-    if (appended !== 18446744073709551615usize) {
-      bytes.length = appended;
-      return;
-    }
-  }
-  let textLength: usize = 0usize;
-  unsafe {
-    textLength = tn_string_length(textPointer);
-  }
+  const textLength = text.byteLength;
   const required = bytes.length + textLength + 1usize;
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
 }
 export function appendSafeAscii(bytes: & mut BytesMut, text: & str): void {
-  let textLength: usize = 0usize;
   const textPointer = strPointer(text);
-  unsafe {
-    textLength = tn_string_length(textPointer);
-  }
+  const textLength = text.byteLength;
   const required = bytes.length + textLength + 1usize;
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_safe_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -586,7 +315,7 @@ export function appendBytes(bytes: & mut BytesMut, source: Bytes): void {
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_bytes(bytes.pointer, bytes.capacity, bytes.length, source.pointer, source.length);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -596,7 +325,7 @@ export function appendRaw(bytes: & mut BytesMut, pointer: * const u8, length: us
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_bytes(bytes.pointer, bytes.capacity, bytes.length, pointer, length);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -606,7 +335,7 @@ export function appendDecimal(bytes: & mut BytesMut, value: number): void {
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_decimal(bytes.pointer, bytes.capacity, bytes.length, value);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -616,7 +345,7 @@ export function appendUnsignedDecimal(bytes: & mut BytesMut, value: usize): void
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_usize(bytes.pointer, bytes.capacity, bytes.length, value);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -631,7 +360,7 @@ function appendString(bytes: & mut BytesMut, text: string): void {
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -646,7 +375,7 @@ function appendSafeString(bytes: & mut BytesMut, text: string): void {
   reserve(bytes, required);
   unsafe {
     const next = tn_bytes_append_safe_ascii(bytes.pointer, bytes.capacity, bytes.length, textPointer, textLength);
-    if (next !== 18446744073709551615usize) {
+    if (next !== ~0usize) {
       bytes.length = next;
     }
   }
@@ -664,31 +393,6 @@ export function push(bytes: & mut BytesMut, value: u8): void {
   }
   unsafe {
     tn_bytes_write_u8(bytes.pointer, bytes.capacity, bytes.length, value);
-  }
-  bytes.length = bytes.length + 1usize;
-}
-export function pushChecked(bytes: & mut BytesMut, value: u8): void throws AllocError {
-  if (bytes.length === bytes.capacity) {
-    let next: usize = 1usize;
-    if (bytes.capacity > 0usize) {
-      if (bytes.capacity > 9223372036854775807usize) {
-        throw allocationError();
-      }
-      next = bytes.capacity * 2usize;
-    }
-    unsafe {
-      const pointer = tryRawRealloc(bytes.pointer, next);
-      if (isNull(pointer as * const u8)) {
-        throw allocationError();
-      }
-      bytes.pointer = pointer;
-    }
-    bytes.capacity = next;
-  }
-  unsafe {
-    if (tn_bytes_write_u8(bytes.pointer, bytes.capacity, bytes.length, value) !== 0i32) {
-      throw allocationError();
-    }
   }
   bytes.length = bytes.length + 1usize;
 }

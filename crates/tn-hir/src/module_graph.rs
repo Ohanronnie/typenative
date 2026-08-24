@@ -1,6 +1,6 @@
 use crate::{
-    Attribute, AttributeKind, Declaration, DeclarationId, DeclarationKind, Import, ImportClause,
-    ImportName, Module, ModuleGraph, ModuleId,
+    Attribute, Declaration, DeclarationId, DeclarationKind, Import, ImportClause, ImportName,
+    Module, ModuleGraph, ModuleId,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -52,16 +52,9 @@ pub fn load_module_graph(
         let bytes = std::fs::read(&path)?;
         let file = path.to_string_lossy();
         let lexed = lex(&file, &bytes);
-        let expanded = crate::macros::expand_source(&file, lexed.source, &lexed.tokens);
-        if !expanded.diagnostics.is_empty() {
-            diagnostics.extend(expanded.diagnostics);
-            continue;
-        }
-        let effective_bytes = expanded.source.as_bytes();
-        let parsed = parse(&file, effective_bytes);
+        let parsed = parse(&file, &bytes);
         diagnostics.extend_from_slice(parsed.diagnostics());
-        let lexed = lex(&file, effective_bytes);
-        if lexed.source.is_empty() && !effective_bytes.is_empty() {
+        if lexed.source.is_empty() && !bytes.is_empty() {
             continue;
         }
         let raw = scan_module(&path, lexed.source, &lexed.tokens);
@@ -206,8 +199,9 @@ fn scan_module(path: &Path, source: &str, tokens: &[Token]) -> RawModule {
                 exported = false;
                 continue;
             }
-            kind if depth == 0 && declaration_kind(kind).is_some() => {
-                let kind = declaration_kind(kind).expect("guard established declaration kind");
+            kind if depth == 0 && declaration_kind_at(&significant, index, kind).is_some() => {
+                let kind = declaration_kind_at(&significant, index, kind)
+                    .expect("guard established declaration kind");
                 let name = declaration_name(&significant, index, kind)
                     .map(|candidate| source[candidate.range.clone()].to_owned());
                 let byte_end = declaration_end(&significant, index, kind, source.len());
@@ -273,7 +267,6 @@ fn scan_attribute(tokens: &[&Token], index: usize, source: &str, file: &str) -> 
         }
     }
     Some(Attribute {
-        kind: AttributeKind::parse(&source[name.range.clone()]),
         name: source[name.range.clone()].to_owned(),
         arguments,
         span: SourceSpan::new(file, tokens[index].range.start..name.range.end, source),
@@ -303,7 +296,7 @@ fn declaration_name<'tokens>(
     }
     tokens[index + 1..]
         .iter()
-        .take(3)
+        .take(8)
         .copied()
         .find(|token| token.kind == TokenKind::Identifier)
 }
@@ -424,7 +417,26 @@ const fn declaration_kind(kind: TokenKind) -> Option<DeclarationKind> {
         TokenKind::Enum => Some(DeclarationKind::Enum),
         TokenKind::Impl => Some(DeclarationKind::Impl),
         TokenKind::Declare => Some(DeclarationKind::ExternBlock),
-        TokenKind::Macro => Some(DeclarationKind::Macro),
+        _ => None,
+    }
+}
+
+fn declaration_kind_at(
+    tokens: &[&Token],
+    index: usize,
+    kind: TokenKind,
+) -> Option<DeclarationKind> {
+    if kind != TokenKind::Extern {
+        return declaration_kind(kind);
+    }
+    match (
+        tokens.get(index + 1).map(|token| token.kind),
+        tokens.get(index + 2).map(|token| token.kind),
+    ) {
+        (Some(TokenKind::Struct), _) => Some(DeclarationKind::ExternStruct),
+        (Some(TokenKind::StringLiteral), Some(TokenKind::Function)) => {
+            Some(DeclarationKind::ExternFunction)
+        }
         _ => None,
     }
 }

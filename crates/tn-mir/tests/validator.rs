@@ -885,6 +885,7 @@ fn validates_typed_suspension_destinations_and_edges() {
                 name: Some("promise".into()),
                 ty: Type::Promise {
                     result: Box::new(integer.clone()),
+                    error: Box::new(Type::Nominal(error, Vec::new())),
                     effects: vec![error],
                 },
                 mutable: false,

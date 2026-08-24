@@ -19,7 +19,7 @@ fn loads_the_intrinsic_string_prelude_without_an_import() {
     write(&root.join("main.tn"), "function main(): void {}\n");
     write(
         &standard_library.join("string.tn"),
-        "@Intrinsic(\"string\")struct OwnedString {}\n",
+        "struct OwnedString {}\n",
     );
     let graph = load_module_graph(root, &root.join("main.tn"), &standard_library)
         .expect("module graph with string prelude");
@@ -45,7 +45,6 @@ fn lowers_resolved_nominal_generic_and_compound_signatures() {
   display(value: i32): void;
 }
 
-@Conform(Display)
 export struct Point {
   public x: f64;
   public label?: string;
@@ -59,7 +58,7 @@ function identity<T extends Display>(value: T): T {
   return value;
 }
 class Base {}
-final class Derived extends Base implements Display {
+class Derived extends Base implements Display {
   public display(value: i32): void {}
 }
 ",
@@ -115,36 +114,30 @@ final class Derived extends Base implements Display {
 }
 
 #[test]
-fn carries_sealed_hierarchy_metadata_into_hir() {
+fn open_hierarchy_has_no_closed_dispatch_metadata() {
     let directory = tempfile::tempdir().expect("temporary HIR program");
     let root = directory.path();
     let standard_library = root.join("std");
     std::fs::create_dir(&standard_library).expect("standard-library directory");
     write(
         &root.join("main.tn"),
-        "@Sealed class Closed {}\n@Sealed interface Marker {}\n",
+        "class Closed {}\ninterface Marker {}\n",
     );
     let graph = load_module_graph(root, &root.join("main.tn"), &standard_library)
-        .expect("sealed module graph");
-    let program = lower_program(graph).expect("sealed HIR");
-    let sealed_class = program
-        .definitions
-        .iter()
-        .find_map(|definition| match definition.data {
-            DefinitionData::Class { is_sealed, .. } => Some(is_sealed),
-            _ => None,
-        })
-        .expect("sealed class metadata");
-    let sealed_interface = program
-        .definitions
-        .iter()
-        .find_map(|definition| match definition.data {
-            DefinitionData::Interface { is_sealed, .. } => Some(is_sealed),
-            _ => None,
-        })
-        .expect("sealed interface metadata");
-    assert!(sealed_class);
-    assert!(sealed_interface);
+        .expect("open module graph");
+    let program = lower_program(graph).expect("open HIR");
+    assert!(
+        program
+            .definitions
+            .iter()
+            .any(|definition| matches!(definition.data, DefinitionData::Class { .. }))
+    );
+    assert!(
+        program
+            .definitions
+            .iter()
+            .any(|definition| matches!(definition.data, DefinitionData::Interface { .. }))
+    );
 }
 
 #[test]
@@ -305,8 +298,7 @@ fn retains_interface_and_lifetime_generic_arguments() {
         r"interface Container<Item> {
   item(): Item;
 }
-@Conform(Container)
-struct Bag<T> { public value: T;
+struct Bag<T> implements Container<T> { public value: T;
   item(): T { return this.value; }
 }
 struct Borrowed<lifetime a, T> { public value: &a T; }
@@ -328,15 +320,11 @@ type StaticBorrow = Borrowed<static, i32>;
         })
         .expect("generic conformance target");
     assert_eq!(bag.1[0].name, "item");
-    let declaration = program
-        .graph
-        .declaration(bag.0.declaration)
-        .expect("conformance declaration");
-    assert!(
-        declaration.attributes.iter().any(|attribute| {
-            attribute.name == "Conform" && attribute.arguments == ["Container"]
-        })
-    );
+    let DefinitionData::Struct { interfaces, .. } = &bag.0.data else {
+        panic!("conformance target must be a struct");
+    };
+    assert_eq!(interfaces.len(), 1);
+    assert!(matches!(interfaces[0], Type::Nominal(_, ref arguments) if arguments.len() == 1));
 
     let alias = program
         .definitions

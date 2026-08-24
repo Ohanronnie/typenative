@@ -301,8 +301,8 @@ fn contains_generic(ty: &Type) -> bool {
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             contains_generic(inner)
         }
-        Type::Promise { result, .. }
-        | Type::Reference {
+        Type::Promise { result, error, .. } => contains_generic(result) || contains_generic(error),
+        Type::Reference {
             referent: result, ..
         } => contains_generic(result),
         Type::RawPointer { pointee, .. } => contains_generic(pointee),
@@ -503,15 +503,22 @@ fn matches_target(template: &Type, concrete: &Type, inferred: &mut BTreeMap<Stri
             Type::RawPointer {
                 pointee: concrete, ..
             },
-        )
-        | (
-            Type::Promise {
-                result: template, ..
-            },
-            Type::Promise {
-                result: concrete, ..
-            },
         ) => matches_target(template, concrete, inferred),
+        (
+            Type::Promise {
+                result: template,
+                error: template_error,
+                ..
+            },
+            Type::Promise {
+                result: concrete,
+                error: concrete_error,
+                ..
+            },
+        ) => {
+            matches_target(template, concrete, inferred)
+                && matches_target(template_error, concrete_error, inferred)
+        }
         (Type::Tuple(template), Type::Tuple(concrete))
         | (Type::Template(template), Type::Template(concrete)) => {
             template.len() == concrete.len()
@@ -602,9 +609,23 @@ fn infer_type(template: &Type, concrete: &Type, inferred: &mut BTreeMap<String, 
                 referent: right, ..
             },
         )
-        | (Type::RawPointer { pointee: left, .. }, Type::RawPointer { pointee: right, .. })
-        | (Type::Promise { result: left, .. }, Type::Promise { result: right, .. }) => {
+        | (Type::RawPointer { pointee: left, .. }, Type::RawPointer { pointee: right, .. }) => {
             infer_type(left, right, inferred);
+        }
+        (
+            Type::Promise {
+                result: left,
+                error: left_error,
+                ..
+            },
+            Type::Promise {
+                result: right,
+                error: right_error,
+                ..
+            },
+        ) => {
+            infer_type(left, right, inferred);
+            infer_type(left_error, right_error, inferred);
         }
         (Type::Function(left), Type::Function(right)) => {
             for (left, right) in left.parameters.iter().zip(&right.parameters) {
@@ -809,7 +830,10 @@ fn substitute_type(ty: &mut Type, substitutions: &BTreeMap<String, Type>) {
         return;
     }
     match ty {
-        Type::Promise { result, .. } => substitute_type(result, substitutions),
+        Type::Promise { result, error, .. } => {
+            substitute_type(result, substitutions);
+            substitute_type(error, substitutions);
+        }
         Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
             for argument in arguments {
                 substitute_type(argument, substitutions);

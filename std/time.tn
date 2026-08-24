@@ -3,8 +3,8 @@ import { c_size } from "std/ffi";
 import { fromRaw } from "std/string";
 
 declare extern "C" {
-  function tn_clock_monotonic_ns(): u64;
-  function tn_clock_wall_ns(): i64;
+  function tn_clock_monotonic_nanoseconds(): u64;
+  function tn_clock_wall_nanoseconds(): i64;
   function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
 }
 // Duration stores elapsed nanoseconds and all scaled constructors saturate at
@@ -38,9 +38,9 @@ export struct Duration {
     return this.totalNanoseconds / 1000000000u64;
   }
   public saturatingAdd(other: Duration): Duration {
-    if (other.totalNanoseconds > 18446744073709551615u64 - this.totalNanoseconds) {
+    if (other.totalNanoseconds > ~0u64 - this.totalNanoseconds) {
       return {
-        totalNanoseconds: 18446744073709551615u64,
+        totalNanoseconds: ~0u64,
       };
     }
     return {
@@ -59,9 +59,9 @@ export struct Duration {
   }
 }
 function fromScaled(value: u64, scale: u64): Duration {
-  if (value > 18446744073709551615u64 / scale) {
+  if (value > ~0u64 / scale) {
     return {
-      totalNanoseconds: 18446744073709551615u64,
+      totalNanoseconds: ~0u64,
     };
   }
   return {
@@ -73,7 +73,7 @@ export struct Instant {
   public static now(): Instant {
     unsafe {
       return {
-        timestampNanoseconds: tn_clock_monotonic_ns(),
+        timestampNanoseconds: tn_clock_monotonic_nanoseconds(),
       };
     }
   }
@@ -107,7 +107,7 @@ export class Date {
   }
   public static now(): i64 {
     unsafe {
-      return floorDivide(tn_clock_wall_ns(), 1000000i64);
+      return floorDivide(tn_clock_wall_nanoseconds(), 1000000i64);
     }
   }
   public static fromEpochMilliseconds(value: i64): Date {

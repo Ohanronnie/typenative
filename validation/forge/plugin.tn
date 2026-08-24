@@ -1,6 +1,6 @@
 import { isNull } from "std/alloc";
 import { lookup } from "std/env";
-import { closeLibrary, FfiError, openLibraryPointerChecked, symbol } from "std/ffi";
+import { closeLibrary, FfiError, symbol, tryOpenLibraryPointer } from "std/ffi";
 
 export function pluginProbe(): i32 {
   const path = lookup("FORGE_PLUGIN_PATH");
@@ -9,7 +9,7 @@ export function pluginProbe(): i32 {
   }
   try {
     unsafe {
-      let library = try openLibraryPointerChecked(path);
+      let library = try tryOpenLibraryPointer(path);
       const pointer = symbol( & library, "strlen");
       const status = closeLibrary( & mut library);
       let missing = false;

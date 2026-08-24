@@ -1,19 +1,11 @@
 interface Copy {}
-interface Drop { mut drop(): void; }
+interface Drop { drop(): void; }
 interface Send {}
 
-@Conform(Copy)
-struct Text { public value: string; }
-@Conform(Copy)
-@Conform(Drop)
-struct Destroyed {
-  mut drop(): void {}
-}
-@Conform(Copy)
-class Owner {}
-@Conform(Send, unsafe)
-struct ManualSend {}
-@Conform(Send)
+struct Text implements Copy { public value: string; }
+struct Destroyed implements Copy, Drop { drop(): void {} }
+class Owner implements Copy {}
+struct ManualSend implements Send {}
 struct UnreviewedSend {}
 
 struct UnsafeCapture { public pointer: *mut i32; }

@@ -389,7 +389,7 @@ fn doc_and_test_commands_use_resolved_programs() {
     let source = directory.path().join("main.tn");
     std::fs::write(
         &source,
-        "@Test\nfunction passes(): void {}\n@Export(\"answer\") function answer(): i32 { return 42i32; }\n",
+        "function passes(): void {}\ntest(\"passes\", () => passes());\nexport function answer(): i32 { return 42i32; }\n",
     )
     .expect("tooling source fixture");
     let documentation = Command::new(env!("CARGO_BIN_EXE_tn"))

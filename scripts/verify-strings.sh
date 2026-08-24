@@ -48,6 +48,7 @@ if rg -n '@strlen|call .*strlen|declare .*strlen' "$work/embedded-nul.ll"; then
   exit 1
 fi
 rg -q 'tn_string_length' "$work/embedded-nul.ll"
+rg -q 'tn_string_scalar_length' "$work/embedded-nul.ll"
 rg -q 'tn_string_equals' "$work/embedded-nul.ll"
 rg -q 'tn_string_hash_slots|tn_builtin_hash_' "$work/embedded-nul.ll"
 rg -q 'tn_string_from_bytes' "$work/embedded-nul.ll"

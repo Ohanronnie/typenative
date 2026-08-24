@@ -3,8 +3,8 @@ use crate::{CheckResult, derive_ownership_facts};
 use std::collections::{BTreeMap, BTreeSet};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
 use tn_hir::{
-    AttributeKind, DeclarationId, Definition, DefinitionData, Function, GenericBound,
-    GenericParameter, Method, Namespace, PrimitiveType, Program, Type, Visibility,
+    DeclarationId, Definition, DefinitionData, Function, GenericBound, GenericParameter, Method,
+    Namespace, PrimitiveType, Program, Type, Visibility,
 };
 use tn_syntax::{TokenKind, lex};
 
@@ -29,32 +29,12 @@ pub fn check_signatures_with_ownership(
         check_definition_types(program, definition, &definitions, &mut diagnostics);
     }
     check_copy_implementations(program, ownership_facts, &mut diagnostics);
-    check_unsafe_marker_implementations(program, &mut diagnostics);
+    check_structural_capability_declarations(program, &mut diagnostics);
     CheckResult { diagnostics }
 }
 
-fn check_unsafe_marker_implementations(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
+fn check_structural_capability_declarations(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
     for definition in &program.definitions {
-        if let DefinitionData::Implementation {
-            interface: Some(Type::Nominal(interface, _)),
-            is_unsafe,
-            ..
-        } = &definition.data
-        {
-            let marker = program
-                .graph
-                .declaration(*interface)
-                .and_then(|declaration| declaration.name.as_deref());
-            if matches!(marker, Some("Send" | "Sync")) && !is_unsafe {
-                diagnostics.push(diag(
-                    "TYPE_UNSAFE_MARKER_IMPLEMENTATION_REQUIRES_UNSAFE",
-                    "Send and Sync implementations require an explicit unsafe implementation",
-                    &declaration_span(program, definition),
-                    "write `unsafe impl` only after validating the type's thread-safety invariants",
-                ));
-            }
-        }
-
         for interface in declared_conformances(program, definition.declaration) {
             let Some(marker) = program
                 .graph
@@ -63,38 +43,17 @@ fn check_unsafe_marker_implementations(program: &Program, diagnostics: &mut Vec<
             else {
                 continue;
             };
-            if !matches!(marker, "Send" | "Sync")
-                || has_unsafe_marker_conformance(program, definition.declaration, marker)
-            {
+            if !matches!(marker, "Copy" | "Drop" | "Send" | "Sync") {
                 continue;
             }
             diagnostics.push(diag(
-                "TYPE_UNSAFE_MARKER_IMPLEMENTATION_REQUIRES_UNSAFE",
-                "Send and Sync conformances require an explicit unsafe marker",
+                "TYPE_STRUCTURAL_CAPABILITY_CANNOT_BE_DECLARED",
+                format!("`{marker}` is inferred from representation and cannot be declared"),
                 &declaration_span(program, definition),
-                "write `@Conform(Send, unsafe)` or `@Conform(Sync, unsafe)` only after validating thread-safety invariants",
+                "remove the conformance and let the compiler derive the capability from stored fields",
             ));
         }
     }
-}
-
-fn has_unsafe_marker_conformance(program: &Program, target: DeclarationId, marker: &str) -> bool {
-    program
-        .graph
-        .declaration(target)
-        .is_some_and(|declaration| {
-            declaration.attributes.iter().any(|attribute| {
-                attribute.kind == AttributeKind::Conform
-                    && attribute
-                        .arguments
-                        .iter()
-                        .any(|argument| argument == marker)
-                    && attribute
-                        .arguments
-                        .iter()
-                        .any(|argument| argument == "unsafe")
-            })
-        })
 }
 
 fn check_copy_implementations(
@@ -167,7 +126,9 @@ fn check_definition_types(
         DefinitionData::Function(function) => {
             check_function_types(function, &declaration_span, definitions, diagnostics);
         }
-        DefinitionData::Struct { fields, methods } => {
+        DefinitionData::Struct {
+            fields, methods, ..
+        } => {
             for field in fields {
                 check_type(&field.ty, &field.span, definitions, diagnostics);
             }
@@ -175,7 +136,9 @@ fn check_definition_types(
                 check_function_types(&method.function, &method.span, definitions, diagnostics);
             }
         }
-        DefinitionData::Enum { variants, methods } => {
+        DefinitionData::Enum {
+            variants, methods, ..
+        } => {
             for variant in variants {
                 for field in &variant.fields {
                     check_type(&field.ty, &field.span, definitions, diagnostics);
@@ -380,7 +343,11 @@ fn check_generic_arguments(
         .iter()
         .filter(|parameter| parameter.namespace != Namespace::Value)
         .collect::<Vec<_>>();
-    if arguments.len() != parameters.len() {
+    let omitted_lifetimes = arguments.len() < parameters.len()
+        && parameters[arguments.len()..]
+            .iter()
+            .all(|parameter| parameter.namespace == Namespace::Lifetime);
+    if arguments.len() != parameters.len() && !omitted_lifetimes {
         diagnostics.push(diag(
             "TYPE_GENERIC_ARGUMENT_ARITY",
             format!(
@@ -453,7 +420,9 @@ fn check_definition(
             );
             check_generic_parameters(&function.generics, definitions, diagnostics);
         }
-        DefinitionData::Struct { fields, methods } => {
+        DefinitionData::Struct {
+            fields, methods, ..
+        } => {
             for field in fields {
                 reject_void(&field.ty, &field.span, diagnostics);
             }
@@ -475,7 +444,9 @@ fn check_definition(
                 diagnostics,
             );
         }
-        DefinitionData::Enum { variants, methods } => {
+        DefinitionData::Enum {
+            variants, methods, ..
+        } => {
             check_enum_discriminants(variants, diagnostics);
             for variant in variants {
                 for field in &variant.fields {
@@ -529,7 +500,6 @@ fn check_definition(
             constructor,
             methods,
             is_abstract,
-            is_final,
             ..
         } => {
             for field in fields {
@@ -544,7 +514,6 @@ fn check_definition(
                     constructor: constructor.as_ref(),
                     methods,
                     is_abstract: *is_abstract,
-                    is_final: *is_final,
                 },
                 definitions,
                 diagnostics,
@@ -622,10 +591,7 @@ fn check_function(
     for parameter in &function.parameters {
         reject_void(&parameter.ty, &parameter.span, diagnostics);
     }
-    if function.is_async
-        && !function.is_generator
-        && !matches!(function.result, Type::Promise { .. })
-    {
+    if function.is_async && !function.is_generator && !is_promise_type(program, &function.result) {
         declaration_diagnostic(
             program,
             declaration,
@@ -637,13 +603,32 @@ fn check_function(
     }
 }
 
+fn is_promise_type(program: &Program, ty: &Type) -> bool {
+    let mut current = ty;
+    let mut visited = BTreeSet::new();
+    loop {
+        match current {
+            Type::Promise { .. } => return true,
+            Type::Nominal(declaration, _) if visited.insert(*declaration) => {
+                let Some(definition) = program.definition(*declaration) else {
+                    return false;
+                };
+                let DefinitionData::TypeAlias(alias) = &definition.data else {
+                    return false;
+                };
+                current = alias;
+            }
+            _ => return false,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ClassSignature<'a> {
     base: Option<DeclarationId>,
     constructor: Option<&'a Method>,
     methods: &'a [Method],
     is_abstract: bool,
-    is_final: bool,
 }
 
 fn check_foreign_functions(functions: &[Method], diagnostics: &mut Vec<Diagnostic>) {
@@ -673,8 +658,6 @@ fn check_class(
         };
         let DefinitionData::Class {
             methods: base_methods,
-            is_final,
-            is_sealed,
             ..
         } = &base_definition.data
         else {
@@ -688,35 +671,6 @@ fn check_class(
             );
             return;
         };
-        if *is_final {
-            declaration_diagnostic(
-                program,
-                definition.declaration,
-                diagnostics,
-                "TYPE_EXTENDS_FINAL_CLASS",
-                "cannot extend a final class",
-                "remove the inheritance edge",
-            );
-        }
-        if *is_sealed
-            && program
-                .graph
-                .declaration(base)
-                .map(|declaration| declaration.module)
-                != program
-                    .graph
-                    .declaration(definition.declaration)
-                    .map(|declaration| declaration.module)
-        {
-            declaration_diagnostic(
-                program,
-                definition.declaration,
-                diagnostics,
-                "TYPE_EXTENDS_SEALED_CLASS",
-                "cannot extend a sealed class outside its declaring module",
-                "move the subclass into the sealed class's module or remove `@Sealed`",
-            );
-        }
         for method in class.methods {
             let base_method = find_method(base_methods, &method.name);
             match (method.is_override, base_method) {
@@ -775,16 +729,6 @@ fn check_class_own_rules(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     check_class_construction(program, definition, class, definitions, diagnostics);
-    if class.is_abstract && class.is_final {
-        declaration_diagnostic(
-            program,
-            definition.declaration,
-            diagnostics,
-            "TYPE_ABSTRACT_FINAL_CLASS",
-            "a class cannot be both abstract and final",
-            "choose abstract extensibility or final construction",
-        );
-    }
     if let Some(constructor) = class.constructor {
         check_function(
             program,
@@ -831,14 +775,6 @@ fn check_class_own_rules(
                 format!("concrete method `{}` requires a body", method.name),
                 &method.span,
                 "add a body or mark the method abstract",
-            ));
-        }
-        if !method.function.generics.is_empty() && !class.is_final && !method.is_final {
-            diagnostics.push(diag(
-                "TYPE_GENERIC_VIRTUAL_METHOD_EXCLUDED",
-                format!("virtual method `{}` cannot be generic", method.name),
-                &method.span,
-                "mark the method final or make the containing class final",
             ));
         }
     }
@@ -1195,7 +1131,6 @@ fn check_implementation(
     };
     let DefinitionData::Interface {
         methods: requirements,
-        is_sealed,
     } = &interface_definition.data
     else {
         declaration_diagnostic(
@@ -1208,25 +1143,6 @@ fn check_implementation(
         );
         return;
     };
-    if *is_sealed
-        && program
-            .graph
-            .declaration(interface)
-            .map(|declaration| declaration.module)
-            != program
-                .graph
-                .declaration(implementation)
-                .map(|declaration| declaration.module)
-    {
-        declaration_diagnostic(
-            program,
-            implementation,
-            diagnostics,
-            "TYPE_CONFORMS_TO_SEALED_INTERFACE",
-            "cannot conform to a sealed interface outside its declaring module",
-            "move the conforming declaration into the sealed interface's module or remove `@Sealed`",
-        );
-    }
     let mut generic_arguments = BTreeMap::new();
     for requirement in requirements {
         let Some(method) = find_method(methods, &requirement.name) else {
@@ -1316,13 +1232,21 @@ fn interface_type_matches(
             Type::Promise {
                 result: actual,
                 effects: actual_effects,
+                error: actual_error,
             },
             Type::Promise {
                 result: expected,
                 effects: expected_effects,
+                error: expected_error,
             },
         ) => {
             actual_effects == expected_effects
+                && interface_type_matches(
+                    actual_error,
+                    expected_error,
+                    definitions,
+                    generic_arguments,
+                )
                 && interface_type_matches(actual, expected, definitions, generic_arguments)
         }
         (Type::Array(actual, actual_length), Type::Array(expected, expected_length))
@@ -1354,14 +1278,6 @@ fn check_override(
     definitions: &BTreeMap<DeclarationId, &Definition>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if base.is_final {
-        diagnostics.push(diag(
-            "TYPE_OVERRIDE_FINAL_METHOD",
-            format!("cannot override final method `{}`", method.name),
-            &method.span,
-            "remove this override",
-        ));
-    }
     if method.receiver != base.receiver
         || method
             .function
@@ -1499,45 +1415,91 @@ fn check_public_reference_lifetimes(
     let input_lifetimes = function
         .parameters
         .iter()
-        .filter_map(|parameter| match &parameter.ty {
-            Type::Reference { lifetime, .. } => Some(lifetime.as_str()),
-            _ => None,
-        })
+        .flat_map(|parameter| reference_lifetimes(&parameter.ty))
         .collect::<Vec<_>>();
     let result = match &function.result {
         Type::Promise { result, .. } => result.as_ref(),
         result => result,
     };
-    let Type::Reference { lifetime, .. } = result else {
-        return;
-    };
-    if lifetime == "scope" {
-        if has_receiver || input_lifetimes.len() == 1 {
-            return;
-        }
-        let (condition, message, label) = if input_lifetimes.is_empty() {
-            (
-                "TYPE_RETURN_REFERENCE_WITHOUT_INPUT",
-                "a public borrowed result has no input lifetime",
-                "return owned data or relate the result to an explicit borrowed input",
-            )
-        } else {
-            (
-                "TYPE_AMBIGUOUS_ELIDED_OUTPUT_LIFETIME",
-                "a public borrowed result is ambiguous between multiple inputs",
-                "declare a named lifetime and use it on the related input and output",
-            )
-        };
-        diagnostics.push(diag(condition, message, span, label));
+    let output_lifetimes = reference_lifetimes(result);
+    if output_lifetimes.is_empty() {
         return;
     }
-    if lifetime != "static" && !input_lifetimes.contains(&lifetime.as_str()) {
-        diagnostics.push(diag(
-            "TYPE_UNRELATED_OUTPUT_LIFETIME",
-            format!("borrowed result lifetime `{lifetime}` is not provided by an input"),
-            span,
-            "use the same named lifetime on at least one borrowed input",
-        ));
+    if output_lifetimes.iter().any(|lifetime| *lifetime == "scope") {
+        if has_receiver || input_lifetimes.len() == 1 {
+            // The internal elision placeholder is related to the sole input or
+            // to the receiver. It is never printed in a user-facing diagnostic.
+        } else {
+            let (condition, message, label) = if input_lifetimes.is_empty() {
+                (
+                    "TYPE_RETURN_REFERENCE_WITHOUT_INPUT",
+                    "a public borrowed result has no input lifetime",
+                    "return owned data or relate the result to an explicit borrowed input",
+                )
+            } else {
+                (
+                    "TYPE_AMBIGUOUS_ELIDED_OUTPUT_LIFETIME",
+                    "a public borrowed result is ambiguous between multiple inputs",
+                    "declare a named lifetime and use it on the related input and output",
+                )
+            };
+            diagnostics.push(diag(condition, message, span, label));
+        }
+    }
+    for lifetime in output_lifetimes {
+        if lifetime != "scope" && lifetime != "static" && !input_lifetimes.contains(&lifetime) {
+            diagnostics.push(diag(
+                "TYPE_UNRELATED_OUTPUT_LIFETIME",
+                format!("borrowed result lifetime `{lifetime}` is not provided by an input"),
+                span,
+                "use the same named lifetime on at least one borrowed input",
+            ));
+        }
+    }
+}
+
+fn reference_lifetimes(ty: &Type) -> Vec<&str> {
+    let mut lifetimes = Vec::new();
+    collect_reference_lifetimes(ty, &mut lifetimes);
+    lifetimes
+}
+
+fn collect_reference_lifetimes<'a>(ty: &'a Type, lifetimes: &mut Vec<&'a str>) {
+    match ty {
+        Type::Reference {
+            lifetime, referent, ..
+        } => {
+            lifetimes.push(lifetime);
+            collect_reference_lifetimes(referent, lifetimes);
+        }
+        Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
+            for argument in arguments {
+                collect_reference_lifetimes(argument, lifetimes);
+            }
+        }
+        Type::Lifetime(lifetime) => lifetimes.push(lifetime),
+        Type::Optional(inner) | Type::Slice(inner) => collect_reference_lifetimes(inner, lifetimes),
+        Type::Array(inner, _) => collect_reference_lifetimes(inner, lifetimes),
+        Type::Tuple(elements) | Type::Template(elements) => {
+            for element in elements {
+                collect_reference_lifetimes(element, lifetimes);
+            }
+        }
+        Type::Promise { result, .. } => collect_reference_lifetimes(result, lifetimes),
+        Type::Function(function) => {
+            for parameter in &function.parameters {
+                collect_reference_lifetimes(parameter, lifetimes);
+            }
+            collect_reference_lifetimes(&function.result, lifetimes);
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::RawPointer { .. }
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown
+        | Type::Generic(_) => {}
     }
 }
 

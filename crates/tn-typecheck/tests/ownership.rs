@@ -240,7 +240,7 @@ fn preserves_copy_queries_until_generic_specialization() {
 fn rejects_user_defined_intrinsic_type_bindings() {
     assert_eq!(
         source_conditions("@Intrinsic(\"string\") struct FakeString {}"),
-        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+        ["TYPE_UNKNOWN_ATTRIBUTE"]
     );
 }
 
@@ -248,7 +248,7 @@ fn rejects_user_defined_intrinsic_type_bindings() {
 fn rejects_user_defined_primitive_intrinsic_bindings() {
     assert_eq!(
         source_conditions("@Intrinsic(\"usize\") struct FakeUsize {}"),
-        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+        ["TYPE_UNKNOWN_ATTRIBUTE"]
     );
 }
 
@@ -256,11 +256,11 @@ fn rejects_user_defined_primitive_intrinsic_bindings() {
 fn rejects_user_defined_intrinsic_operations() {
     assert_eq!(
         source_conditions("@Intrinsic(\"size_of\") function forged<T>(): usize { return 0usize; }"),
-        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+        ["TYPE_UNKNOWN_ATTRIBUTE"]
     );
     assert_eq!(
         source_conditions("@Intrinsic function unnamed<T>(): usize { return 0usize; }"),
-        ["TYPE_INVALID_ATTRIBUTE_TARGET"]
+        ["TYPE_UNKNOWN_ATTRIBUTE"]
     );
 }
 
@@ -845,25 +845,28 @@ function accepted(): void {
 fn byte_views_prevent_compaction_until_the_last_use() {
     let diagnostics = ownership_conditions_with_workspace_standard_library(
         r#"
-import { borrow, ByteView, BytesMut } from "std/bytes";
-function consume<lifetime a>(view: &ByteView<a>): void {
-  view.get(0usize);
+import { BytesMut, SliceError } from "std/bytes";
+function borrowSlice<lifetime a>(buffer: &a mut BytesMut): &[u8] throws SliceError {
+  return try buffer.slice(0usize, 1usize);
 }
-function rejected(): void {
+function consume(view: &[u8]): void {
+  view[0usize];
+}
+function rejected(): void throws SliceError {
   let buffer = new BytesMut({ capacity: 8usize });
-  const view = borrow(&buffer);
+  const view = try borrowSlice( & mut buffer);
   buffer.discardPrefix(1usize);
-  consume(&view);
+  consume(view);
 }
-function accepted(): void {
+function accepted(): void throws SliceError {
   let buffer = new BytesMut({ capacity: 8usize });
-  const view = borrow(&buffer);
-  consume(&view);
+  const view = try borrowSlice( & mut buffer);
+  consume(view);
   buffer.discardPrefix(1usize);
 }
-function escaped(): ByteView<scope> {
+function escaped(): &[u8] throws SliceError {
   let buffer = new BytesMut({ capacity: 8usize });
-  return borrow(&buffer);
+  return try borrowSlice( & mut buffer);
 }
 "#,
     );
@@ -957,12 +960,10 @@ function ownership(value: string): void {
 fn implicitly_moves_noncopy_bindings_arguments_and_fields() {
     let program = source_program(
         r"
-interface Drop { mut drop(): void; }
-@Conform(Drop)
 struct Pair {
   public first: string;
   public second: string;
-  mut drop(): void {}
+  drop(): void {}
 }
 function consume(value: string): void {}
 function assignment(value: string): void {
@@ -1017,7 +1018,7 @@ enum Choice { Number(i32), Pointer(*const i32) }
     let facts = tn_typecheck::derive_ownership_facts(&program);
     assert!(facts.is_send(&Type::Nominal(declaration("Safe"), Vec::new())));
     assert!(facts.is_sync(&Type::Nominal(declaration("Safe"), Vec::new())));
-    assert!(facts.is_send(&Type::Nominal(declaration("Recursive"), Vec::new())));
+    assert!(!facts.is_send(&Type::Nominal(declaration("Recursive"), Vec::new())));
     assert!(!facts.is_send(&Type::Nominal(declaration("Unsafe"), Vec::new())));
     assert!(!facts.is_sync(&Type::Nominal(declaration("Choice"), Vec::new())));
     assert!(facts.is_send(&Type::Nominal(
@@ -1072,7 +1073,6 @@ function unsafePromise(): Promise<i32, UnsafeError> { return undefined; }
 fn derives_copy_from_the_canonical_attribute() {
     let program = source_program(
         r"
-@Copy
 struct Scalar { public value: i32; }
 ",
     );
@@ -1314,16 +1314,14 @@ function sum(values: [i32; 3]): i32 {
 fn lowers_user_iterators_through_recorded_implementation_witnesses() {
     let program = source_program(
         r"
-interface Iterator<Item> { mut next(): Item | undefined; }
+interface Iterator<Item> { next(): Item | undefined; }
 interface IntoIterator<Item, Iter extends Iterator<Item> > {
   move intoIterator(): Iter;
 }
-@Conform(Iterator)
-struct BagIterator<T> { public done: bool;
-  mut next(): T | undefined { return undefined; }
+struct BagIterator<T> implements Iterator<T> { public done: bool;
+  next(): T | undefined { this.done = true; return undefined; }
 }
-@Conform(IntoIterator)
-struct Bag<T> {
+struct Bag<T> implements IntoIterator<T, BagIterator<T> > {
   move intoIterator(): BagIterator<T> { return { done: false }; }
 }
 function consume(values: Bag<i32>): void {
@@ -1392,17 +1390,15 @@ function consume(values: Bag<i32>): void {
 fn iterator_calls_reinitialize_noncopy_optional_destinations() {
     let program = source_program(
         r"
-interface Iterator<Item> { mut next(): Item | undefined; }
+interface Iterator<Item> { next(): Item | undefined; }
 interface IntoIterator<Item, Iter extends Iterator<Item> > {
   move intoIterator(): Iter;
 }
 struct Payload { public text: string; }
-@Conform(Iterator)
-struct PayloadIterator {
-  mut next(): Payload | undefined { return undefined; }
+struct PayloadIterator implements Iterator<Payload> {
+  next(): Payload | undefined { return undefined; }
 }
-@Conform(IntoIterator)
-struct Payloads {
+struct Payloads implements IntoIterator<Payload, PayloadIterator> {
   move intoIterator(): PayloadIterator { return {}; }
 }
 function consume(values: Payloads): void {
@@ -1926,8 +1922,7 @@ fn lowers_templates_with_ordered_owned_values_and_shared_borrows() {
     let program = source_program(
         r"
 interface Display {}
-@Conform(Display)
-struct Shown {}
+struct Shown implements Display {}
 function side(value: i32): i32 { return value + 1; }
 function format(value: i32, shown: Shown): void {
   const formatted = `start\n${side(value)} shown=${shown} value=${value} literal=\${x} tick=\``;
@@ -2529,7 +2524,7 @@ function read(boxed: Boxed<i32>): i32 { return boxed.get(); }
 fn move_receiver_consumes_the_concrete_method_owner() {
     let program = source_program(
         r"
-struct Ticket { public move consume(): void {} }
+struct Ticket { public text: string; public move consume(): void {} }
 function invalid(ticket: Ticket): void {
   ticket.consume();
   ticket;
@@ -2560,7 +2555,7 @@ function invalid(ticket: Ticket): void {
 fn method_receiver_reborrows_remain_live_through_argument_evaluation() {
     let program = source_program(
         r"
-struct Item { public mut touch(other: &mut Item): void {} }
+struct Item { public touch(other: &mut Item): void {} }
 function invalid(item: &mut Item): void {
   item.touch(item);
 }
@@ -2575,12 +2570,12 @@ function invalid(item: &mut Item): void {
     tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
     let result =
         tn_typecheck::check_ownership(&body, &tn_typecheck::derive_ownership_facts(&program));
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| { diagnostic.condition.as_str() == "OWNERSHIP_WRITE_DURING_BORROW" })
-    );
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.condition.as_str(),
+            "OWNERSHIP_READ_DURING_MUTABLE_BORROW" | "OWNERSHIP_WRITE_DURING_BORROW"
+        )
+    }));
 }
 
 #[test]

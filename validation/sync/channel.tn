@@ -1,7 +1,7 @@
 import { channel, close, destroyChannel, receive, send } from "std/sync";
 function main(): i32 {
   let messages = channel<string>(16usize, 2usize);
-  if (send( & mut messages, string.from("first")) !== 0i32) {
+  if (send( & mut messages, String("first")) !== 0i32) {
     destroyChannel( & mut messages);
     return 1i32;
   }
@@ -10,7 +10,7 @@ function main(): i32 {
     destroyChannel( & mut messages);
     return 2i32;
   }
-  if (send( & mut messages, string.from("queued")) !== 0i32) {
+  if (send( & mut messages, String("queued")) !== 0i32) {
     destroyChannel( & mut messages);
     return 3i32;
   }

@@ -1,11 +1,9 @@
 
-@Layout("C")
-struct Pair {
-  public left: i32;
-  public right: i32;
+extern struct Pair {
+  left: i32;
+  right: i32;
 }
-@Layout("C")
-enum Kind {
+enum Kind: u8 {
   Zero, Answer = 42,
 }
 declare extern "C" {

@@ -919,6 +919,7 @@ impl OwnershipMirLowerer<'_> {
             into_iterator_method,
             iterator_implementation,
             next_method: next_member,
+            next_receiver,
             iterator_type,
             item_type,
         } = witness
@@ -1000,7 +1001,7 @@ impl OwnershipMirLowerer<'_> {
                     object: iterator.clone(),
                     implementation: *iterator_implementation,
                     member: *next_member,
-                    receiver: ReceiverMode::Mutable,
+                    receiver: *next_receiver,
                     ty: next_type,
                 }),
             ),
@@ -1117,6 +1118,7 @@ impl OwnershipMirLowerer<'_> {
         let next_result = if asynchronous {
             Type::Promise {
                 result: Box::new(optional_item.clone()),
+                error: Box::new(Type::Primitive(PrimitiveType::Never)),
                 effects: Vec::new(),
             }
         } else {
@@ -1997,6 +1999,16 @@ impl OwnershipMirLowerer<'_> {
         {
             return self.lower_template(start, template);
         }
+        match self
+            .hir_expression_range(start, end)
+            .and_then(|expression| expression.resolution)
+        {
+            Some(ResolvedValue::StringLength) => return self.lower_string_length(start, end),
+            Some(ResolvedValue::StringByteLength) => {
+                return self.lower_string_byte_length(start, end);
+            }
+            _ => {}
+        }
         if self.tokens[start].kind == TokenKind::Try
             && self
                 .tokens
@@ -2078,6 +2090,15 @@ impl OwnershipMirLowerer<'_> {
         if matches!(
             self.tokens[start].kind,
             TokenKind::Bang | TokenKind::Minus | TokenKind::Tilde
+        ) && self
+            .find_binary_operator(start, end)
+            .is_some_and(|(operator_index, _)| operator_index > start + 1)
+        {
+            return self.lower_binary_expression(start, end, expected);
+        }
+        if matches!(
+            self.tokens[start].kind,
+            TokenKind::Bang | TokenKind::Minus | TokenKind::Tilde
         ) {
             return self.lower_unary(start, end, expected);
         }
@@ -2151,6 +2172,12 @@ impl OwnershipMirLowerer<'_> {
                 operand = borrowed;
                 borrowed_type
             } else {
+                if matches!(source_type, Type::Promise { .. })
+                    && matches!(target, Type::RawPointer { .. })
+                    && let Some(place) = operand_place(operand.clone())
+                {
+                    operand = Operand::Copy(place);
+                }
                 source_type.clone()
             };
             let temporary = self.temporary(target.clone(), self.span(self.tokens[cast]));
@@ -2189,58 +2216,10 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(temporary)), result_type));
         }
-        if let Some((operator_index, operator)) = self.find_binary_operator(start, end)
+        if let Some((operator_index, _operator)) = self.find_binary_operator(start, end)
             && operator_index > start
         {
-            let (left, left_type) = self.lower_expression_range(start, operator_index, expected)?;
-            let (right, right_type) =
-                self.lower_expression_range(operator_index + 1, end, Some(&left_type))?;
-            let (left, right) = if matches!(
-                operator,
-                tn_mir::BinaryOperator::Equal | tn_mir::BinaryOperator::NotEqual
-            ) {
-                (non_consuming_operand(left), non_consuming_operand(right))
-            } else {
-                (left, right)
-            };
-            let (left, left_type) = normalize_string_comparison_operand(left, left_type);
-            let (right, right_type) = normalize_string_comparison_operand(right, right_type);
-            let operand_type = binary_operand_type(&left_type, &right_type);
-            let result_type = if matches!(
-                operator,
-                tn_mir::BinaryOperator::Equal
-                    | tn_mir::BinaryOperator::NotEqual
-                    | tn_mir::BinaryOperator::Less
-                    | tn_mir::BinaryOperator::LessEqual
-                    | tn_mir::BinaryOperator::Greater
-                    | tn_mir::BinaryOperator::GreaterEqual
-                    | tn_mir::BinaryOperator::LogicalAnd
-                    | tn_mir::BinaryOperator::LogicalOr
-            ) {
-                Type::Primitive(PrimitiveType::Bool)
-            } else {
-                operand_type.clone()
-            };
-            let temporary =
-                self.temporary(result_type.clone(), self.span(self.tokens[operator_index]));
-            self.statement(
-                StatementKind::StorageLive(temporary),
-                self.span(self.tokens[operator_index]),
-            );
-            self.statement(
-                StatementKind::Assign(
-                    Place::local(temporary),
-                    Box::new(Rvalue::CheckedBinary {
-                        operator,
-                        left,
-                        right,
-                        operand_type,
-                        result_type: result_type.clone(),
-                    }),
-                ),
-                self.span(self.tokens[operator_index]),
-            );
-            return Some((Operand::Move(Place::local(temporary)), result_type));
+            return self.lower_binary_expression(start, end, expected);
         }
         if self.tokens[start].kind == TokenKind::Star {
             let (operand, pointee) = if self
@@ -2350,6 +2329,30 @@ impl OwnershipMirLowerer<'_> {
                     self.span(self.tokens[start]),
                 );
                 self.next_region += 1;
+                return Some((Operand::Move(Place::local(temporary)), ty));
+            }
+            if let Some((declaration, referent)) = self.global_declaration(name_index, end) {
+                let ty = Type::Reference {
+                    mutable,
+                    lifetime: "scope".into(),
+                    referent: Box::new(referent),
+                };
+                let temporary = self.temporary(ty.clone(), self.span(self.tokens[start]));
+                self.statement(
+                    StatementKind::StorageLive(temporary),
+                    self.span(self.tokens[start]),
+                );
+                self.statement(
+                    StatementKind::Assign(
+                        Place::local(temporary),
+                        Box::new(Rvalue::RawOperation {
+                            operation: format!("global_address:{}", declaration.0),
+                            operands: Vec::new(),
+                            ty: ty.clone(),
+                        }),
+                    ),
+                    self.span(self.tokens[start]),
+                );
                 return Some((Operand::Move(Place::local(temporary)), ty));
             }
             let (source, referent) = self.lower_expression_range(name_index, end, None)?;
@@ -2518,6 +2521,66 @@ impl OwnershipMirLowerer<'_> {
         Some((Operand::Move(Place::local(temporary)), result_type))
     }
 
+    fn lower_binary_expression(
+        &mut self,
+        start: usize,
+        end: usize,
+        expected: Option<&Type>,
+    ) -> Option<(Operand, Type)> {
+        let (operator_index, operator) = self.find_binary_operator(start, end)?;
+        if operator_index <= start {
+            return None;
+        }
+        let (left, left_type) = self.lower_expression_range(start, operator_index, expected)?;
+        let (right, right_type) =
+            self.lower_expression_range(operator_index + 1, end, Some(&left_type))?;
+        let (left, right) = if matches!(
+            operator,
+            tn_mir::BinaryOperator::Equal | tn_mir::BinaryOperator::NotEqual
+        ) {
+            (non_consuming_operand(left), non_consuming_operand(right))
+        } else {
+            (left, right)
+        };
+        let (left, left_type) = normalize_string_comparison_operand(left, left_type);
+        let (right, right_type) = normalize_string_comparison_operand(right, right_type);
+        let operand_type = binary_operand_type(&left_type, &right_type);
+        let result_type = if matches!(
+            operator,
+            tn_mir::BinaryOperator::Equal
+                | tn_mir::BinaryOperator::NotEqual
+                | tn_mir::BinaryOperator::Less
+                | tn_mir::BinaryOperator::LessEqual
+                | tn_mir::BinaryOperator::Greater
+                | tn_mir::BinaryOperator::GreaterEqual
+                | tn_mir::BinaryOperator::LogicalAnd
+                | tn_mir::BinaryOperator::LogicalOr
+        ) {
+            Type::Primitive(PrimitiveType::Bool)
+        } else {
+            operand_type.clone()
+        };
+        let temporary = self.temporary(result_type.clone(), self.span(self.tokens[operator_index]));
+        self.statement(
+            StatementKind::StorageLive(temporary),
+            self.span(self.tokens[operator_index]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(temporary),
+                Box::new(Rvalue::CheckedBinary {
+                    operator,
+                    left,
+                    right,
+                    operand_type,
+                    result_type: result_type.clone(),
+                }),
+            ),
+            self.span(self.tokens[operator_index]),
+        );
+        Some((Operand::Move(Place::local(temporary)), result_type))
+    }
+
     fn lower_conditional(
         &mut self,
         start: usize,
@@ -2651,7 +2714,10 @@ impl OwnershipMirLowerer<'_> {
 
     fn lower_await(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
         let (value, promise_type) = self.lower_expression_range(start + 1, end, None)?;
-        let Type::Promise { result, effects } = promise_type else {
+        let Type::Promise {
+            result, effects, ..
+        } = promise_type
+        else {
             return None;
         };
         let result_type = *result;
@@ -3552,7 +3618,14 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_operation(start, callee_end, "platform_sockaddr_family") {
+        let platform_socket_operation = [
+            "platform_sockaddr_family",
+            "platform_socket_level",
+            "platform_socket_reuse_address_option",
+        ]
+        .into_iter()
+        .find(|operation| self.is_intrinsic_operation(start, callee_end, operation));
+        if let Some(platform_socket_operation) = platform_socket_operation {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3563,7 +3636,7 @@ impl OwnershipMirLowerer<'_> {
                 StatementKind::Assign(
                     Place::local(destination),
                     Box::new(Rvalue::RawOperation {
-                        operation: "platform_sockaddr_family".into(),
+                        operation: platform_socket_operation.into(),
                         operands: Vec::new(),
                         ty: result_type.clone(),
                     }),
@@ -3846,7 +3919,15 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
-        if self.is_intrinsic_operation(start, callee_end, "borrow_mut") {
+        let borrow_operation = [
+            "borrow_mut_direct",
+            "borrow_mut_storage",
+            "borrow_shared_direct",
+            "borrow_shared_storage",
+        ]
+        .into_iter()
+        .find(|operation| self.is_intrinsic_operation(start, callee_end, operation));
+        if let Some(borrow_operation) = borrow_operation {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
             self.statement(
@@ -3857,27 +3938,7 @@ impl OwnershipMirLowerer<'_> {
                 StatementKind::Assign(
                     Place::local(destination),
                     Box::new(Rvalue::RawOperation {
-                        operation: "borrow_mut".into(),
-                        operands: arguments,
-                        ty: result_type.clone(),
-                    }),
-                ),
-                self.span(self.tokens[start]),
-            );
-            return Some((Operand::Move(Place::local(destination)), result_type));
-        }
-        if self.is_intrinsic_operation(start, callee_end, "borrow_shared") {
-            let result_type = concrete.result.as_ref().clone();
-            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
-            self.statement(
-                StatementKind::StorageLive(destination),
-                self.span(self.tokens[start]),
-            );
-            self.statement(
-                StatementKind::Assign(
-                    Place::local(destination),
-                    Box::new(Rvalue::RawOperation {
-                        operation: "borrow_shared".into(),
+                        operation: borrow_operation.into(),
                         operands: arguments,
                         ty: result_type.clone(),
                     }),
@@ -3981,6 +4042,26 @@ impl OwnershipMirLowerer<'_> {
                     Place::local(destination),
                     Box::new(Rvalue::RawOperation {
                         operation: "slice_from_raw_parts".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "str_from_raw_parts") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "str_from_raw_parts".into(),
                         operands: arguments,
                         ty: result_type.clone(),
                     }),
@@ -4184,6 +4265,7 @@ impl OwnershipMirLowerer<'_> {
     ) -> Operand {
         let Some(Type::Reference {
             mutable: expected_mutable,
+            lifetime: expected_lifetime,
             ..
         }) = expected
         else {
@@ -4206,7 +4288,7 @@ impl OwnershipMirLowerer<'_> {
         let referent = actual_referent.clone();
         let borrow_type = Type::Reference {
             mutable: *expected_mutable,
-            lifetime: "scope".into(),
+            lifetime: expected_lifetime.clone(),
             referent,
         };
         let temporary = self.temporary(borrow_type, self.span(self.tokens[token]));
@@ -4257,14 +4339,8 @@ impl OwnershipMirLowerer<'_> {
             return false;
         };
         self.program
-            .graph
-            .declaration(declaration)
-            .is_some_and(|declaration| {
-                declaration.attributes.iter().any(|attribute| {
-                    attribute.kind == tn_hir::AttributeKind::Intrinsic
-                        && attribute.arguments.as_slice() == [operation]
-                })
-            })
+            .intrinsic_operation_for_declaration(declaration)
+            .is_some_and(|intrinsic| intrinsic == operation)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4578,6 +4654,54 @@ impl OwnershipMirLowerer<'_> {
         }
         let (owner, owner_type) = self.lower_expression_range(start, dot, None)?;
         self.lower_member_from(owner, &owner_type, member, member_type, dot)
+    }
+
+    fn lower_string_length(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
+        let dot = self.find_top_level(start, end, TokenKind::Dot)?;
+        let (receiver, receiver_type) = self.lower_expression_range(start, dot, None)?;
+        let receiver = self.materialize_operand(receiver, receiver_type, &self.tokens[dot]);
+        let result_type = Type::Primitive(PrimitiveType::Usize);
+        let temporary = self.temporary(result_type.clone(), self.span(self.tokens[dot + 1]));
+        self.statement(
+            StatementKind::StorageLive(temporary),
+            self.span(self.tokens[dot + 1]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(temporary),
+                Box::new(Rvalue::RawOperation {
+                    operation: "string_scalar_length".into(),
+                    operands: vec![Operand::Copy(receiver)],
+                    ty: result_type.clone(),
+                }),
+            ),
+            self.span(self.tokens[dot + 1]),
+        );
+        Some((Operand::Move(Place::local(temporary)), result_type))
+    }
+
+    fn lower_string_byte_length(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
+        let dot = self.find_top_level(start, end, TokenKind::Dot)?;
+        let (receiver, receiver_type) = self.lower_expression_range(start, dot, None)?;
+        let receiver = self.materialize_operand(receiver, receiver_type, &self.tokens[dot]);
+        let result_type = Type::Primitive(PrimitiveType::Usize);
+        let temporary = self.temporary(result_type.clone(), self.span(self.tokens[dot + 1]));
+        self.statement(
+            StatementKind::StorageLive(temporary),
+            self.span(self.tokens[dot + 1]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(temporary),
+                Box::new(Rvalue::RawOperation {
+                    operation: "string_byte_length".into(),
+                    operands: vec![Operand::Copy(receiver)],
+                    ty: result_type.clone(),
+                }),
+            ),
+            self.span(self.tokens[dot + 1]),
+        );
+        Some((Operand::Move(Place::local(temporary)), result_type))
     }
 
     fn lower_member_chain(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
@@ -6189,10 +6313,18 @@ fn substitute_mir_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Typ
             mutable: *mutable,
             pointee: Box::new(substitute_mir_type(pointee, substitutions)),
         },
-        Type::Promise { result, effects } => Type::Promise {
-            result: Box::new(substitute_mir_type(result, substitutions)),
-            effects: effects.clone(),
-        },
+        Type::Promise {
+            result,
+            error,
+            effects,
+        } => {
+            let error = substitute_mir_type(error, substitutions);
+            Type::Promise {
+                result: Box::new(substitute_mir_type(result, substitutions)),
+                error: Box::new(error.clone()),
+                effects: tn_hir::promise_effects(&error, effects),
+            }
+        }
         Type::Function(function) => Type::Function(tn_hir::FunctionType {
             parameters: function
                 .parameters
@@ -6228,9 +6360,23 @@ fn infer_mir_substitutions(
         (Type::Optional(left), Type::Optional(right))
         | (Type::Array(left, _), Type::Array(right, _))
         | (Type::Slice(left), Type::Slice(right))
-        | (Type::RawPointer { pointee: left, .. }, Type::RawPointer { pointee: right, .. })
-        | (Type::Promise { result: left, .. }, Type::Promise { result: right, .. }) => {
+        | (Type::RawPointer { pointee: left, .. }, Type::RawPointer { pointee: right, .. }) => {
             infer_mir_substitutions(left, right, substitutions);
+        }
+        (
+            Type::Promise {
+                result: left,
+                error: left_error,
+                ..
+            },
+            Type::Promise {
+                result: right,
+                error: right_error,
+                ..
+            },
+        ) => {
+            infer_mir_substitutions(left, right, substitutions);
+            infer_mir_substitutions(left_error, right_error, substitutions);
         }
         (
             Type::Reference {
@@ -6481,6 +6627,11 @@ fn binary_operand_type(left: &Type, right: &Type) -> Type {
         _ => false,
     };
     if string_like(left) && string_like(right) {
+        if matches!(left, Type::Reference { referent, .. } if referent.as_ref() == &Type::Str)
+            && matches!(right, Type::Reference { referent, .. } if referent.as_ref() == &Type::Str)
+        {
+            return left.clone();
+        }
         if matches!(left, Type::String) || matches!(right, Type::String) {
             Type::String
         } else {
@@ -6495,6 +6646,9 @@ fn normalize_string_comparison_operand(operand: Operand, ty: Type) -> (Operand, 
     let Type::Reference { referent, .. } = &ty else {
         return (operand, ty);
     };
+    if referent.as_ref() == &Type::Str {
+        return (operand, ty);
+    }
     if !matches!(referent.as_ref(), Type::String | Type::Str) {
         return (operand, ty);
     }
@@ -6534,9 +6688,10 @@ fn mir_cast_kind(source: &Type, target: &Type) -> CastKind {
         (Type::RawPointer { .. }, Type::RawPointer { .. })
         | (Type::Reference { .. }, Type::RawPointer { .. })
         | (Type::Promise { .. }, Type::RawPointer { .. }) => CastKind::RawPointer,
-        (Type::Nominal(_, _) | Type::Generic(_), Type::DynamicInterface(_, _)) => {
-            CastKind::InterfaceCoercion
-        }
+        (
+            Type::Nominal(_, _) | Type::Generic(_) | Type::Reference { .. },
+            Type::DynamicInterface(_, _),
+        ) => CastKind::InterfaceCoercion,
         (Type::Nominal(_, _), Type::Nominal(_, _)) => CastKind::ClassUpcast,
         _ => CastKind::CheckedDowncast,
     }
@@ -6670,6 +6825,7 @@ impl MirTypeParser<'_> {
                     };
                     return Some(Type::Promise {
                         result: Box::new(result),
+                        error: Box::new(error),
                         effects,
                     });
                 }

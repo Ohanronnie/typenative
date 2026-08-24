@@ -1,0 +1,2 @@
+final class Closed {}
+function after(): void {}

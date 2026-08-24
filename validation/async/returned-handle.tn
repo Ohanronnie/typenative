@@ -1,0 +1,20 @@
+import { Task, TaskGroup, runI32 } from "std/async";
+async function value(): Task<i32, never> {
+  return 42i32;
+}
+function valueTask(): Task<i32, never> {
+  return value();
+}
+function main(): i32 {
+  let group = new TaskGroup();
+  const first: Promise<i32, never > = group.spawn(valueTask());
+  const second: Promise<i32, never > = group.spawn(valueTask());
+  group.close();
+  if (runI32(first) !== 42i32) {
+    return 1i32;
+  }
+  if (runI32(second) !== 42i32) {
+    return 2i32;
+  }
+  return 0i32;
+}

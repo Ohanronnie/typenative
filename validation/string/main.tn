@@ -16,11 +16,11 @@ function main(): i32 throws Utf8Error | ParseIntegerError {
   if (parsed !== 42usize) {
     return 12i32;
   }
-  const made = string.from("made");
+  const made = String("made");
   if (made !== "made") {
     return 7i32;
   }
-  const decoded = try string.fromUtf8(fromStatic("utf8"));
+  const decoded = try String.fromUtf8(fromStatic("utf8"));
   if (decoded !== "utf8") {
     return 8i32;
   }
@@ -28,7 +28,11 @@ function main(): i32 throws Utf8Error | ParseIntegerError {
   if (name !== "ronnie") {
     return 10i32;
   }
-  const embedded = string.from("a\0b");
+  const unicode = String("aé🙂");
+  if (unicode.length !== 3usize || unicode.byteLength !== 7usize) {
+    return 16i32;
+  }
+  const embedded = String("a\0b");
   if (embedded !== "a\0b") {
     return 13i32;
   }

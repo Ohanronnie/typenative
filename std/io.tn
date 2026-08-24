@@ -1,6 +1,5 @@
 import { rawAlloc, rawFree } from "std/alloc";
 import { Bytes } from "std/bytes";
-import { Drop } from "std/core";
 import { c_size } from "std/ffi";
 
 declare extern "C" {
@@ -11,24 +10,23 @@ declare extern "C" {
   function tn_bytes_copy_to_at(source: * const u8, sourceLength: c_size, sourceOffset: c_size, count: c_size, destination: * mut u8, destinationLength: c_size, destinationOffset: c_size): i32;
 }
 export struct IOError {
-  public code: i32;
+  public rawCode: i32;
 }
 function ioError(code: i32): IOError {
   return {
-    code: code
+    rawCode: code
   };
 }
 export interface Reader {
   read(bytes: * mut u8, length: usize): isize;
 }
 export interface Writer {
-  mut writeAll(bytes: & Bytes): void throws IOError;
-  mut flush(): void throws IOError;
+  writeAll(bytes: & Bytes): void throws IOError;
+  flush(): void throws IOError;
 }
-@Conform(Writer)
-export struct Stdout {
+export struct Stdout implements Writer {
   public fd: i32;
-  mut writeAll(bytes: & Bytes): void throws IOError {
+  writeAll(bytes: & Bytes): void throws IOError {
     let status: i32 = 0i32;
     unsafe {
       status = tn_io_write_all(this.fd, bytes.pointer, bytes.length);
@@ -37,7 +35,7 @@ export struct Stdout {
       throw ioError(status);
     }
   }
-  mut flush(): void throws IOError {
+  flush(): void throws IOError {
     let status: i32 = 0i32;
     unsafe {
       status = tn_io_flush(this.fd);
@@ -47,10 +45,9 @@ export struct Stdout {
     }
   }
 }
-@Conform(Writer)
-export struct Stderr {
+export struct Stderr implements Writer {
   public fd: i32;
-  mut writeAll(bytes: & Bytes): void throws IOError {
+  writeAll(bytes: & Bytes): void throws IOError {
     let status: i32 = 0i32;
     unsafe {
       status = tn_io_write_all(this.fd, bytes.pointer, bytes.length);
@@ -59,7 +56,7 @@ export struct Stderr {
       throw ioError(status);
     }
   }
-  mut flush(): void throws IOError {
+  flush(): void throws IOError {
     let status: i32 = 0i32;
     unsafe {
       status = tn_io_flush(this.fd);
@@ -69,12 +66,12 @@ export struct Stderr {
     }
   }
 }
-@Drop export struct BufferedWriter {
+export struct BufferedWriter {
   public fd: i32;
   public pointer: * mut u8;
   public length: usize;
   public capacity: usize;
-  mut drop(): void {
+  drop(): void {
     if (this.length !== 0usize) {
       unsafe {
         tn_io_write_all(this.fd, this.pointer as * const u8, this.length);

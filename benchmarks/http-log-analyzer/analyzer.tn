@@ -83,7 +83,7 @@ class LogAnalyzer {
     if (value === 122u8)return 122usize;
     return 0usize;
   }
-  private mut parseNumber(): usize | undefined {
+  private parseNumber(): usize | undefined {
     const start = this.offset;
     let value: usize = 0usize;
     while (this.offset<this.input.length && this.isDigit(this.current())) {
@@ -95,7 +95,7 @@ class LogAnalyzer {
     }
     return value;
   }
-  private mut analyzeOnce(): usize {
+  private analyzeOnce(): usize {
     this.offset = 0usize;
     let records: usize = 0usize;
     let informational: usize = 0usize;
@@ -237,7 +237,7 @@ class LogAnalyzer {
     }
     return records * 3usize + informational * 5usize + successful * 7usize + redirects * 11usize + clientErrors * 13usize + serverErrors * 17usize + totalBytes * 19usize + totalDuration * 23usize + methodChecksum * 29usize + prefixChecksum * 31usize + routeAggregate + busiestRoute * 37usize + busiestCount * 41usize + routes.length * 43usize;
   }
-  public mut analyzeMany(iterations: i32): usize {
+  public analyzeMany(iterations: i32): usize {
     let iteration: i32 = 0i32;
     let total: usize = 0usize;
     while (iteration<iterations) {
@@ -251,8 +251,7 @@ class LogAnalyzer {
     return total;
   }
 }
-@Export("analyzeMany")
-function analyzeMany(input: Bytes, iterations: i32): usize {
+export function analyzeMany(input: Bytes, iterations: i32): usize {
   let analyzer = new LogAnalyzer(input);
   return analyzer.analyzeMany(iterations);
 }
@@ -302,7 +301,7 @@ function main(): i32 throws FileError | Utf8Error {
     const pathBytes: Bytes = {
       pointer: path, length: tn_cstring_length(path)
     };
-    const pathText = try string.fromUtf8(pathBytes);
+    const pathText = try String.fromUtf8(pathBytes);
     const fileMetadata = try metadata(pathText.asStr());
     const size = fileMetadata.size;
     if (size === 0usize) {

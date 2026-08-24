@@ -55,7 +55,7 @@ import { fromStatic } from "std/bytes";
 import { ParseIntegerError } from "std/core";
 import { Utf8Error } from "std/string";
 function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
-  const made = string.from("value");
+  const made = String("value");
   const decoded = try string.fromUtf8(fromStatic("value"));
   const parsed = try usize.parseAscii(fromStatic("42"));
   const upper = value.toAsciiUppercase();
@@ -80,15 +80,8 @@ function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
     let expected = methods
         .iter()
         .filter(|method| {
-            [
-                "from",
-                "fromUtf8",
-                "toAsciiUppercase",
-                "clone",
-                "asStr",
-                "bytes",
-            ]
-            .contains(&method.name.as_str())
+            ["fromUtf8", "toAsciiUppercase", "clone", "asStr", "bytes"]
+                .contains(&method.name.as_str())
         })
         .map(|method| method.id)
         .collect::<std::collections::BTreeSet<_>>();
@@ -101,7 +94,7 @@ function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(expected.len(), 6);
+    assert_eq!(expected.len(), 5);
     assert!(expected.is_subset(&resolved));
     let usize_declaration = program
         .intrinsic_type_declaration(&tn_hir::Type::Primitive(tn_hir::PrimitiveType::Usize))
@@ -285,7 +278,7 @@ fn readonly_fields_are_mutable_only_through_their_declaring_type() {
 class Counter {
   public readonly value: i32;
   public constructor() { this.value = 0; }
-  public mut increment(): void { this.value = this.value + 1; }
+  public increment(): void { this.value = this.value + 1; }
 }
 function invalid(counter: Counter): void {
   counter.value = 2;
@@ -389,8 +382,7 @@ fn infers_generic_calls_and_checks_declared_interface_bounds() {
     let checked = checked(
         r"
 interface Marker {}
-@Conform(Marker)
-struct Good {}
+struct Good implements Marker {}
 struct Bad {}
 function identity<T>(value: T): T { return value; }
 function bounded<T extends Marker>(value: T): T { return value; }
@@ -510,8 +502,7 @@ fn selects_builtin_and_explicit_operator_interfaces() {
     let diagnostics = conditions(
         r"
 interface Add {}
-@Conform(Add)
-struct Count {}
+struct Count implements Add {}
 function constrained<T extends Add>(left: T, right: T): T {
   return left + right;
 }
@@ -611,17 +602,15 @@ fn infers_for_of_items_from_arrays_slices_and_into_iterator_arguments() {
     let diagnostics = conditions(
         r"
 interface Iterator<Item> {
-  mut next(): Item | undefined;
+  next(): Item | undefined;
 }
 interface IntoIterator<Item, Iter extends Iterator<Item> > {
   move intoIterator(): Iter;
 }
-@Conform(Iterator)
-struct BagIterator<T> { public done: bool;
-  mut next(): T | undefined { return undefined; }
+struct BagIterator<T> implements Iterator<T> { public done: bool;
+  next(): T | undefined { return undefined; }
 }
-@Conform(IntoIterator)
-struct Bag<T> {
+struct Bag<T> implements IntoIterator<T, BagIterator<T> > {
   move intoIterator(): BagIterator<T> { return { done: false }; }
 }
 function arrays(values: [i32]): void {
@@ -650,12 +639,11 @@ function invalid(value: i32): void {
 fn rejects_malformed_iterator_protocol_implementations() {
     let diagnostics = conditions(
         r"
-interface Iterator<Item> { mut next(): Item | undefined; }
+interface Iterator<Item> { next(): Item | undefined; }
 interface IntoIterator<Item, Iter extends Iterator<Item> > {
   move intoIterator(): Iter;
 }
-@Conform(IntoIterator)
-struct Broken {
+struct Broken implements IntoIterator<i32, Broken> {
   move intoIterator(): Broken { return {}; }
 }
 function invalid(value: Broken): void {
@@ -749,8 +737,7 @@ fn types_template_interpolations_with_display_and_storage_modes() {
     let result = checked(
         r"
 interface Display {}
-@Conform(Display)
-struct Shown { display(): void {} }
+struct Shown implements Display { display(): void {} }
 struct Hidden {}
 function templates(value: i32, shown: Shown, hidden: Hidden): void {
   const first = `value=${value + 1} shown=${shown}`;

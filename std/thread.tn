@@ -1,4 +1,3 @@
-import { Drop } from "std/core";
 import { c_size } from "std/ffi";
 import { Duration } from "std/time";
 
@@ -10,10 +9,10 @@ declare extern "C" {
   function tn_thread_detach(handle: * mut u8): i32;
   function tn_thread_id(): u64;
 }
-@Drop export struct Thread {
+export struct Thread {
   private handle: * mut u8;
   private joined: bool;
-  mut drop(): void {
+  drop(): void {
     if (!this.joined) {
       unsafe {
         tn_thread_detach(this.handle);
@@ -21,13 +20,13 @@ declare extern "C" {
     }
   }
 }
-@Drop export struct JoinHandle<T> {
+export struct JoinHandle<T> {
   private handle: * mut u8;
   private joined: bool;
   public isJoined(): bool {
     return this.joined;
   }
-  public mut joinRaw(result: * mut u8): i32 {
+  public joinRaw(result: * mut u8): i32 {
     if (this.joined) {
       return 114i32;
     }
@@ -39,7 +38,7 @@ declare extern "C" {
       return status;
     }
   }
-  public mut detachRaw(): i32 {
+  public detachRaw(): i32 {
     if (this.joined) {
       return 0i32;
     }
@@ -51,7 +50,7 @@ declare extern "C" {
       return status;
     }
   }
-  mut drop(): void {
+  drop(): void {
     if (!this.joined) {
       unsafe {
         tn_thread_detach(this.handle);

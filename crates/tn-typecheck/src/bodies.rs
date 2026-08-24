@@ -221,6 +221,8 @@ fn check_one(
     closures: &mut Vec<ClosureAnalysis>,
     hir_bodies: &mut Vec<BodyHir>,
 ) {
+    let normalized_function = normalize_function_aliases(program, function);
+    let function = &normalized_function;
     if function.body_start == 0 || function.body_end <= function.body_start {
         return;
     }
@@ -1179,6 +1181,13 @@ impl BodyChecker<'_> {
             expression.resolution = Some(ResolvedValue::Declaration(declaration));
             return Some(expression);
         }
+        if self.kind() == Some(TokenKind::Dot)
+            && let Some(ty) = primitive(&name)
+        {
+            let mut expression = value_type(ty);
+            expression.type_qualifier = true;
+            return Some(expression);
+        }
         if let Some((declaration, function)) = self.callable.get(&(self.module.id, name.clone())) {
             let mut expression = value_type(Type::Function(tn_hir::FunctionType {
                 parameters: function
@@ -1203,13 +1212,6 @@ impl BodyChecker<'_> {
             expression.callable = Some(CallableIdentity::Function(*declaration));
             expression.call_name = Some(name);
             expression.resolution = Some(ResolvedValue::Declaration(*declaration));
-            return Some(expression);
-        }
-        if self.kind() == Some(TokenKind::Dot)
-            && let Some(ty) = primitive(&name)
-        {
-            let mut expression = value_type(ty);
-            expression.type_qualifier = true;
             return Some(expression);
         }
         if self.kind() == Some(TokenKind::Dot)
@@ -1817,9 +1819,13 @@ impl BodyChecker<'_> {
             Type::Error
         });
         let ty = match resolved {
-            Type::Nominal(id, _) => Type::Nominal(id, self.parse_local_generic_arguments()),
+            Type::Nominal(id, _) => {
+                let arguments = self.parse_local_generic_arguments();
+                Type::Nominal(id, self.fill_elided_lifetime_arguments(id, arguments))
+            }
             Type::DynamicInterface(id, _) => {
-                Type::DynamicInterface(id, self.parse_local_generic_arguments())
+                let arguments = self.parse_local_generic_arguments();
+                Type::DynamicInterface(id, self.fill_elided_lifetime_arguments(id, arguments))
             }
             resolved => resolved,
         };
@@ -2284,7 +2290,10 @@ impl BodyChecker<'_> {
             self.diagnostics.extend(checked.diagnostics);
         }
         result.effects = if function.is_async {
-            function.effects
+            match &result.ty {
+                Type::Promise { effects, .. } => effects.clone(),
+                _ => function.effects,
+            }
         } else {
             call_effects
         };
@@ -2405,6 +2414,18 @@ impl BodyChecker<'_> {
             } => (referent.as_ref(), Some((*mutable, lifetime.as_str()))),
             ty => (ty, None),
         };
+        if !optional && matches!(base, Type::String | Type::Str) {
+            let resolution = match name {
+                "length" => Some(ResolvedValue::StringLength),
+                "byteLength" => Some(ResolvedValue::StringByteLength),
+                _ => None,
+            };
+            if let Some(resolution) = resolution {
+                let mut expression = value_type(Type::Primitive(PrimitiveType::Usize));
+                expression.resolution = Some(resolution);
+                return expression;
+            }
+        }
         let Some(id) = nominal_id(base).or_else(|| self.program.intrinsic_type_declaration(base))
         else {
             self.error(
@@ -2796,6 +2817,7 @@ impl BodyChecker<'_> {
                     };
                     Type::Promise {
                         result: Box::new(result),
+                        error: Box::new(error),
                         effects,
                     }
                 } else if let Some(namespace) = self.generic_namespace(&name) {
@@ -2808,10 +2830,15 @@ impl BodyChecker<'_> {
                     let resolved = primitive(&name).or_else(|| self.resolve_type_name(&name))?;
                     match resolved {
                         Type::Nominal(id, _) => {
-                            Type::Nominal(id, self.parse_local_generic_arguments())
+                            let arguments = self.parse_local_generic_arguments();
+                            Type::Nominal(id, self.fill_elided_lifetime_arguments(id, arguments))
                         }
                         Type::DynamicInterface(id, _) => {
-                            Type::DynamicInterface(id, self.parse_local_generic_arguments())
+                            let arguments = self.parse_local_generic_arguments();
+                            Type::DynamicInterface(
+                                id,
+                                self.fill_elided_lifetime_arguments(id, arguments),
+                            )
                         }
                         resolved => resolved,
                     }
@@ -2871,6 +2898,32 @@ impl BodyChecker<'_> {
         }
         self.eat(TokenKind::Greater);
         arguments
+    }
+
+    fn fill_elided_lifetime_arguments(
+        &self,
+        declaration: DeclarationId,
+        arguments: Vec<Type>,
+    ) -> Vec<Type> {
+        if !arguments.is_empty() {
+            return arguments;
+        }
+        let Some(definition) = self.program.definition(declaration) else {
+            return arguments;
+        };
+        if definition
+            .generics
+            .iter()
+            .all(|parameter| parameter.namespace == tn_hir::Namespace::Lifetime)
+        {
+            definition
+                .generics
+                .iter()
+                .map(|_| Type::Lifetime("scope".into()))
+                .collect()
+        } else {
+            arguments
+        }
     }
 
     fn generic_namespace(&self, name: &str) -> Option<tn_hir::Namespace> {
@@ -3343,6 +3396,33 @@ fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (Declaratio
             }
         }
     }
+    let prelude = program
+        .graph
+        .modules
+        .iter()
+        .find(|module| program.graph.is_bundled_module(module.id, "string.tn"))
+        .and_then(|module| {
+            module.declarations.iter().find(|declaration| {
+                declaration.exported && declaration.name.as_deref() == Some("String")
+            })
+        })
+        .and_then(|declaration| {
+            program.definition(declaration.id).and_then(|definition| {
+                if let DefinitionData::Function(function) = &definition.data {
+                    Some((
+                        declaration.id,
+                        normalize_function_aliases(program, function),
+                    ))
+                } else {
+                    None
+                }
+            })
+        });
+    if let Some(prelude) = prelude {
+        for module in &program.graph.modules {
+            functions.insert((module.id, "String".into()), prelude.clone());
+        }
+    }
     functions
 }
 
@@ -3372,10 +3452,18 @@ fn normalize_alias_deep(program: &Program, ty: &Type) -> Type {
                 .map(|argument| normalize_alias_deep(program, argument))
                 .collect(),
         ),
-        Type::Promise { result, effects } => Type::Promise {
-            result: Box::new(normalize_alias_deep(program, &result)),
+        Type::Promise {
+            result,
+            error,
             effects,
-        },
+        } => {
+            let error = normalize_alias_deep(program, &error);
+            Type::Promise {
+                result: Box::new(normalize_alias_deep(program, &result)),
+                error: Box::new(error.clone()),
+                effects: tn_hir::promise_effects(&error, &effects),
+            }
+        }
         Type::Optional(inner) => Type::Optional(Box::new(normalize_alias_deep(program, &inner))),
         Type::Array(inner, length) => {
             Type::Array(Box::new(normalize_alias_deep(program, &inner)), length)
@@ -3939,6 +4027,39 @@ fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
         (Type::Nominal(actual, _), Type::DynamicInterface(interface, _)) => {
             explicitly_conforms(program, *actual, *interface)
         }
+        (Type::Reference { referent, .. }, Type::DynamicInterface(interface, _)) => {
+            match referent.as_ref() {
+                Type::Generic(_) => true,
+                Type::Nominal(actual, _) => explicitly_conforms(program, *actual, *interface),
+                Type::Primitive(_) | Type::String | Type::Str => {
+                    matches!(
+                        program
+                            .graph
+                            .declaration(*interface)
+                            .and_then(|declaration| declaration.name.as_deref()),
+                        Some("Equal" | "Hash" | "Ord")
+                    )
+                }
+                _ => false,
+            }
+        }
+        (
+            Type::Promise {
+                result: actual_result,
+                error: actual_error,
+                ..
+            },
+            Type::Promise {
+                result: expected_result,
+                error: expected_error,
+                ..
+            },
+        ) => {
+            compatible(program, actual_result, expected_result)
+                && compatible(program, actual_error, expected_error)
+        }
+        (Type::String, Type::Str) | (Type::Str, Type::String) => true,
+        (_, Type::Generic(_)) => true,
         _ => false,
     }
 }
@@ -3950,16 +4071,25 @@ fn normalize_alias(program: &Program, ty: &Type) -> Type {
         let Type::Nominal(declaration, arguments) = &current else {
             return current;
         };
-        if !arguments.is_empty() || !visited.insert(*declaration) {
+        if !visited.insert(*declaration) {
             return current;
         }
-        let Some(DefinitionData::TypeAlias(alias)) = program
-            .definition(*declaration)
-            .map(|definition| &definition.data)
-        else {
+        let Some(definition) = program.definition(*declaration) else {
             return current;
         };
-        current = alias.clone();
+        let DefinitionData::TypeAlias(alias) = &definition.data else {
+            return current;
+        };
+        if definition.generics.len() != arguments.len() {
+            return current;
+        }
+        let substitutions = definition
+            .generics
+            .iter()
+            .zip(arguments)
+            .map(|(generic, argument)| (generic.name.clone(), argument.clone()))
+            .collect();
+        current = substitute_type(alias, &substitutions);
     }
 }
 
@@ -4005,16 +4135,23 @@ fn infer_substitutions(parameter: &Type, argument: &Type, inferred: &mut BTreeMa
         }
         (Type::Optional(parameter), Type::Optional(argument))
         | (Type::Array(parameter, _), Type::Array(argument, _))
-        | (Type::Slice(parameter), Type::Slice(argument))
-        | (
+        | (Type::Slice(parameter), Type::Slice(argument)) => {
+            infer_substitutions(parameter, argument, inferred);
+        }
+        (
             Type::Promise {
-                result: parameter, ..
+                result: parameter,
+                error: parameter_error,
+                ..
             },
             Type::Promise {
-                result: argument, ..
+                result: argument,
+                error: argument_error,
+                ..
             },
         ) => {
             infer_substitutions(parameter, argument, inferred);
+            infer_substitutions(parameter_error, argument_error, inferred);
         }
         (
             Type::Reference {
@@ -4103,10 +4240,18 @@ fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
             mutable: *mutable,
             pointee: Box::new(substitute_type(pointee, substitutions)),
         },
-        Type::Promise { result, effects } => Type::Promise {
-            result: Box::new(substitute_type(result, substitutions)),
-            effects: effects.clone(),
-        },
+        Type::Promise {
+            result,
+            error,
+            effects,
+        } => {
+            let error = substitute_type(error, substitutions);
+            Type::Promise {
+                result: Box::new(substitute_type(result, substitutions)),
+                error: Box::new(error.clone()),
+                effects: tn_hir::promise_effects(&error, effects),
+            }
+        }
         Type::Function(function) => Type::Function(tn_hir::FunctionType {
             parameters: function
                 .parameters
@@ -4369,8 +4514,13 @@ fn relate_elided_lifetime(ty: &Type, receiver_lifetime: &str) -> Type {
         Type::Optional(inner) => {
             Type::Optional(Box::new(relate_elided_lifetime(inner, receiver_lifetime)))
         }
-        Type::Promise { result, effects } => Type::Promise {
+        Type::Promise {
+            result,
+            error,
+            effects,
+        } => Type::Promise {
             result: Box::new(relate_elided_lifetime(result, receiver_lifetime)),
+            error: Box::new(relate_elided_lifetime(error, receiver_lifetime)),
             effects: effects.clone(),
         },
         _ => ty.clone(),
@@ -4798,8 +4948,10 @@ fn for_iteration(
         return Err(IterationError::InvalidProtocol);
     };
     let next_result = substitute_type(&next_method.function.result, &iterator_substitutions);
-    if next_method.receiver != ReceiverMode::Mutable
-        || !next_method.function.parameters.is_empty()
+    if !matches!(
+        next_method.receiver,
+        ReceiverMode::Shared | ReceiverMode::Mutable
+    ) || !next_method.function.parameters.is_empty()
         || !next_method.function.effects.is_empty()
         || next_method.function.is_async
         || next_result != Type::Optional(Box::new(item_type.clone()))
@@ -4813,6 +4965,7 @@ fn for_iteration(
             into_iterator_method: into_method.id,
             iterator_implementation: iterator_definition.declaration,
             next_method: next_method.id,
+            next_receiver: next_method.receiver,
             iterator_type,
             item_type,
         }),
@@ -5238,7 +5391,9 @@ fn readonly_field_owner(program: &Program, member: MemberId) -> Option<Declarati
 fn resolve_member(program: &Program, owner: DeclarationId, name: &str) -> Option<ResolvedMember> {
     let definition = program.definition(owner)?;
     match &definition.data {
-        DefinitionData::Struct { fields, methods } => fields
+        DefinitionData::Struct {
+            fields, methods, ..
+        } => fields
             .iter()
             .find(|field| field.name == name)
             .map(|field| ResolvedMember {
@@ -5299,7 +5454,9 @@ fn resolve_member(program: &Program, owner: DeclarationId, name: &str) -> Option
                 ty: function_type(&method.function),
                 callable: Some(CallableIdentity::Method(method.id)),
             }),
-        DefinitionData::Enum { variants, methods } => methods
+        DefinitionData::Enum {
+            variants, methods, ..
+        } => methods
             .iter()
             .find(|method| method.name == name)
             .map(|method| ResolvedMember {
@@ -5410,8 +5567,18 @@ fn specialize_nominal_member_type(program: &Program, owner: &Type, ty: &Type) ->
     let substitutions = definition
         .generics
         .iter()
-        .zip(arguments)
-        .map(|(parameter, argument)| (parameter.name.clone(), argument.clone()))
+        .enumerate()
+        .map(|(index, parameter)| {
+            let argument =
+                arguments
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| match parameter.namespace {
+                        tn_hir::Namespace::Lifetime => Type::Lifetime("scope".into()),
+                        _ => Type::Error,
+                    });
+            (parameter.name.clone(), argument)
+        })
         .collect::<BTreeMap<_, _>>();
     substitute_type(ty, &substitutions)
 }
@@ -5467,7 +5634,7 @@ fn primitive(name: &str) -> Option<Type> {
         "char" => Type::Primitive(PrimitiveType::Char),
         "void" => Type::Primitive(PrimitiveType::Void),
         "never" => Type::Primitive(PrimitiveType::Never),
-        "string" => Type::String,
+        "string" | "String" => Type::String,
         "str" => Type::Str,
         _ => return None,
     })

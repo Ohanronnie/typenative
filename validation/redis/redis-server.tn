@@ -1,83 +1,347 @@
-import { Arc } from "std/alloc";
+import { Arc, u64ToUsize } from "std/alloc";
 import { run, TaskGroup } from "std/async";
-import { appendAscii as appendBytesAscii, appendUnsignedDecimal as appendBytesUnsignedDecimal, BytesMut, push as pushByte } from "std/bytes";
-import { StringMap } from "std/collections";
+import { appendAscii as appendBytesAscii, appendUnsignedDecimal as appendBytesUnsignedDecimal, Bytes, BytesMut, push as pushByte } from "std/bytes";
+import { Map } from "std/collections";
 import { error as consoleError } from "std/console";
+import { ParseIntegerError } from "std/core";
 import { Endpoint, NetworkError, TcpListener, TcpStream } from "std/net";
 import { Mutex } from "std/sync";
+import { Instant } from "std/time";
 import { ParsedCommand, RedisError, RespConnection } from "./resp";
 
-@Sealed export final class Database {
-  private state: StringMap<string>;
+function redisText(value: Bytes): & str throws RedisError {
+  const text = value.asStr();
+  if (text === undefined) {
+    throw RedisError.InvalidUtf8;
+  }
+  return text!;
+}
+function parseUnsigned(value: Bytes): usize | undefined {
+  try {
+    return try usize.parseAscii(value);
+  } catch (error: ParseIntegerError) {
+    return undefined;
+  }
+}
+function asciiUpper(byte: u8): u8 {
+  if (byte >= 97u8 && byte <= 122u8) {
+    return byte - 32u8;
+  }
+  return byte;
+}
+function command3(value: Bytes, first: u8, second: u8, third: u8): bool {
+  if (value.length !== 3usize) {
+    return false;
+  }
+  const left = value.asSlice();
+  return asciiUpper(left[0usize]) === first && asciiUpper(left[1usize]) === second && asciiUpper(left[2usize]) === third;
+}
+function command4(value: Bytes, first: u8, second: u8, third: u8, fourth: u8): bool {
+  if (value.length !== 4usize) {
+    return false;
+  }
+  const left = value.asSlice();
+  return asciiUpper(left[0usize]) === first && asciiUpper(left[1usize]) === second && asciiUpper(left[2usize]) === third && asciiUpper(left[3usize]) === fourth;
+}
+function command6(value: Bytes, first: u8, second: u8, third: u8, fourth: u8, fifth: u8, sixth: u8): bool {
+  if (value.length !== 6usize) {
+    return false;
+  }
+  const left = value.asSlice();
+  return asciiUpper(left[0usize]) === first && asciiUpper(left[1usize]) === second && asciiUpper(left[2usize]) === third && asciiUpper(left[3usize]) === fourth && asciiUpper(left[4usize]) === fifth && asciiUpper(left[5usize]) === sixth;
+}
+function command7(value: Bytes, first: u8, second: u8, third: u8, fourth: u8, fifth: u8, sixth: u8, seventh: u8): bool {
+  if (value.length !== 7usize) {
+    return false;
+  }
+  const left = value.asSlice();
+  return asciiUpper(left[0usize]) === first && asciiUpper(left[1usize]) === second && asciiUpper(left[2usize]) === third && asciiUpper(left[3usize]) === fourth && asciiUpper(left[4usize]) === fifth && asciiUpper(left[5usize]) === sixth && asciiUpper(left[6usize]) === seventh;
+}
+function appendBulk(output: & mut BytesMut, value: Bytes): void {
+  pushByte(output, 36u8);
+  appendBytesUnsignedDecimal(output, value.length);
+  appendBytesAscii(output, "\r\n");
+  output.append(value);
+  appendBytesAscii(output, "\r\n");
+}
+function appendInteger(output: & mut BytesMut, value: usize): void {
+  pushByte(output, 58u8);
+  appendBytesUnsignedDecimal(output, value);
+  appendBytesAscii(output, "\r\n");
+}
+function executeStateless(name: Bytes, command: & ParsedCommand, output: & mut BytesMut,): bool | undefined throws RedisError {
+  if (command4(name, 69u8, 67u8, 72u8, 79u8)) {
+    if (command.count<2usize) {
+      appendBytesAscii(output, "-ERR ECHO requires a message\r\n");
+      return false;
+    }
+    appendBulk(output, command.part(1usize)!);
+    return false;
+  }
+  if (command4(name, 80u8, 73u8, 78u8, 71u8)) {
+    if (command.count >= 2usize) {
+      appendBulk(output, command.part(1usize)!);
+      return false;
+    }
+    appendBytesAscii(output, "+PONG\r\n");
+    return false;
+  }
+  if (command7(name, 67u8, 79u8, 77u8, 77u8, 65u8, 78u8, 68u8)) {
+    appendBytesAscii(output, "*0\r\n");
+    return false;
+  }
+  if (command4(name, 81u8, 85u8, 73u8, 84u8)) {
+    appendBytesAscii(output, "+OK\r\n");
+    return true;
+  }
+  return undefined;
+}
+function numberValue(value: usize): BytesMut {
+  let bytes = new BytesMut({
+    capacity: 32usize,
+  });
+  bytes.appendUnsignedDecimal(value);
+  return move bytes;
+}
+function storedValue(value: Bytes): BytesMut {
+  let bytes = new BytesMut({
+    capacity: value.length + 1usize,
+  });
+  bytes.append(value);
+  return move bytes;
+}
+function replaceStoredValue(value: & mut BytesMut, pointer: * const u8, length: usize): void {
+  value.length = 0usize;
+  value.append({
+    pointer: pointer, length: length
+  });
+}
+function monotonicNanoseconds(): usize {
+  const instant = Instant.now();
+  return u64ToUsize(instant.timestampNanoseconds);
+}
+function expirationDeadline(seconds: usize): usize {
+  const maximumSeconds = ~0usize / 1000000000usize;
+  let scaled: usize = 0usize;
+  if (seconds > maximumSeconds) {
+    scaled = ~0usize;
+  } else {
+    scaled = seconds * 1000000000usize;
+  }
+  const now = monotonicNanoseconds();
+  if (scaled > ~0usize - now) {
+    return ~0usize;
+  }
+  return now + scaled;
+}
+struct RedisEntry {
+  public value: BytesMut;
+  public expiration: usize;
+}
+function entryIsExpired(entry: & RedisEntry): bool {
+  return entry.expiration !== 0usize && monotonicNanoseconds() >= entry.expiration;
+}
+export class Database {
+  private state: Map<string, RedisEntry>;
   public constructor(capacity: usize) {
-    this.state = new StringMap<string>({
+    this.state = new Map<string, RedisEntry>({
       capacity: capacity
     });
   }
-  public mut execute<lifetime a>(command: & ParsedCommand<a>, output: & mut BytesMut,): void {
-    const nameKey = command.nameKey();
-    if (nameKey === 288230377348024656u64) {
-      appendBytesAscii(output, "+PONG\r\n");
+  private purgeExpired(key: & string): void {
+    const entry = this.state.get(key);
+    if (entry !== undefined && entryIsExpired(entry!)) {
+      this.state.delete(key);
+    }
+  }
+  public execute(command: & ParsedCommand, output: & mut BytesMut,): void throws RedisError {
+    const name = try command.name();
+    const stateless = try executeStateless(name, command, output);
+    if (stateless !== undefined) {
       return;
     }
-    this.executeNamed(nameKey, command, output);
+    try this.executeStatefulNamed(name, command, output);
   }
-  public mut executeNamed<lifetime a>(nameKey: u64, command: & ParsedCommand<a>, output: & mut BytesMut,): void {
-    if (nameKey === 216172782119306579u64) {
+  public executeNamed(name: Bytes, command: & ParsedCommand, output: & mut BytesMut,): void throws RedisError {
+    try this.executeStatefulNamed(name, command, output);
+  }
+  private executeStatefulNamed(name: Bytes, command: & ParsedCommand, output: & mut BytesMut,): void throws RedisError {
+    if (command3(name, 83u8, 69u8, 84u8)) {
       if (command.count<3usize) {
         appendBytesAscii(output, "-ERR SET requires a key and value\r\n");
         return;
       }
-      const setKeyView = command.hashedPart(1usize)!;
-      const setValueView = command.part(2usize)!;
-      const setValue: string = setValueView.toOwned();
-      this.state.setBorrowed( & setKeyView, move setValue);
+      const setKeyBytes = command.part(1usize)!;
+      const setKeyText = try redisText(setKeyBytes);
+      const setValueBytes = command.part(2usize)!;
+      const setValuePointer = setValueBytes.pointer;
+      const setValueLength = setValueBytes.length;
+      const setKeyHash = setKeyBytes.hash();
+      const existing = this.state.getMutPrehashed(setKeyText, setKeyHash);
+      if (existing !== undefined) {
+        replaceStoredValue(existing!.value, setValuePointer, setValueLength);
+        existing!.expiration = 0usize;
+      } else {
+        const setKey = String(setKeyText);
+        this.state.setPrehashed(move setKey, {
+          value: storedValue({
+            pointer: setValuePointer, length: setValueLength
+          }), expiration: 0usize
+        }, setKeyHash);
+      }
       appendBytesAscii(output, "+OK\r\n");
       return;
     }
-    if (nameKey === 216172782119306567u64) {
+    if (command3(name, 71u8, 69u8, 84u8)) {
       if (command.count<2usize) {
         appendBytesAscii(output, "-ERR GET requires a key\r\n");
         return;
       }
-      const getKey = command.hashedPart(1usize)!;
-      const getValue = this.state.getHashed( & getKey);
-      if (getValue === undefined) {
+      const getKeyBytes = command.part(1usize)!;
+      const getKey = try redisText(getKeyBytes);
+      const getEntry = this.state.getPrehashed(getKey, getKeyBytes.hash());
+      if (getEntry === undefined) {
         appendBytesAscii(output, "$-1\r\n");
         return;
       }
+      if (entryIsExpired(getEntry!)) {
+        this.state.delete(getKey);
+        appendBytesAscii(output, "$-1\r\n");
+        return;
+      }
+      const getValue = getEntry!.value.asBytes();
       pushByte(output, 36u8);
-      appendBytesUnsignedDecimal(output, getValue!.byteLength());
+      appendBytesUnsignedDecimal(output, getValue.length);
       appendBytesAscii(output, "\r\n");
-      appendBytesAscii(output, getValue!.asStr());
+      output.append(getValue);
       appendBytesAscii(output, "\r\n");
       return;
     }
-    if (nameKey === 216172782118782276u64) {
+    if (command3(name, 68u8, 69u8, 76u8)) {
       if (command.count<2usize) {
         appendBytesAscii(output, "-ERR DEL requires a key\r\n");
         return;
       }
-      const deleteKey = command.hashedPart(1usize)!;
-      const removed = this.state.removeHashed( & deleteKey);
-      if (removed === undefined) {
-        appendBytesAscii(output, ":0\r\n");
-      } else {
-        appendBytesAscii(output, ":1\r\n");
+      let removedCount: usize = 0usize;
+      let index: usize = 1usize;
+      while (index<command.count) {
+        const deleteKey = try redisText(command.part(index)!);
+        this.purgeExpired(deleteKey);
+        const removed = this.state.delete(deleteKey);
+        if (removed !== undefined) {
+          removedCount += 1usize;
+        }
+        index += 1usize;
       }
+      appendInteger(output, removedCount);
+      return;
+    }
+    if (command6(name, 69u8, 88u8, 73u8, 83u8, 84u8, 83u8)) {
+      let foundCount: usize = 0usize;
+      let index: usize = 1usize;
+      while (index<command.count) {
+        const key = try redisText(command.part(index)!);
+        this.purgeExpired(key);
+        if (this.state.has(key)) {
+          foundCount += 1usize;
+        }
+        index += 1usize;
+      }
+      appendInteger(output, foundCount);
+      return;
+    }
+    if (command4(name, 73u8, 78u8, 67u8, 82u8)) {
+      if (command.count<2usize) {
+        appendBytesAscii(output, "-ERR INCR requires a key\r\n");
+        return;
+      }
+      const key = try redisText(command.part(1usize)!);
+      this.purgeExpired(key);
+      let value: usize = 0usize;
+      const stored = this.state.getMut(key);
+      if (stored !== undefined) {
+        const parsed = parseUnsigned(stored!.value.asBytes());
+        if (parsed === undefined) {
+          appendBytesAscii(output, "-ERR value is not an integer\r\n");
+          return;
+        }
+        value = parsed!;
+      }
+      if (value === ~0usize) {
+        appendBytesAscii(output, "-ERR increment or decrement would overflow\r\n");
+        return;
+      }
+      value += 1usize;
+      if (stored !== undefined) {
+        stored!.value.length = 0usize;
+        stored!.value.appendUnsignedDecimal(value);
+        stored!.expiration = 0usize;
+        appendInteger(output, value);
+        return;
+      }
+      const replacement = numberValue(value);
+      this.state.set(String(key), {
+        value: move replacement, expiration: 0usize
+      });
+      appendInteger(output, value);
+      return;
+    }
+    if (command6(name, 69u8, 88u8, 80u8, 73u8, 82u8, 69u8)) {
+      if (command.count<3usize) {
+        appendBytesAscii(output, "-ERR EXPIRE requires a key and seconds\r\n");
+        return;
+      }
+      const key = try redisText(command.part(1usize)!);
+      const seconds = parseUnsigned(command.part(2usize)!);
+      if (seconds === undefined) {
+        appendBytesAscii(output, "-ERR value is not an integer\r\n");
+        return;
+      }
+      this.purgeExpired(key);
+      if (!this.state.has(key)) {
+        appendBytesAscii(output, ":0\r\n");
+        return;
+      }
+      const stored = this.state.getMut(key)!;
+      stored.expiration = expirationDeadline(seconds!);
+      appendBytesAscii(output, ":1\r\n");
+      return;
+    }
+    if (command3(name, 84u8, 84u8, 76u8)) {
+      if (command.count<2usize) {
+        appendBytesAscii(output, "-ERR TTL requires a key\r\n");
+        return;
+      }
+      const key = try redisText(command.part(1usize)!);
+      this.purgeExpired(key);
+      if (!this.state.has(key)) {
+        appendBytesAscii(output, ":-2\r\n");
+        return;
+      }
+      const entry = this.state.get(key)!;
+      if (entry.expiration === 0usize) {
+        appendBytesAscii(output, ":-1\r\n");
+        return;
+      }
+      const now = monotonicNanoseconds();
+      let remaining: usize = 0usize;
+      const deadline = entry.expiration;
+      if (deadline > now) {
+        remaining =(deadline - now) / 1000000000usize;
+      } else {
+        remaining = 0u64;
+      }
+      pushByte(output, 58u8);
+      appendBytesUnsignedDecimal(output, remaining);
+      appendBytesAscii(output, "\r\n");
       return;
     }
     appendBytesAscii(output, "-ERR unknown command\r\n");
   }
 }
-function executeLocked<lifetime a>(database: & Mutex<Database>, command: & ParsedCommand<a>, output: & mut BytesMut,): void {
-  const nameKey = command.nameKey();
-  if (nameKey === 288230377348024656u64) {
-    appendBytesAscii(output, "+PONG\r\n");
-    return;
-  }
+function executeLocked(database: & Mutex<Database>, name: Bytes, command: & ParsedCommand, output: & mut BytesMut,): void throws RedisError {
   using locked = database.lock();
-  locked.getMut().executeNamed(nameKey, command, output);
+  try locked.getMut().executeNamed(name, command, output);
 }
 async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,): Promise<void, RedisError> {
   await using connection = new RespConnection(move stream);
@@ -88,6 +352,7 @@ async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,):
     while (try await connection.readCommandAvailable()) {
       let offset: usize = 0usize;
       let batchSize: usize = 0usize;
+      let shouldClose = false;
       while (batchSize<1024usize) {
         let nextOffset = offset;
         let complete = false;
@@ -95,8 +360,19 @@ async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,):
           const command = try connection.readBufferedCommand(offset);
           if (command !== undefined) {
             nextOffset = command!.consumed;
-            executeLocked(database.get(), & command!, & mut output);
+            const commandName = try command!.name();
+            const stateless = try executeStateless(commandName, & command!, & mut output);
+            if (stateless === undefined) {
+              try executeLocked(database.get(), commandName, & command!, & mut output);
+            } else {
+              shouldClose = stateless!;
+            }
             complete = true;
+            if (shouldClose) {
+              offset = nextOffset;
+              batchSize += 1usize;
+              break;
+            }
           }
         }
         if (!complete) {
@@ -106,7 +382,13 @@ async function serveClient(stream: TcpStream, database: Arc<Mutex<Database> >,):
         batchSize += 1usize;
       }
       connection.consume(offset);
-      try await connection.flush( & mut output);
+      if (!try connection.flushNow( & mut output)) {
+        try await connection.flush( & mut output);
+      }
+      if (shouldClose) {
+        connection.close();
+        return;
+      }
     }
     connection.close();
     return;
@@ -125,26 +407,26 @@ async function serveClientTask(stream: TcpStream, database: Arc<Mutex<Database> 
 }
 export async function serve(endpoint: Endpoint, capacity: usize,): Promise<void, NetworkError> {
   await using listener = try new TcpListener(endpoint);
-  using clients = new TaskGroup<RedisError>();
-  const database = new Arc(new Mutex(new Database(capacity)));
+  using clients = new TaskGroup();
+  const database: Arc<Mutex<Database> > = new Arc<Mutex<Database> >(new Mutex<Database>(new Database(capacity)));
   while (true) {
     const stream = try await listener.accept();
-    if (!clients.spawn(serveClientTask(move stream, database.clone()))) {
-      return;
-    }
+    const shared: Arc<Mutex<Database> > = database.clone();
+    const task: Promise<void, never > = serveClientTask(stream, shared);
+    clients.spawn(move task);
   }
 }
 export async function servePort(port: u16, capacity: usize,): Promise<void, NetworkError> {
   await using listener = try new TcpListener({
     host: "127.0.0.1", port: port,
   });
-  using clients = new TaskGroup<RedisError>();
-  const database = new Arc(new Mutex(new Database(capacity)));
+  using clients = new TaskGroup();
+  const database: Arc<Mutex<Database> > = new Arc<Mutex<Database> >(new Mutex<Database>(new Database(capacity)));
   while (true) {
     const stream = try await listener.accept();
-    if (!clients.spawn(serveClientTask(move stream, database.clone()))) {
-      return;
-    }
+    const shared: Arc<Mutex<Database> > = database.clone();
+    const task: Promise<void, never > = serveClientTask(stream, shared);
+    clients.spawn(move task);
   }
 }
 async function runServer(endpoint: Endpoint, capacity: usize,): Promise<i32, never> {

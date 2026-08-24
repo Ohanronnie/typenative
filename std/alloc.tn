@@ -1,6 +1,4 @@
-import { Drop } from "std/core";
 import { c_size } from "std/ffi";
-
 declare extern "C" {
   function calloc(count: c_size, size: c_size): * mut u8;
   function tn_runtime_alloc(size: c_size): * mut u8;
@@ -24,16 +22,16 @@ declare extern "C" {
   function tn_runtime_abort(code: u32): void;
 }
 export struct AllocError {
-  public code: i32;
+  public rawCode: i32;
 }
 function allocationError(): AllocError {
   return {
-    code: 12i32
+    rawCode: 12i32
   };
 }
-@Drop export struct Box<T> {
+export struct Box<T> {
   private pointer: * mut T;
-  mut drop(): void {
+  drop(): void {
     unsafe {
       dropValue<T>(this.pointer);
       tn_runtime_free(this.pointer as * mut u8);
@@ -50,10 +48,10 @@ function allocationError(): AllocError {
     }
   }
 }
-@Drop export struct Rc<T> {
+export struct Rc<T> {
   private pointer: * mut T;
   private alive: bool;
-  mut drop(): void {
+  drop(): void {
     if (this.alive) {
       unsafe {
         if (tn_rc_release(this.pointer as * mut u8) === 1i32) {
@@ -80,54 +78,44 @@ function allocationError(): AllocError {
     }
   }
 }
-@Intrinsic("size_of")
 export function sizeOf<T>(): usize {
   return 0usize;
 }
-@Intrinsic("is_null")
 function isNullIntrinsic<T>(pointer: * const T): bool {
   return false;
 }
-@Intrinsic("null_pointer")
 function nullPointerIntrinsic<T>(): * mut T {
   unsafe {
     return calloc(0usize, 0usize)as * mut T;
   }
 }
-@Intrinsic("borrow_shared")
 function borrowShared<T>(pointer: * const T): & T {
   unsafe {
     return & * pointer;
   }
 }
-@Intrinsic("store_raw")
 export function storeRaw<T>(pointer: * mut T, value: T): bool {
   return false;
 }
-@Intrinsic("drop_value")
 function dropValue<T>(pointer: * mut T): bool {
   return false;
 }
-@Intrinsic("u64_to_usize")
 export function u64ToUsize(value: u64): usize {
   return 0usize;
 }
-@Intrinsic("usize_to_u64")
 export function usizeToU64(value: usize): u64 {
   return 0u64;
 }
-@Intrinsic("arc_clone")
-function cloneArc<T>(value: & mut Arc<T >): Arc<T> {
+function arcClone<T>(value: & mut Arc<T >): Arc<T> {
   unsafe {
     const pointer = value as * mut Arc<T>;
     return * pointer;
   }
 }
-@Intrinsic("weak_upgrade")
-function upgradeWeak<T>(value: & Weak<T >): Arc<T > | undefined {
+function weakUpgrade<T>(value: & Weak<T >): Arc<T > | undefined {
   return undefined;
 }
-@Drop export class Arc<T> {
+export class Arc<T> {
   private pointer: * mut T;
   private alive: bool;
   public constructor(value: T) {
@@ -141,7 +129,7 @@ function upgradeWeak<T>(value: & Weak<T >): Arc<T > | undefined {
     }
     this.alive = true;
   }
-  mut drop(): void {
+  drop(): void {
     if (this.alive) {
       unsafe {
         if (tn_arc_release(this.pointer as * mut u8) === 1i32) {
@@ -152,7 +140,7 @@ function upgradeWeak<T>(value: & Weak<T >): Arc<T > | undefined {
     }
   }
   public clone(): Arc<T> {
-    return cloneArc<T>( & mut this);
+    return arcClone<T>( & mut this);
   }
   public downgrade(): Weak<T> {
     unsafe {
@@ -171,10 +159,10 @@ function upgradeWeak<T>(value: & Weak<T >): Arc<T > | undefined {
     }
   }
 }
-@Drop export struct Weak<T> {
+export struct Weak<T> {
   private pointer: * mut T;
   private alive: bool;
-  mut drop(): void {
+  drop(): void {
     if (this.alive) {
       unsafe {
         tn_arc_release_weak(this.pointer as * mut u8);
@@ -182,7 +170,7 @@ function upgradeWeak<T>(value: & Weak<T >): Arc<T > | undefined {
     }
   }
   public upgrade(): Arc<T > | undefined {
-    return upgradeWeak<T>( & this);
+    return weakUpgrade<T>( & this);
   }
 }
 export function rawAlloc(size: usize): * mut u8 {
@@ -221,7 +209,6 @@ export function rawAddress<T>(value: & mut T): * mut T {
     return value as * mut T;
   }
 }
-@Intrinsic("borrow_mut")
 function borrowMut<T>(pointer: * mut T): & mut T {
   unsafe {
     return & mut * pointer;
@@ -241,7 +228,7 @@ export function boxNew<T>(value: T): Box<T> {
     };
   }
 }
-export function boxNewChecked<T>(value: T): Box<T > throws AllocError {
+export function tryBoxNew<T>(value: T): Box<T > throws AllocError {
   unsafe {
     const pointer = tn_runtime_try_alloc(sizeOf<T>())as * mut T;
     if (isNullIntrinsic<u8>(pointer as * const u8)) {
@@ -273,7 +260,7 @@ export function rcNew<T>(value: T): Rc<T> {
     };
   }
 }
-export function rcNewChecked<T>(value: T): Rc<T > throws AllocError {
+export function tryRcNew<T>(value: T): Rc<T > throws AllocError {
   unsafe {
     const pointer = tn_rc_try_alloc(sizeOf<T>());
     if (isNullIntrinsic<u8>(pointer as * const u8)) {
@@ -293,7 +280,7 @@ export unsafe function rcAlloc<T>(size: usize): Rc<T> {
     };
   }
 }
-export unsafe function rcAllocChecked<T>(size: usize): Rc<T > throws AllocError {
+export unsafe function tryRcAlloc<T>(size: usize): Rc<T > throws AllocError {
   unsafe {
     const pointer = tn_rc_try_alloc(size);
     if (isNull(pointer as * const u8)) {

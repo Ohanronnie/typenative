@@ -41,6 +41,8 @@ pub enum TokenKind {
     Declare,
     #[token("default")]
     Default,
+    #[token("derives")]
+    Derives,
     #[token("dyn")]
     Dyn,
     #[token("else")]

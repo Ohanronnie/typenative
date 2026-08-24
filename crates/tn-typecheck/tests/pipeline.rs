@@ -20,12 +20,12 @@ fn whole_program_facts_and_attributes_are_reused_by_the_pipeline() {
         !mir_pipeline.contains("derive_ownership_facts("),
         "MIR lowering must consume the caller's whole-program ownership facts"
     );
-    let attribute_query = ownership
-        .split("fn has_marker")
+    let conformance_query = ownership
+        .split("pub(crate) fn declared_conformances")
         .nth(1)
-        .expect("HIR attribute query");
+        .expect("HIR conformance query");
     assert!(
-        !attribute_query.contains("lex("),
-        "derive queries must read HIR attributes instead of re-lexing source modules"
+        !conformance_query.contains("lex("),
+        "ownership queries must read HIR declarations instead of re-lexing source modules"
     );
 }

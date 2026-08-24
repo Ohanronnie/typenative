@@ -9,10 +9,9 @@ declare extern "C" {
   function tn_process_kill(process: i32, signal: i32): i32;
 }
 import { Array } from "std/collections";
-import { Drop } from "std/core";
 import { c_size } from "std/ffi";
 export struct ProcessError {
-  public code: i32;
+  public rawCode: i32;
 }
 export function abort(code: u32): void {
   unsafe {
@@ -39,7 +38,7 @@ export function argument(index: i32): * const u8 {
     return tn_process_argv(index);
   }
 }
-@Drop export class Child {
+export class Child {
   private process: i32;
   private waited: bool;
   private constructor(process: i32) {
@@ -52,9 +51,9 @@ export function argument(index: i32): * const u8 {
     }
     return new Child(process);
   }
-  mut drop(): void {
+  drop(): void {
   }
-  public mut wait(): i32 throws ProcessError {
+  public wait(): i32 throws ProcessError {
     if (this.waited) {
       throw processError(10i32);
     }
@@ -79,22 +78,22 @@ export function argument(index: i32): * const u8 {
 }
 function processError(code: i32): ProcessError {
   return {
-    code: code
+    rawCode: code
   };
 }
-@Drop export class Command {
+export class Command {
   private arguments: Array<string>;
   public constructor(program: & str) {
     this.arguments = new Array<string>({
       capacity: 4usize
     });
-    this.arguments.push(string.from(program));
+    this.arguments.push(String(program));
   }
-  public mut arg(value: & str): void {
-    this.arguments.push(string.from(value));
+  public arg(value: & str): void {
+    this.arguments.push(String(value));
   }
   public spawn(): Child throws ProcessError {
-    const first = this.arguments.borrow(0usize);
+    const first = this.arguments.at(0usize);
     if (first === undefined) {
       throw processError( - 22i32);
     }
@@ -110,6 +109,6 @@ function processError(code: i32): ProcessError {
     let child = try this.spawn();
     return try child.wait();
   }
-  mut drop(): void {
+  drop(): void {
   }
 }
