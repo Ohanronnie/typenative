@@ -38,6 +38,7 @@
       "operationCount": 10000,
       "concurrentClients": 8,
       "largeValueBytes": 12000,
+      "internalTrials": 3,
       "minimumPipelinedPingPerSecond": {
         "native": 250000,
         "addon": 250000,

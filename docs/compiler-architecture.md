@@ -25,15 +25,15 @@ The architecture follows these rules:
 
 ### Current convergence boundary
 
-The ordinary Rust bootstrap remains the independent reproducible seed, while
-the canonical production compiler is the direct-LLVM implementation in
-`compiler-tn/**`. The canonical language surface is recorded in
+The Rust bootstrap is the active compiler boundary. The self-hosted sources in
+`compiler-tn/**` are a protected historical checkpoint, not an active source
+dependency. The canonical language surface is recorded in
 [`language-spec.md`](language-spec.md), and the migration obligations are
 tracked in [`canonical-migration-manifest.md`](canonical-migration-manifest.md).
 The Redis validation target and Forge conformance application pass through the
 same syntax, HIR, type, ownership, MIR, and native boundaries as every other
-TypeNative program. The current A → B → C → D fixed point and product evidence
-are recorded in [`gate12-evidence.md`](gate12-evidence.md).
+TypeNative program. Self-host freeze evidence is recorded in
+[`selfhost-freeze.md`](selfhost-freeze.md).
 
 Native functions are explicit ABI boundaries. The reviewed runtime functions
 used by allocation, strings, sockets, mutexes, promises, and task groups are
@@ -51,13 +51,11 @@ retained in typed HIR, and lowered to an explicit MIR operation. String methods
 resolve through the canonical standard-library surface; reviewed native calls
 remain private implementation details of `std/string`.
 
-`std/string.tn` declares a private `@Intrinsic("string")` nominal definition.
-That attribute binds the predeclared owned representation to ordinary declared
-members; method names are not selected by the compiler. Static and instance
-calls therefore carry normal member identities through HIR and lower as direct
-methods in MIR. The binding is accepted only from the bundled string module,
-and user declarations cannot claim it. The module graph loads that declaration
-as a prelude without importing any private implementation names.
+`std/string.tn` declares the ordinary members of the bundled string definition.
+The compiler binds the primitive layout through a private declaration-identity
+manifest; no source decorator claims compiler privilege, and method names are
+resolved normally through HIR. Static and instance calls therefore carry normal
+member identities through HIR and lower as direct methods in MIR.
 
 Borrowed slices use a fat reference layout containing a data pointer and
 length. Dereferencing `&[T]` operates on that value directly rather than on a
@@ -182,22 +180,14 @@ The formatter prints from the CST and a syntax-kind rule table. Its contract is:
 The language server reparses only changed files and reuses immutable green-tree
 subtrees.
 
-### 4.4 Typed declaration macros
+### 4.4 Declarations and user decorators
 
-The bootstrap compiler expands local `macro` templates in a dedicated boundary
-between lexing and module scanning. Parameters are declared as `identifier`,
-`type`, or `literal`; `@Expand(name, ...)` can add members and target-level
-conformance attributes to one nominal declaration. Placeholder substitution is
-token-based (`{{parameter}}`), so source text cannot be evaluated as host code.
-
-The expander is deterministic and has no filesystem, network, environment,
-clock, randomness, native ABI, or ownership-marker capability. It rejects
-forbidden tokens, wrong argument categories, duplicate names, unknown
-parameters, and member collisions at the original macro span. The resulting
-source is parsed again and flows through the same resolver, signature checker,
-body checker, ownership analysis, MIR, and ABI validation as handwritten code.
-Macro definitions are local to a module; this keeps expansion order independent
-of module discovery and makes repeated expansion byte-for-byte reproducible.
+Declarations are parsed and checked directly. The active language has no source
+macro or expansion pass, so ordinary functions, generics, interfaces, and
+members remain visible to every syntax and tooling consumer. Decorators are
+ordinary user-defined declarations with normal name resolution and type
+checking; compiler capabilities are selected only by the private declaration
+identity manifest.
 
 ## 5. Driver and query model
 
@@ -218,7 +208,6 @@ Required query groups are:
 - reachable monomorphized instances;
 - LLVM module fragments and link inputs; and
 - documentation and language-server projections.
-- deterministic declaration-macro expansion before module scanning.
 
 The on-disk incremental cache includes the compiler build identity, target,
 profile, configuration digest, LLVM major, and source-content digests. A mismatch

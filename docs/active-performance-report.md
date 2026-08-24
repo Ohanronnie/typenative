@@ -1,124 +1,108 @@
 # Active compiler and Redis performance evidence
 
-Evidence date: 2026-08-23. Platform: Darwin arm64, LLVM 22.1.8, Node.js
-v24.14.0. Every compiler command used the active Rust-bootstrap `tn` through
-`scripts/tn-guarded.sh`; no frozen self-host source or product was compiled,
-read by a compiler, executed, or benchmarked.
+Evidence date: 2026-08-24. Platform: Darwin arm64, LLVM 22.1.8, Node.js
+v24.14.0. The measurements use the active Rust-bootstrap `tn` through
+`scripts/tn-guarded.sh`; protected self-host paths were not compiled, read by a
+compiler, executed, or benchmarked.
 
 ## Method
 
 The Redis comparison runs two warmups and nine measured samples for the
 TypeNative executable, TypeNative addon, Rust executable, and handwritten Node
 server. Warmups and samples use a deterministic Fisher-Yates shuffle with seed
-`324508639`. Each fresh server passes the same RESP2 correctness and response
-checksum suite before timing. A sample contains 100,000 pipelined PINGs, 10,000
-non-pipelined PINGs, 10,000 deterministic random SETs, and 10,000 deterministic
-random GETs.
+`324508639`. Each fresh server passes the same RESP correctness matrix and
+response checksum before timing. A sample contains three internal fixed-work
+trials of 100,000 pipelined PINGs, 10,000 non-pipelined PINGs, 10,000
+deterministic random SETs, and 10,000 deterministic random GETs, with eight
+persistent concurrent clients and a 12,000-byte value check.
 
-Intervals are two-sided 95% Student-t intervals over nine paired samples. The
-equivalence gate requires the lower bound of the paired native/Rust PING ratio
-to be at least 0.95. CPU, syscall, and context-switch counters come from
-`PROC_PIDTASKINFO`.
+The command matrix covers PING, ECHO, SET, GET, DEL, EXISTS, INCR, EXPIRE, TTL,
+COMMAND, QUIT, unknown commands, fragmented frames, pipelining, malformed
+frames, invalid UTF-8, oversized input, truncation, and abrupt disconnects.
+The response checksum for the final run was
+`3f48a4c4960554600b4d299426351331a1f46f05bce88f3d8b7f1537f39b25ad`.
 
-## Reproduced baseline
+Aggregate values below are medians over nine samples. The benchmark also emits
+deterministic percentile-bootstrap 95% intervals, median absolute deviation, CPU
+time, system calls, context switches, artifact size, and the complete per-sample
+record.
 
-| Implementation    | Startup (ms) | PING (/s) | SET (/s) | GET (/s) | Initial RSS (KiB) | RSS growth (KiB) | Artifact (bytes) |
-| ----------------- | -----------: | --------: | -------: | -------: | ----------------: | ---------------: | ---------------: |
-| TypeNative native |       26.662 | 1,017,679 |   26,358 |   27,848 |             2,272 |                0 |          116,064 |
-| TypeNative addon  |       78.827 | 1,042,205 |   29,240 |   29,080 |            44,752 |                0 |          140,184 |
-| Rust native       |       26.637 | 1,833,144 |   30,624 |   30,075 |             2,016 |               16 |          447,752 |
-| Handwritten Node  |       81.122 |   656,625 |   23,173 |   23,062 |            51,072 |            4,784 |              n/a |
+## Final result
 
-The baseline parser created owned part and argument arrays, copied every RESP
-payload into a string, uppercased the command into another string, constructed
-owned command/reply values, cloned GET values for encoding, and executed about
-10.05 runtime allocations per PING. LLVM IR and runtime counters confirmed that
-the allocation/free calls survived optimization.
+| Implementation | Startup (ms) | Pipelined PING (/s) | Non-pipelined latency (µs) | SET (/s) | GET (/s) | Initial RSS (KiB) | RSS growth (KiB) | Artifact (bytes) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TypeNative native | 27.439 | 1,932,996 | 32.767 | 29,565 | 29,470 | 2,176 | 0 | 118,384 |
+| TypeNative addon | 81.969 | 1,907,146 | 33.220 | 29,673 | 29,579 | 44,640 | 0 | 145,960 |
+| Rust native | 27.441 | 1,956,744 | 31.623 | 30,243 | 30,986 | 2,016 | 16 | 450,376 |
+| Handwritten Node | 83.431 | 665,571 | 41.715 | 23,007 | 22,960 | 50,928 | 9,728 | n/a |
 
-## Borrowed architecture
+The TypeNative native executable reaches 98.92% of Rust's paired median
+pipelined-PING throughput, with a paired aggregate ratio of 98.82% and a
+98.20–99.28% percentile-bootstrap interval. The addon reaches 97.19% by paired
+median, with a 97.10% aggregate ratio and a 95.59–98.54% interval. Native SET
+is 98.21% of Rust by paired median and GET is 95.69%; their aggregate ratios
+are 97.71% and 95.35%, respectively. Native non-pipelined latency is 1.038×
+Rust, within the 1.05× budget. The complete performance verifier passed.
 
-The active compiler now carries named lifetime arguments through parsing,
-semantic types, MIR substitution, ownership analysis, ABI matching, and
-monomorphization. `scope` ties returned aggregate views to the current source
-loan. Returning a view of a local owner, mutating or compacting a borrowed
-buffer, or using a view after compaction is rejected causally by ownership
-tests. Lifetime arguments have no runtime layout.
+TypeNative native is approximately 2.90× faster than handwritten Node on
+pipelined PING, 1.29× faster on SET, and 1.28× faster on GET. Both TypeNative
+artifacts had zero median RSS growth; Node grew by 9,728 KiB and Rust by 16 KiB.
+The complete paired comparisons remain available in the machine-readable
+result at `/tmp/typenative-performance.EwraBo/redis.json` for this run.
 
-`ByteView<a>` is a private pointer/length view that can only be created from a
-borrowed owner or another checked view. `Utf8View<a>` proves validation without
-ownership. `HashedUtf8View<a>` and `AsciiKeyUtf8View<a>` retain reusable hash or
-case-folded key evidence beside the safe UTF-8 view. `StringMap<V>` owns keys on
-insertion and accepts borrowed or prehashed UTF-8 views for lookup, removal, and
-the explicit persistent insertion boundary.
+## Resource counters
 
-The RESP parser returns `ParsedCommand<scope>`. It validates every part, keeps
-compact ranges for arbitrary arguments up to the 1,024-part limit, and caches
-the common command/key evidence without arrays or copies. Dispatch writes into
-the retained output buffer. PING uses a static response, GET and DEL borrow
-their keys, GET borrows the stored value, and SET alone creates persistent owned
-key/value storage.
+| Implementation | User CPU (ms) | System CPU (ms) | Unix syscalls | Context switches |
+| --- | ---: | ---: | ---: | ---: |
+| TypeNative native | 157.6 | 674.1 | 180,600 | 144,123 |
+| TypeNative addon | 155.3 | 676.1 | 180,600 | 143,362 |
+| Rust native | 57.6 | 640.1 | 182,400 | 134,388 |
+| Handwritten Node | 1,023.6 | 1,097.7 | 662,228 | 218,577 |
 
-General runtime changes fuse CRLF/unsigned-line parsing, UTF-8 proof generation
-with hashing or a short ASCII key, case-insensitive comparison, managed-string
-append, and exact CRLF checks. Unsigned decimal reply encoding now writes digits
-backwards in place instead of allocating a scratch buffer.
-
-## Accepted result
-
-| Implementation    | Startup (ms) | PING (/s) | Latency (µs) | SET (/s) | GET (/s) | Initial RSS (KiB) | RSS growth (KiB) | Artifact (bytes) |
-| ----------------- | -----------: | --------: | -----------: | -------: | -------: | ----------------: | ---------------: | ---------------: |
-| TypeNative native |       26.531 | 1,863,402 |       34.014 |   27,824 |   28,439 |             2,112 |                0 |           99,648 |
-| TypeNative addon  |       79.084 | 1,860,992 |       33.681 |   28,517 |   28,600 |            44,688 |                0 |          137,976 |
-| Rust native       |       26.569 | 1,914,387 |       32.780 |   28,752 |   29,878 |             2,000 |               16 |          447,752 |
-| Handwritten Node  |       80.492 |   685,369 |       42.132 |   22,024 |   22,422 |            51,024 |            4,736 |              n/a |
-
-Native/Rust median ratios are 97.34% for pipelined PING, 103.76% for latency
-(lower is better), 96.77% for SET, and 95.19% for GET. The paired PING ratio
-median is 97.88%; its 95% confidence interval is 95.39–100.32%, establishing
-equivalence within the required 5% margin. Native PING improved 83.1% from the
-reproduced baseline while the executable became 14.1% smaller.
-
-The addon reaches 97.21% of Rust PING throughput and remains faster than
-handwritten Node for PING, SET, and GET. Its maximum measured RSS growth was 48
-KiB versus Node's 5,056 KiB, more than the required 20× separation.
-
-Median complete-workload resource counters are:
-
-| Implementation    | User CPU (ms) | System CPU (ms) | Unix syscalls | Context switches |
-| ----------------- | ------------: | --------------: | ------------: | ---------------: |
-| TypeNative native |          51.2 |           233.4 |        60,200 |           48,516 |
-| TypeNative addon  |          49.5 |           231.3 |        60,200 |           48,230 |
-| Rust native       |          18.8 |           224.7 |        60,800 |           46,188 |
-| Handwritten Node  |         376.2 |           385.8 |       220,872 |           71,929 |
-
-Compared with the reproduced native baseline, user CPU fell from 111.0 ms to
-51.2 ms and system CPU fell from 244.6 ms to 233.4 ms. The fixed socket workload
-keeps the same 60,200 syscall count; the performance gain comes from removing
-owned parser/dispatch work rather than moving cost into I/O.
+The TypeNative server uses one shared executor and a reactor-backed async
+network boundary. Stateless commands bypass the database mutex; stateful
+commands hold the mutex only for the synchronous map operation, before the next
+socket await. The executor grows workers when queued tasks have no idle worker,
+up to its configured bound, so persistent clients do not starve behind a fixed
+worker count.
 
 ## Allocation and memory proof
 
-`validation/redis/allocation.tn` initializes input/output buffers, persistent
-database state, and map capacity before resetting both runtime counters. The
-actual parser and `Database.execute` path then processes one million PINGs with
-exactly zero allocations and zero frees. A second reset followed by 100,000
-existing-key GETs also records zero allocations and zero frees, proving that
-lookup, stored-value encoding, and unsigned length encoding do not hide balanced
-heap traffic. The million-PING RSS sampler is flat after warmup in both debug
-and optimized profiles.
+`validation/redis/allocation.tn` resets the runtime allocator counters after
+connection-equivalent input/output buffers and database state are initialized.
+The real parser, dispatch, and retained-buffer reply path then processes one
+million PING commands with zero runtime allocations. Existing-key GET also
+records zero runtime allocations. The canonical RSS sampler passed in both
+profiles:
 
-SET retains only the allocations required for persistent owned key/value state
-and map growth. GET never clones the stored value.
+```text
+debug:     warmup 2784 KiB, final 2784 KiB, growth 0 KiB, tail growth 0 KiB
+optimized: warmup 2480 KiB, final 2480 KiB, growth 0 KiB, tail growth 0 KiB
+```
+
+`ParsedCommand` carries borrowed `Bytes` ranges into the connection buffer and
+caches the first three payload ranges without copying. Input compaction occurs
+only after the aggregate's last use. SET is the explicit owned persistence
+boundary: new entries retain a `BytesMut` value and existing entries update that
+buffer in place. GET encodes the stored value through a shared reference.
 
 ## Compiler timings
 
-| Product | Build           | Wall (s) | Module check (ms) | Ownership (ms) | MIR/drop (ms) | Monomorphization (ms) | LLVM/link (ms) |
-| ------- | --------------- | -------: | ----------------: | -------------: | ------------: | --------------------: | -------------: |
-| Addon   | clean           |    35.02 |             553.1 |            2.9 |       2,472.8 |                   2.2 |       27,296.9 |
-| Addon   | unchanged input |    35.22 |             581.2 |            3.0 |       2,509.4 |                   2.2 |       27,368.7 |
-| Native  | clean           |    43.01 |             564.0 |            2.9 |       2,523.2 |                   2.4 |       35,176.6 |
-| Native  | unchanged input |    42.36 |             562.8 |            2.9 |       2,523.1 |                   2.3 |       34,542.0 |
+| Product | Check/build | Wall (s) |
+| --- | --- | ---: |
+| Compiler check | clean | 6.94 |
+| Debug executable | clean | 39.15 |
+| Optimized executable | clean | 42.10 |
+| Optimized Node addon | clean | 35.70 |
 
-Every measured active compiler invocation is below 44 seconds, well below the
-175-second guard. Generated raw evidence remains under the ignored
-`target/performance-evidence/borrowed-redis/` directory until final cleanup.
+## Reproduction
+
+```sh
+TN_BIN=/path/to/tn \
+BENCH_RESULTS=/tmp/typenative-redis-benchmark-final.json \
+benchmarks/redis-comparison/run.sh
+```
+
+The result file records the workload, shuffle plan, platform, compiler metadata,
+build timings, artifacts, checksum, individual samples, paired comparisons,
+and aggregate statistics.

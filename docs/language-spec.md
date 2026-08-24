@@ -1,64 +1,69 @@
 # TypeNative Language Specification
 
-## 1. Status and conformance
+## 1. Status and authority
 
-This document is the normative definition of the canonical TypeNative language.
-The Rust bootstrap compiler, formatter, standard library, tooling, and future
-self-hosted compiler consume this same grammar. A conforming implementation must
-accept every valid program described here, reject every excluded construct, and
-report a stable machine-readable condition identifier with a primary source
-span. Build profiles may change optimization and debug information only; they
-must not change ownership, error, overflow, bounds, destruction, or panic
-semantics.
+This document is the normative definition of the active TypeNative language.
+The Rust compiler in `crates/tn-*`, the standard library, formatter, linter,
+language server, documentation generator, test runner, diagnostics, and
+generated Node declarations must implement this surface together. A feature is
+not canonical until its parser, semantic model, ownership model, runtime
+behavior, tooling, and validation fixtures agree.
 
-The current implementation scope includes the Rust bootstrap seed, the
-canonical direct-LLVM compiler in `compiler-tn/**`, and its independent
-self-hosted B/C/D chain. Conformance evidence, fixed-point hashes, and product
-verification are recorded in [`gate12-evidence.md`](gate12-evidence.md).
+The self-hosted sources in `compiler-tn/**` and their bootstrap orchestration
+are frozen historical inputs. Self-hosting is not an active acceptance
+requirement for this design convergence. The freeze is verified read-only by
+`scripts/verify-selfhost-freeze.sh`; active verification never edits or
+executes the frozen bootstrap chain.
+
+Build profiles may change optimization and debug information. They must not
+change ownership, lifetime, error, overflow, bounds, cleanup, cancellation, or
+observable program behavior.
 
 ## 2. Source text and lexical rules
 
 Source is UTF-8 and uses the `.tn` suffix. Invalid UTF-8 is rejected before
 tokenization. Identifiers use Unicode XID start and continuation rules and are
 not normalized. Locations are reported as byte offsets, lines, and Unicode
-scalar columns. Whitespace, line comments, nested block comments, and
-documentation comments are retained as trivia in the lossless CST.
+scalar columns. The lossless CST retains whitespace, comments, and
+documentation comments as trivia.
 
 Simple statements end in `;`; automatic semicolon insertion does not exist.
 Strings use double quotes, characters use single quotes, and templates use
-backticks with `${ expression }` interpolation. A template interpolation is
-parsed with the ordinary expression grammar and is checked through `Display`.
+backticks with `${ expression }` interpolation. Template interpolation uses
+ordinary expression typing and the declared `Display` interface.
 
-The canonical keywords are:
+The public keyword set is:
 
 ```text
 abstract  as  async  await  break  case  catch  class  const  constructor
-continue  declare  default  else  enum  export  extends  extern  false  final  for
-from  function  if  implements  import  instanceof  interface  let  move
-mut  new  of  override  private  protected  public  readonly  return  static
+continue  declare  default  else  enum  export  extends  extern  false  for
+from  function  if  implements  import  instanceof  interface  let  lifetime
+move  new  of  override  private  protected  public  readonly  return  static
 struct  super  switch  throw  throws  true  try  type  undefined  unknown
 unsafe  using  while
 ```
 
 `this` is a contextual receiver name. `super` is valid only in a derived
-constructor or class method. The lexer reserves `null`, `self`, `impl`, `where`,
-`match`, `dyn`, `use`, `mod`, `pub`, `crate`, `record`, and `extension` as
-excluded keywords so each receives a localized rejection rather than becoming
-an accidental user identifier. `Option`, `Result`, `Vec`, `HashMap`, and
-`HashSet` are ordinary names but are rejected as obsolete public forms when
-used in a TypeNative declaration or standard-library import.
+constructor or class method. `mut` is part of reference syntax (`&mut T` and
+`&mut [T]`), not a receiver modifier or a binding modifier. The public grammar
+has no `scope` lifetime keyword. `sealed`, `final`, `derives`, `macro`, and
+`Expand` are excluded spellings and receive localized obsolete-syntax
+diagnostics.
+
+The lexer also reserves excluded historical words such as `null`, `self`,
+`impl`, `where`, `match`, `dyn`, `use`, `mod`, `pub`, `crate`, `record`, and
+`extension` so that they cannot become accidental user identifiers.
 
 Integer literals may be decimal, binary, octal, or hexadecimal, with single
 underscores between digits. Suffixes are `i8`, `i16`, `i32`, `i64`, `i128`,
-`isize`, `u8`, `u16`, `u32`, `u64`, `u128`, `usize`, and `number`. Decimal
-floating literals accept `f32` or `f64`. Signs are operators, not part of a
-literal. Literal spelling is preserved by the CST and formatter.
+`isize`, `u8`, `u16`, `u32`, `u64`, `u128`, and `usize`. Decimal floating
+literals accept `f32` or `f64`. Signs are operators, not part of a literal.
 
 ## 3. Canonical grammar
 
 The following EBNF describes the public grammar. Recovery nodes may contain
-missing-token expectations, but a recovered tree never invents a semantic
-declaration or silently translates an excluded spelling.
+missing-token expectations, but a recovered tree never invents a declaration
+or silently translates an excluded spelling.
 
 ```ebnf
 source_file       = { item } ;
@@ -66,21 +71,19 @@ item              = import_declaration
                   | { attribute } [ "export" ] declaration ;
 declaration       = const_declaration | static_declaration
                   | function_declaration | type_alias_declaration
-                  | struct_declaration | class_declaration
-                  | interface_declaration | enum_declaration
-                  | foreign_declaration_block | macro_declaration ;
+                  | struct_declaration | foreign_struct_declaration
+                  | class_declaration | interface_declaration
+                  | enum_declaration | foreign_declaration_block
+                  | exported_foreign_function ;
 
-attribute         = "@" attribute_name [ "(" [ attribute_arguments ] ")" ] ;
-attribute_name    = identifier | "export" ;
-attribute_arguments = attribute_argument { "," attribute_argument } [ "," ] ;
-attribute_argument = literal | type_path | identifier ;
+attribute         = "@" identifier [ argument_list ] ;
 
 import_declaration = "import" "{" import_names "}" "from" string_literal ";" ;
 import_names      = import_name { "," import_name } [ "," ] ;
 import_name       = identifier [ "as" identifier ] ;
 
 const_declaration  = "const" identifier [ ":" type ] "=" expression ";" ;
-static_declaration = "static" [ "mut" ] identifier ":" type
+static_declaration = "static" identifier ":" type
                      "=" const_expression ";" ;
 type_alias_declaration = "type" identifier [ generic_parameters ] "=" type ";" ;
 
@@ -89,8 +92,13 @@ function_declaration = [ "unsafe" ] [ "async" ] "function" identifier
                        [ throws_clause ] block ;
 throws_clause      = "throws" type_path { "|" type_path } ;
 
-generic_parameters = "<" generic_parameter { "," generic_parameter } [ "," ] ">" ;
-generic_parameter  = identifier [ "extends" generic_bound { "&" generic_bound } ] ;
+generic_parameters = "<" generic_parameter { "," generic_parameter }
+                     [ "," ] ">" ;
+generic_parameter  = lifetime_parameter
+                   | type_parameter ;
+lifetime_parameter = "lifetime" identifier ;
+type_parameter     = identifier [ "extends" generic_bound
+                     { "&" generic_bound } ] ;
 generic_bound      = type_path | "static" ;
 parameter_list     = "(" [ parameters ] ")" ;
 parameters         = parameter { "," parameter } [ "," ] ;
@@ -100,42 +108,48 @@ struct_declaration = "struct" identifier [ generic_parameters ] "{"
                      { struct_member } "}" ;
 struct_member     = { attribute } [ member_visibility ]
                      ( field_declaration | method_declaration ) ;
-class_declaration  = [ "abstract" | "final" ] "class" identifier
+
+foreign_struct_declaration = "extern" "struct" identifier
+                             [ generic_parameters ] "{"
+                             { foreign_field_declaration } "}" ;
+foreign_field_declaration = identifier ":" foreign_type ";" ;
+
+class_declaration  = [ "abstract" ] "class" identifier
                      [ generic_parameters ] [ "extends" type_path ]
-                     [ "implements" type_paths ] "{" { class_member } "}" ;
+                     [ "implements" type_paths ] "{"
+                     { class_member } "}" ;
 class_member       = { attribute } [ member_visibility ]
                      ( field_declaration | constructor_declaration
                      | method_declaration ) ;
 interface_declaration = "interface" identifier [ generic_parameters ] "{"
                         { interface_member } "}" ;
-interface_member   = { attribute } [ receiver_mode ] identifier
+interface_member   = { attribute } [ member_visibility ] identifier
                       [ generic_parameters ] parameter_list ":" type
                       [ throws_clause ] ";" ;
-enum_declaration   = "enum" identifier [ generic_parameters ] "{"
+enum_declaration   = "enum" identifier [ ":" integer_type ]
+                     [ generic_parameters ] "{"
                      enum_variant { "," enum_variant } [ "," ] "}" ;
 enum_variant       = identifier
                    | identifier "(" type_list ")"
                    | identifier "{" { field_declaration } "}"
                    | identifier "=" const_expression ;
-foreign_declaration_block = "declare" "extern" string_literal
-                     "{" { extern_function } "}" ;
-extern_function    = { attribute } "function" identifier
-                     extern_parameter_list ":" type ";" ;
-macro_declaration  = "macro" identifier "(" [ macro_parameters ] ")"
-                     "{" declaration_template "}" ;
-macro_parameters   = macro_parameter { "," macro_parameter } [ "," ] ;
-macro_parameter    = identifier ":" ( "identifier" | "type" | "literal" ) ;
-declaration_template = lossless_token_tree ;
 
-field_declaration  = [ "static" [ "mut" ] ] [ "readonly" ] identifier
+foreign_declaration_block = "declare" "extern" string_literal "{"
+                            { extern_function } "}" ;
+extern_function    = "function" identifier extern_parameter_list
+                     ":" type ";" ;
+exported_foreign_function = "extern" string_literal "function" identifier
+                            extern_parameter_list ":" type
+                            [ throws_clause ] block ;
+
+field_declaration  = [ "static" ] [ "readonly" ] identifier
                      [ "?" ] ":" type [ "=" expression ] ";" ;
 constructor_declaration = "constructor" parameter_list
                           [ throws_clause ] block ;
-method_declaration = [ "static" ] [ "abstract" | "final" | "override" ]
-                     [ receiver_mode ] [ "unsafe" ] [ "async" ] identifier
+method_declaration = [ "static" ] [ "abstract" ] [ "override" ]
+                     [ "unsafe" ] [ "async" ] identifier
                      [ generic_parameters ] parameter_list ":" type
                      [ throws_clause ] ( block | ";" ) ;
-receiver_mode      = "mut" | "move" ;
 member_visibility  = "public" | "protected" | "private" ;
 type_paths         = type_path { "," type_path } ;
 
@@ -144,9 +158,10 @@ primary_type       = type_path | reference_type | raw_pointer_type
                    | array_type | slice_type | grouped_type | tuple_type
                    | function_type | foreign_function_type ;
 type_path          = identifier { "." identifier } [ generic_arguments ] ;
-generic_arguments  = "<" type_arguments ">" ;
-type_arguments     = type { "," type } [ "," ] ;
-reference_type     = "&" [ "mut" ] primary_type ;
+generic_arguments   = "<" type_arguments ">" ;
+type_arguments      = type { "," type } [ "," ] ;
+reference_type     = "&" [ lifetime_name ] [ "mut" ] primary_type ;
+lifetime_name      = identifier | "static" ;
 raw_pointer_type   = "*" ( "const" | "mut" ) primary_type ;
 array_type         = "[" type ";" const_expression "]" ;
 slice_type         = "[" type "]" ;
@@ -155,6 +170,10 @@ tuple_type         = "(" type "," [ type { "," type } [ "," ] ] ")" ;
 function_type      = [ "async" ] "(" [ type_list ] ")" "=>" type ;
 foreign_function_type = "extern" string_literal "function" "("
                         [ type_list ] ")" ":" type ;
+foreign_type       = integer_type | "bool" | "char" | raw_pointer_type
+                   | array_type ;
+integer_type       = "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                   | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" ;
 
 block              = "{" { statement } "}" ;
 statement          = block | local_declaration | using_statement
@@ -168,7 +187,8 @@ using_statement    = [ "await" ] "using" identifier "=" expression ";" ;
 expression_statement = expression ";" ;
 return_statement   = "return" [ expression ] ";" ;
 throw_statement    = "throw" expression ";" ;
-if_statement       = "if" "(" expression ")" statement [ "else" statement ] ;
+if_statement       = "if" "(" expression ")" statement
+                     [ "else" statement ] ;
 while_statement    = "while" "(" expression ")" statement ;
 for_statement      = "for" "(" ( "const" | "let" ) identifier "of"
                      expression ")" statement ;
@@ -217,72 +237,43 @@ pattern             = "_" | literal | "undefined" | identifier
                     | type_path "{" [ pattern_fields ] "}" ;
 ```
 
-Foreign declaration blocks have exactly one spelling: `declare extern "C"`.
-The obsolete `extern "C" { ... }` block is rejected with
-`SYNTAX_OBSOLETE_EXTERN_BLOCK` and an applicability-ranked insertion of
-`declare `. The separate `extern "C" function(...)` production is a function
-pointer type and remains valid without `declare`. Only the `"C"` ABI is
-supported; other ABI strings receive `TYPE_UNSUPPORTED_FOREIGN_ABI`.
+`extern "C" function(...)` is a function-pointer type. A foreign declaration
+block has exactly one spelling: `declare extern "C" { ... }`. A C-layout
+declaration has exactly one spelling: `extern struct Name { ... }`. A public C
+symbol uses `export extern "C" function name(...)`. These are grammar
+productions, not decorators.
 
-`const_expression` is a side-effect-free expression containing literals,
-constant references, aggregate construction, and compiler-known operations.
-The Pratt precedence is: postfix, unary, multiplicative, additive, relational,
-strict equality, logical AND, logical OR, nullish coalescing, conditional, and
-assignment. Evaluation is left to right. Conditions must be `bool`; there is no
-numeric, string, pointer, or optional truthiness.
+## 4. Modules, classes, interfaces, and value types
 
-## 4. Modules and declarations
+Each file is one module. Relative import specifiers map to one `.tn` file and
+`std/` maps to the bundled standard library. Package registries, dynamic
+imports, default exports, namespace imports, `use`, `mod`, `pub`, and `crate`
+are not part of the language. `export` is the only top-level visibility
+boundary; members are private by default unless their visibility is written.
 
-Each file is one module. A relative specifier maps to exactly one `.tn` file;
-`std/` maps to the bundled standard library. Directory fallback, package
-registries, dynamic imports, default exports, namespace imports, `use`, `mod`,
-`pub`, and `crate` are compile-time errors. Declaration cycles are allowed, but
-top-level executable initialization is forbidden. `export` is the only way to
-expose a top-level declaration; member visibility is explicit or private by
-default.
+`struct` is a nominal inline value with declaration-order fields. It has no
+implicit identity or heap allocation. `class` is a nominal uniquely owned heap
+identity. `new C(...)` creates it, and assignment, passing, and returning move
+the owning handle. Shared identity requires an explicit shared-pointer type.
 
-`struct` is a nominal inline value. Its fields have declaration-order layout and
-its methods are declared inside the struct. An expected struct type is required
-for an object literal; unknown fields, duplicate fields, and spreads are
-errors. Structs do not acquire identity or implicit heap allocation.
+Classes support `abstract`, `extends`, `implements`, `override`, `readonly`,
+`public`, `protected`, `private`, `static`, and `super`. Instance dispatch is
+virtual by default; `override` is required for an override. There is no
+source-level `sealed` or `final`. Closed dispatch is an optimizer proof, not a
+user assertion. A derived constructor calls `super(...)` exactly once before
+using the derived instance.
 
-`class` is a nominal uniquely owned heap identity. `new C(arguments)` allocates
-it, and assignment, passing, or returning moves the owning handle. Shared class
-identity requires explicit `Rc`, `Arc`, or `Weak`. Classes have single
-inheritance, optional `abstract`/`final`, direct constructors and methods,
-`extends`, `implements`, `override`, `super`, `readonly`, and visibility. A
-non-final instance method is virtual; an override must be marked `override`.
-Derived constructors call `super(...)` exactly once as their first statement.
+Interfaces are nominal contracts. Conformance is declared with `implements`
+and members are supplied directly in the implementing declaration. Interface
+values use an internal witness representation; no public `dyn` spelling
+exists. Generic constraints use `T extends Interface`.
 
-`final class` closes the hierarchy everywhere. `@Sealed` is distinct: on a
-class it permits direct subclasses only inside the declaring module's closed
-hierarchy, and on an interface it permits direct conformers only inside that
-module. Cross-module violations report `TYPE_EXTENDS_SEALED_CLASS` or
-`TYPE_CONFORMS_TO_SEALED_INTERFACE`; a cross-module subclass of a final class
-reports `TYPE_EXTENDS_FINAL_CLASS`. The sealed marker is represented in HIR and
-is enforced by both the Rust bootstrap and self-hosted compiler.
-
-Interfaces are nominal contracts. A struct, enum, or class declares conformance
-with `@Conform(Interface)` or `implements Interface`, and supplies the members
-directly in its declaration. Conformance is explicit and coherent: at most one
-implementation exists for an interface and nominal type, and either the
-interface or nominal type's module must own the declaration. Interface values
-use the compiler's dynamic witness representation; the public language does
-not expose a `dyn` spelling.
-
-Generic constraints are written on the parameter: `T extends Interface`. A
-generic body is checked against its declared bounds and monomorphized for each
-reachable concrete use. Generic types are invariant; only class upcasts,
-explicit interface coercions, lifetime shortening, and `&mut T` to `&T`
-reborrowing are implicit.
-
-```tn
+```ts
 interface Display {
   display(out: &mut Formatter): void;
 }
 
-@Conform(Display)
-struct Point {
+struct Point implements Display {
   public x: f64;
   public y: f64;
 
@@ -290,312 +281,362 @@ struct Point {
     return this.x * this.x + this.y * this.y;
   }
 
-  display(out: &mut Formatter): void {
+  public display(out: &mut Formatter): void {
     out.write(`Point(${this.x}, ${this.y})`);
   }
 }
-```
 
-## 5. Types, ownership, and destruction
+abstract class Transport implements AsyncDisposable {
+  public abstract read(buffer: &mut BytesMut): Promise<number, IOError>;
 
-The primitive types are `bool`, the fixed signed and unsigned integers,
-`isize`, `usize`, `number` (an exact alias of `isize`), `f32`, `f64`, `char`,
-`void`, `never`, `string`, `str`, `unknown`, and `undefined`. `T | undefined`
-is the only union syntax. Optional fields `field?: T` are the same type.
-General unions and intersections are excluded; use nominal enums for other sum
-types.
-
-`string` is the sole public owned UTF-8 text type. `str` is an unsized UTF-8
-view and `&str` is its borrowed form. The uppercase name `String` is obsolete
-and rejected. A string literal has type `&static str`; when an assignment,
-argument, return, field, or enum payload requires owned `string`, the compiler
-materializes an explicit owned conversion in HIR and MIR. This contextual rule
-applies only from a string literal to `string` and is not a general implicit
-conversion.
-
-Canonical owned text operations are `string.from(view)`,
-`string.fromUtf8(bytes)`, `text.toAsciiUppercase()`, `text.clone()`,
-`text.asStr()`, and `text.bytes()`. Strict equality compares UTF-8 contents
-without allocating. Text cannot be indexed by byte; callers use byte, scalar,
-or grapheme views and checked UTF-8-boundary slicing.
-
-Integer literals infer from assignments, parameters, returns, fields, enum
-payloads, and generic instantiations. An unconstrained integer defaults to
-`number`; an unconstrained decimal defaults to `f64`. A suffix selects an
-explicit type. Numeric conversion is explicit through checked `from` or
-fallible `tryFrom`; ordinary arithmetic never silently widens or truncates.
-
-Every value is affine. Owned assignment, an owned argument, a return, aggregate
-storage, or `move` capture moves the value. `@Copy` is valid only when all
-stored fields are copyable and no destructor exists. `@Clone` provides an
-explicit cloning operation; it is never inserted implicitly. `&T` is a shared
-borrow and `&mut T` is an exclusive borrow. `mut` makes a binding or receiver
-mutable. Borrows are non-lexical and cannot outlive, cross a move of, or escape
-their referent. Object and array destructuring uses the same rules: copied
-inputs copy eligible fields, owned inputs move fields, borrowed inputs create
-corresponding borrows, and partial moves remain visible to drop analysis.
-
-Named lifetime parameters express a borrow carried inside a returned aggregate.
-`scope` names the current non-escaping borrow at a call site, while `static`
-names process-lifetime data. Lifetime arguments have no runtime representation;
-the ownership checker retains the source loan until the aggregate's last use.
-
-`std/bytes` exposes `ByteView<a>` and `Utf8View<a>` for allocation-free parsing
-over `BytesMut`. `borrow(&buffer)` creates a whole-buffer view, `view(start,
-end)` and `subview(start, end)` create checked nested views, and `utf8()`
-validates without copying. Mutation, reserve, or prefix compaction of the owner
-is rejected while a derived view remains live. `Utf8View.toOwned()` is the
-explicit persistence boundary. `hashedUtf8()` produces a validated view with a
-reusable hash, and `asciiKeyUtf8()` adds a collision-free folded key for short
-ASCII identifiers while retaining complete UTF-8 validation. `StringMap<V>`
-accepts owned keys on `set`, borrowed UTF-8 keys on `get` and `remove`, and
-prehashed borrowed keys on `setBorrowed`, `getHashed`, and `removeHashed`.
-
-```tn
-import { borrow, BytesMut } from "std/bytes";
-import { StringMap } from "std/collections";
-
-function lookup<lifetime a>(
-  buffer: &BytesMut,
-  values: &a StringMap<string>,
-): &a string | undefined {
-  const bytes = borrow(buffer);
-  const key = bytes.view(0usize, bytes.length())!.utf8()!;
-  return values.get(&key);
-}
-```
-
-`@Drop` marks compiler-owned deterministic destruction. A destructor cannot
-throw, suspend, move fields, or be called directly. Locals, temporaries,
-partially initialized aggregates, mutex guards, and async state are destroyed
-exactly once on normal exits, recoverable error exits, cancellation, and
-constructor failure. `panic` aborts without unwinding; it never replaces a
-cleanup-preserving typed error.
-
-Raw pointers are `*const T` or `*mut T` and may be invalid. Dereference,
-pointer arithmetic, uninitialized or unaligned access, manual allocation,
-foreign calls, mutable statics, and manual `@Send`/`@Sync` conformance require
-an `unsafe` block or function. Unsafe code does not disable ownership or
-initialization checking.
-
-```tn
-struct Packet {
-  public header: u32;
-  public payload: string;
+  public abstract [Symbol.asyncDispose](): Promise<void, never>;
 }
 
-function split(packet: Packet): string {
-  const payload = packet.payload;
-  return payload;
-}
-
-function readFirst(values: &[u8]): u8 | undefined {
-  return values.length > 0usize ? values[0] : undefined;
-}
-```
-
-## 6. Optionals and narrowing
-
-`?.` skips the remainder of an optional postfix chain when its receiver is
-`undefined`; `??` evaluates a fallback only on the absent path. Postfix `!`
-force-unwraps an optional after a runtime check and invokes `panic` if absent.
-The checker accepts a force unwrap only where the value is optional and keeps
-the resulting payload type. `as?` is a checked, non-consuming class/interface
-downcast and returns a corresponding optional borrow. `unknown` can be used
-only after a type guard, strict equality check, `instanceof`, or checked
-downcast. `null` and unchecked assertions do not exist.
-
-```tn
-function choosePort(config: Config): u16 {
-  const selected = config.port ?? 6379;
-  if (config.port !== undefined) {
-    return config.port!;
-  }
-  return selected;
-}
-```
-
-## 7. Collections and construction
-
-Fresh owned values use exactly `new Type(arguments)`. User classes, `Array`,
-`Map`, `Set`, `OrderedMap`, `OrderedSet`, `Queue`, `Deque`, `Heap`, `Arc`, and
-`Mutex` all use `new`. Empty construction uses `new Array<T>()` or
-`new Map<K, V>()`. Constructor options may include `capacity`, as in
-`new Array<i32>({ capacity: 1024 })`. `Type.from(existing)` is reserved for
-conversion from existing data. `withCapacity`, `Arc.new`, `Mutex.new`, and
-competing free constructors are rejected.
-
-The required collection surface is `Array<T>`, fixed arrays, borrowed slices,
-`Map<K,V>`, `Set<T>`, `OrderedMap<K,V>`, `OrderedSet<T>`, `Queue<T>`,
-`Deque<T>`, and `Heap<T>`. Each growable collection exposes read-only
-`length` and `capacity`, automatic growth, checked `reserve(minimumCapacity)`,
-`shrinkToFit()`, and `clear()` that retains capacity. Allocation overflow is
-checked, elements are destroyed exactly once, and map/set keys require explicit
-`Equal` and `Hash` capabilities.
-
-```tn
-function makeUsers(): Array<string> {
-  const users = new Array<string>({ capacity: 2 });
-  users.push("ronnie");
-  users.push("guest");
-  users.reserve(8);
-  return users;
-}
-```
-
-## 8. Errors, async, generators, and tasks
-
-Synchronous functions use `function f(): T throws E`. Every throwing call is
-prefixed by `try`; a typed `catch` handles a closed set of nominal error types.
-Catch clauses are ordered, exhaustive for the reaching effects, and may throw
-only errors declared by the enclosing function. Errors are tagged return values
-with explicit cleanup edges; native unwinding is never used.
-
-Async functions return `Promise<T, E>`, where `E` is a nominal error type or
-`never` for an empty set. Calling an async function creates a cold, move-only
-promise and does not require `try`; consuming a fallible completion requires
-`try await` or an explicit executor operation. A promise is pinned once polled,
-and dropping it cancels and destroys initialized state exactly once.
-
-`using` owns a synchronous disposable until scope exit. `await using` owns an
-async disposable and awaits its cleanup. A non-suspendable resource, including
-a mutex guard, must be destroyed before the enclosing `await`. Generators,
-async generators, `Iterable<T>`, `Iterator<T>`, `AsyncIterable<T>`, `for of`,
-and `for await of` lower through explicit state machines. `TaskGroup` owns
-structured children, propagates cancellation, and waits before scope exit;
-`detach` is explicit and requires process-lifetime owned `Send` captures.
-
-```tn
-async function loadConfig(path: &str): Promise<Config, IOError> {
-  await using file = try await File.open(path);
-  return try await file.readConfig();
-}
-
-function main(): i32 throws IOError {
-  try {
-    const config = try run(loadConfig("config.tn"));
-    console.log(config.name);
-    return 0;
-  } catch (error: IOError) {
-    console.error(error.message());
-    return 1;
+class TcpTransport extends Transport {
+  public override async read(
+    buffer: &mut BytesMut,
+  ): Promise<number, IOError> {
+    return try await this.readInto(buffer);
   }
 }
 ```
 
-## 9. Control flow and interfaces
+User-defined decorators use ordinary declaration lookup and the `@name` syntax.
+They may wrap or initialize supported class elements, but they cannot claim ABI
+layout, copyability, `Send`, `Sync`, ownership exemptions, compiler intrinsics,
+or unrelated declarations.
 
-`switch` is an expression and is exhaustive over enums, booleans, optionals,
-and finite integer discriminants. Infinite domains require a binding or
-`default`. Guards run only after a pattern matches; unreachable arms and
-incompatible arm types are errors. `for of` selects `IntoIterator<Item, Iter>`
-and `Iterator<Item>` witnesses with explicit methods; it does not introduce
-implicit copies.
-
-```tn
-function encode(reply: Reply): string {
-  return switch (reply) {
-    case Reply.Simple(message): `+${message}\r\n`,
-    case Reply.Integer(value): `:${value}\r\n`,
-    case Reply.Missing: "$-1\r\n",
-    default: "-ERR\r\n",
+```ts
+function logged(
+  method: () => void,
+  context: ClassMethodDecoratorContext,
+): () => void {
+  return () => {
+    console.log(`Calling ${context.name}`);
+    method();
   };
 }
-```
 
-## 10. Interoperability and compiler-owned metadata
-
-`declare extern "C"` declares foreign functions. Foreign calls are unsafe. C-compatible
-signatures contain only fixed-width integers, explicit `c_*` aliases, supported
-floats, raw pointers, C function pointers, and `@Layout("C")` structs or
-fieldless enums. They cannot contain classes, references, strings, slices,
-optionals, generic values, promises, or typed error effects. Exported C
-functions are non-generic, synchronous, non-throwing, and use only these types.
-
-`@Export("symbol")` selects a supported C or Node-API export. Node-API
-generation maps 32-bit values to JavaScript `number`, wider and pointer-width
-integers to `bigint`, strings to `string`, bytes to `Uint8Array`, optionals to
-optional values, and `Promise<T,E>` to a JavaScript promise with typed rejection.
-Borrowed outputs are rejected; class wrappers run `Drop` exactly once.
-
-Compiler-owned attributes are `@Copy`, `@Clone`, `@Drop`, `@Send`, `@Sync`,
-`@Conform`, `@Sealed`, `@Layout("C")`, `@Export`, `@Intrinsic`, `@Inline`, and
-`@Test`. Unknown or incorrectly targeted attributes are errors. `macro` declares
-a local, typed declaration template and `@Expand(name, ...)` applies it to a
-struct, class, interface, or enum. The three argument categories are
-`identifier`, `type`, and `literal`; placeholders use `{{parameter}}` inside the
-template. A template may add members and target-level conformance attributes.
-Expansion is deterministic and sandboxed: it has no filesystem, network,
-environment, clock, randomness, native ABI, or ownership-marker access. The
-expanded source is parsed and then goes through ordinary name, type, ownership,
-effect, unsafe, and ABI checks. Macro diagnostics point to the original
-definition or application.
-
-```tn
-macro getter(name: identifier, field: identifier, value: type) {
-  public {{name}}(): {{value}} { return this.{{field}}; }
-}
-
-@Expand(getter, getValue, value, i32)
-struct Counter {
-  public value: i32;
+class Worker {
+  @logged
+  public run(): void {}
 }
 ```
 
-```tn
-@Layout("C")
-struct Pair {
-  public left: i32;
-  public right: i32;
+## 5. Types, ownership, and lifetimes
+
+The primitive types are `bool`, the fixed signed and unsigned integers,
+`isize`, `usize`, `f32`, `f64`, `char`, `void`, `never`, `string`, `str`,
+`unknown`, and `undefined`. `T | undefined` is the optional form. General
+unions and intersections are excluded; use nominal enums for other sum types.
+
+Every value is affine. An owned assignment, owned argument, return, aggregate
+store, or `move` capture transfers ownership. `const` bindings are immutable;
+`let` bindings may be reassigned. The compiler infers whether a method writes
+to `this`; there is no receiver mutability modifier.
+
+Copyability is inferred recursively from fields and representation. A value is
+copyable only when every stored field is copyable and no external resource or
+custom cleanup makes copying ambiguous. Clone is explicit: a type may provide a
+normal handwritten `.clone()` method with its own error and ownership contract.
+`Send` and `Sync` are inferred recursively from fields. There are no source
+attributes that assert any of these properties.
+
+`&T` is a shared borrow and `&mut T` is an exclusive borrow. Named lifetimes
+are available only when an exported relationship cannot be inferred:
+
+```ts
+struct View<lifetime source> {
+  bytes: &source [u8];
 }
 
-declare extern "C" {
-  function puts(text: *const c_char): c_int;
+declare function find<lifetime values>(
+  values: &values [User],
+  name: &str,
+): &values User | undefined;
+```
+
+The compiler infers local lifetimes, output relationships from function bodies,
+and the lifetime carried by returned aggregates. Exported inferred contracts
+are stored in module metadata. Bodyless declarations use conservative documented
+elision rules. A named lifetime is required only when several inputs make the
+relationship ambiguous. `static` remains available for process-lifetime data
+but is uncommon.
+
+Public source never uses an internal lifetime category. In particular, the
+compiler may classify a non-escaping temporary borrow internally, but that
+category is not a keyword, type argument, formatter output, diagnostic term, or
+generated documentation item.
+
+Ordinary elision makes common borrowed functions concise:
+
+```ts
+function first(values: &[User]): &User | undefined {
+  return values.length === 0 ? undefined : &values[0];
 }
 
-@Export("tn_pair_value")
-function pairValue(pair: Pair): i32 {
-  return pair.left + pair.right;
+function parseCommand(
+  input: &BytesMut,
+  start: usize,
+): ParsedCommand | undefined throws RedisError {
+  // ParsedCommand's inferred borrow is tied to input.
 }
 ```
 
-## 11. Standard library, layout, and tooling
+Borrows are non-lexical and cannot outlive, cross a move of, or escape their
+referent. Mutation, reallocation, and buffer compaction are rejected while a
+derived borrow remains live. Diagnostics describe the source value and the
+operation that would invalidate it rather than exposing internal equations.
 
-The standard library is TypeNative over narrow reviewed OS, libc, LLVM, and
-Node-API boundaries. Its public modules include `std/core`, `std/alloc`,
-`std/fmt`, `std/console`, `std/collections`, `std/bytes`, `std/string`,
-`std/io`, `std/fs`, `std/net`, `std/time`, `std/thread`, `std/sync`,
-`std/async`, `std/process`, `std/path`, `std/env`, `std/ffi`, and
-`std/testing`. `console.log`, `console.error`, and `console.write` are ordinary
-synchronous best-effort library calls with no error effect; reliable output
-uses fallible `std/io` writers.
+## 6. Cleanup and resource management
 
-Default layouts are compiler-private. `@Layout("C")` fixes target C field order
-and alignment; packed fields require explicit unaligned operations. The
-supported hosted targets are `aarch64-apple-darwin` and
-`x86_64-unknown-linux-gnu`; target-dependent runtime services select the
-matching platform module. The public command is `tn` with `build`, `run`,
-`check`, `lint`, `test`, `fmt`, `doc`, and `lsp` subcommands. Projects use
-`typenative.json` and have no package-registry or dependency fields.
+Memory destruction is automatic. The compiler recursively destroys owned values
+and initialized fields exactly once on normal return, typed error, cancellation,
+constructor failure, and partial initialization. Users do not define or call a
+`drop()` operation.
 
-An executable has exactly one safe synchronous `main(): void` or `main(): i32`,
-optionally with a closed `throws` set. An uncaught typed error is formatted and
-returns status 1 after cleanup; `panic` aborts.
+External resources use the standard resource-management protocols:
 
-The formatter is lossless for trivia and literal spelling, uses two-space
-indentation and deterministic import ordering, and is byte-idempotent. The
-parser, formatter, documentation generator, language server, diagnostics, and
-test runner share the same Rowan CST and resolved semantic model.
+```ts
+class File implements Disposable {
+  public [Symbol.dispose](): void {
+    this.close();
+  }
+}
 
-## 12. Explicit exclusions
+using file = try File.open(path);
+```
 
-The following are rejected rather than partially supported: default or
-namespace imports, package specifiers, `null`, `self`, `impl`, `where`, `match`,
-`dyn`, `use`, `mod`, `pub`, `crate`, `record`, `extension`, general union or
-intersection value types, object spread, loose equality, unchecked assertions,
-implicit numeric conversion, overload sets, multiple class inheritance,
-executable decorators, unrestricted compile-time code, `eval`, runtime source
-compilation, garbage collection, implicit class retention, native exception
-unwinding, catching `panic`, and reflection over fields, methods, or
-constructors. The rejection condition and replacement are listed in
-[`canonical-migration-manifest.md`](canonical-migration-manifest.md).
+```ts
+class TcpStream implements AsyncDisposable {
+  public async [Symbol.asyncDispose](): Promise<void, NetworkError> {
+    return try await this.flushAndClose();
+  }
+}
+
+await using stream = try await TcpStream.connect(endpoint);
+```
+
+`using` and `await using` create managed bindings whose disposal runs exactly
+once. A manual call to a disposal symbol is safe and marks the resource closed;
+scope cleanup becomes harmless. `.close()` remains available for deliberate
+early closure and follows the same idempotent rule. Managed resources cannot be
+silently rebound as ordinary unmanaged locals.
+
+## 7. Strings and bytes
+
+The canonical public representations are:
+
+```ts
+&[u8]      // borrowed bytes
+&str       // borrowed valid UTF-8
+Bytes      // owned immutable bytes
+BytesMut   // owned mutable bytes
+string     // owned UTF-8 text
+```
+
+`string` is the primitive owned UTF-8 type. `String(value)` converts to owned
+text; `new String(...)`, `string.from(...)`, `OwnedString.from(...)`, and
+equivalent competing constructors are rejected. `String.fromUtf8(bytes)` is
+fallible, while `String.fromUtf8Lossy(bytes)` is explicit lossy conversion.
+
+For a `string` value `text`, `text.length` is the Unicode scalar count and
+`text.byteLength` is the UTF-8 byte count. `startsWith`, `includes`, `slice`,
+and `toUpperCase` are ordinary methods. Byte positions and scalar positions
+use distinct APIs and never silently share an index meaning.
+
+`Bytes` and `BytesMut` expose `.length`, `.slice(start, end)`, and
+`.trySlice(start, end)`. The checked operations return typed absence or a typed
+error according to their declaration. There is no duplicate `view()` or
+`subview()` public vocabulary and no handwritten maximum integer sentinel.
+Private collection hash caches are representation details, not public string
+wrapper types. `ByteView`, `Utf8View`, `HashedUtf8View`, and
+`AsciiKeyUtf8View` are not public types.
+
+## 8. Numeric and collection semantics
+
+Expected types drive numeric literal inference:
+
+```ts
+let index: usize = 0;
+const port: u16 = 6379;
+return 0;
+
+const mask = 255u8;
+const maximum = usize.MAX;
+index += 1;
+```
+
+Unconstrained integer literals use the smallest declared context or the
+documented default `number`; explicit suffixes select a width. Overflow,
+conversion, ABI width, generic inference, and diagnostics are identical in
+debug and optimized profiles.
+
+The canonical collection vocabulary is:
+
+```ts
+const values = new Array<User>({ capacity: 1_024 });
+const jobs = new Queue<Job>({ capacity: 256 });
+const cache = new Map<string, User>({ capacity: 1_024 });
+const seen = new Set<string>();
+```
+
+The supported collection types are `Array<T>`, `[T; N]`, `&[T]`, `&mut [T]`,
+`Queue<T>`, `Deque<T>`, `Map<K, V>`, `Set<T>`, `OrderedMap<K, V>`,
+`OrderedSet<T>`, and `Heap<T>`. `Vector`, `FixedArray`, `ReadonlySlice`,
+`MutableSlice`, and `StringMap` are not public types.
+
+`values.at(index)` returns `&T | undefined`; assignment through an index uses
+the borrow inferred by context; `values.removeAt(index)` returns `T | undefined`.
+Iteration advances by index and borrow and does not consume the collection or
+turn repeated front removal into an accidental O(n²) algorithm.
+
+`Queue` uses `enqueue` and `dequeue`. `Deque` uses `pushFront`, `pushBack`,
+`popFront`, and `popBack`. Maps use `set`, `get`, `has`, and `delete`; sets use
+`add`, `has`, and `delete`. `Map.set` returns the map for chaining. Borrowed
+lookup of `Map<string, V>` uses the ordinary `get` and `delete` operations;
+hash caching and borrowed equality are implementation details.
+
+## 9. Errors, async, threads, and tasks
+
+Recoverable failures use typed effects:
+
+```ts
+function readConfig(path: &str): string throws LoadError;
+async function fetchUser(id: u64): Promise<User, NetworkError>;
+
+const user = try await fetchUser(id);
+```
+
+`Promise<T, E>` is the only asynchronous result shape and remains unchanged.
+Synchronous functions may use `throws E`. Public APIs use nominal typed errors
+with optional platform `rawCode` fields. `Checked` suffixes are not part of
+the public API. Raw or unchecked variants are explicitly `unsafe`, end in
+`Raw` where appropriate, and live in internal or FFI modules.
+
+An OS thread and an async task are different abstractions:
+
+```ts
+const worker = Thread.spawn(move () => calculate());
+const result = try worker.join();
+
+using tasks = new TaskGroup();
+const first = tasks.spawn(fetchUser());
+const second = tasks.spawn(fetchPosts());
+const user = try await first;
+const posts = try await second;
+```
+
+`Thread.spawn` returns `JoinHandle<T>`. `join`, explicit `detach`,
+`currentId`, `yield`, and `sleep` have typed errors and enforce `Send + static`
+capture requirements. `TaskGroup.spawn` returns an awaitable `Task<T, E>`, not
+a status flag. Group exit waits for or cooperatively cancels children. Detached
+tasks require explicit ownership and process-lifetime captures. There is no
+one-thread-per-task implementation and no public `enter`/`leave` accounting
+protocol.
+
+The executor schedules suspended task values. A reactor watches many
+nonblocking descriptors using the host readiness mechanism, wakes ready tasks,
+and shares one timeout/cancellation path with timers. `accept`, read, and write
+operations never perform indefinite blocking inside an `async` function;
+backpressure suspends the writer and later resumes it. Registration and
+deregistration are tied to resource ownership.
+
+## 10. Filesystem, networking, and foreign boundaries
+
+Safe filesystem and networking APIs hide descriptors, pointers, output
+parameters, integer event masks, and platform structures:
+
+```ts
+using file = try File.open(path, { read: true });
+const text = try file.readText();
+try File.writeText(outputPath, text);
+const metadata = try File.metadata(outputPath);
+const entries = try Directory.read(path);
+```
+
+```ts
+await using listener = try await new TcpListener({
+  host: "127.0.0.1",
+  port: 8080,
+});
+
+using tasks = new TaskGroup();
+while (true) {
+  const stream = try await listener.accept();
+  tasks.spawn(handle(move stream));
+}
+```
+
+The only public foreign block is `declare extern "C"`. The only public C
+function export is `export extern "C" function`. Raw pointers, OS handles,
+manual allocation, and platform codes are confined to `unsafe` or approved FFI
+modules. A safe wrapper translates platform failures into nominal TypeNative
+errors.
+
+## 11. Runtime layering and Redis
+
+The runtime and foundational `std/bytes` layer provide generic byte operations:
+`find`, `startsWith`, `equals`, `equalsIgnoreAsciiCase`, `hash`, `validateUtf8`,
+and `parseUnsigned`. They do not know RESP markers, CRLF framing, incomplete
+RESP lines, or Redis error states.
+
+RESP framing and command parsing live in `validation/redis/resp.tn` and ordinary
+Redis application modules. The compiler and runtime have no Redis-specific
+branch, intrinsic, or parser helper. Redis validation covers fragmented and
+coalesced frames, pipelining, malformed input, size limits, all required
+commands, borrowed-data lifetime safety, one-million-PING allocation behavior,
+existing-key GET allocation behavior, and stable memory use.
+
+## 12. Compiler ownership, tooling, and conformance
+
+All syntax changes are implemented through the lexer, parser/CST, AST wrappers,
+formatter, HIR, type checker, ownership/lifetime checker, MIR, LLVM lowering,
+linter, LSP, documentation generator, Node declaration generator, diagnostic
+JSON, fuzz targets, and fixtures. The formatter emits only this grammar.
+
+Compiler-owned intrinsics are identified by a private trusted manifest using
+declaration identity and approved module location. The manifest is the only
+place that may bind a declaration to representation, ABI, allocation, or
+lowering primitives. Source code cannot forge an intrinsic with a decorator or
+attribute.
+
+Every removed spelling has:
+
+1. a canonical positive fixture;
+2. an obsolete negative fixture with a localized condition identifier;
+3. recovery coverage proving following declarations still parse;
+4. formatter coverage proving the spelling is never emitted; and
+5. a machine-applicable replacement only when the transformation is unambiguous.
+
+There is no compatibility mode or deprecated alias. The Rust compiler must
+reject old syntax before any self-host migration is considered.
+
+## 13. Rejected alternatives
+
+The following decisions are closed and must not be revived:
+
+| Rejected source or design | Canonical decision |
+| --- | --- |
+| public `scope` lifetime category | Internal lifetime bookkeeping only; use elision or named `lifetime` parameters |
+| compiler-owned ownership/ABI decorators | Structural inference, ordinary methods, `implements`, `export extern "C"`, and the private intrinsic manifest |
+| `macro` declarations and `@Expand` | Functions, generics, interfaces, and ordinary declarations |
+| `sealed`, `final`, and derivation syntax | Remove all three; optimizer proofs handle closed dispatch |
+| receiver `mut` | Infer receiver mutability from writes to `this` |
+| public `ByteView`/`Utf8View` families | `&[u8]`, `&str`, `Bytes`, and `BytesMut` |
+| boxed or competing string constructors | primitive `string`, `String(value)`, and explicit UTF-8 conversion methods |
+| `StringMap` and hashed lookup methods | ordinary `Map<string, V>` APIs |
+| one-thread-per-task scheduling | executor-backed tasks and reactor readiness |
+| RESP parsing in runtime or foundational bytes | generic byte primitives plus Redis-owned protocol code |
+| public pointers, descriptors, output parameters, and numeric OS codes | typed safe wrappers with narrow unsafe/FFI boundaries |
+| self-hosting as a current gate | frozen `compiler-tn/**`; migrate only after active convergence completes |
+
+## 14. Completion criteria
+
+This specification is implemented when the Rust compiler accepts exactly this
+surface, rejects obsolete syntax without aliases, preserves lifetime-safe
+zero-allocation borrowed parsing, exposes one coherent standard-library API,
+executes async I/O through the reactor and executor, keeps threads and tasks
+distinct, passes tooling/ABI/sanitizer/fuzz/Redis checks, and supports the
+reproducible cross-language performance suite. The frozen self-host tree and
+the protected `benchmarks/json-parser/results.json` change remain untouched.

@@ -1,10 +1,37 @@
 # TypeNative Implementation Status
 
-This ledger records only checks that have actually run. Historical entries are
-preserved below; the current Gate 12 status and reproducibility manifest are in
-[`gate12-evidence.md`](gate12-evidence.md).
+This ledger records only checks that have actually run. The active program is
+the convergence plan in [`implementation-plan.md`](implementation-plan.md),
+and the normative surface is [`language-spec.md`](language-spec.md). The
+current implementation boundary is the Rust compiler under `crates/tn-*`.
 
-## Current Gate 10 status (2026-08-13)
+The self-hosted sources under `compiler-tn/**` and
+`scripts/bootstrap-self-host.sh` are frozen and are verified read-only. They
+are not an active acceptance requirement. The pre-existing worktree change to
+`benchmarks/json-parser/results.json` is protected and remains untouched.
+
+## Active convergence baseline (2026-08-23)
+
+The canonical documents now define one active language in which public `scope`,
+compiler-owned decorators, source macros, `sealed`, `final`, derivation syntax,
+public wrapper proliferation, Redis-shaped runtime parsing, and self-host Gates
+9–12 as current acceptance requirements are rejected. The required replacement
+models are structural capability inference, ordinary user decorators, normal
+declarations, automatic memory cleanup plus disposable resources, executor and
+reactor-backed async, and Redis-owned protocol code.
+
+This section does not claim implementation completion. Each source migration
+must add positive, obsolete-negative, recovery, formatter, and diagnostic
+evidence before it is recorded as complete. Historical records below retain the
+commands and results from earlier checkpoints but cannot override the active
+design or mark a current row complete.
+
+## Historical evidence archive
+
+The following dated sections are preserved as historical evidence only. Their
+former language and gate claims are not current acceptance criteria.
+
+## Historical Gate 10 checkpoint (2026-08-13)
 
 The ordinary hosted product no longer contains or requires project-owned C,
 C++, Objective-C, header, or handwritten-assembly implementation source.
@@ -28,7 +55,7 @@ After this target-surface cleanup, `cargo fmt --all -- --check`, `cargo test --w
 --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `RUSTDOCFLAGS=-Dwarnings
 cargo doc --workspace --no-deps`, and `sh -n scripts/*.sh` pass on macOS ARM64.
 
-## Current Gate 11 status (2026-08-22)
+## Historical Gate 11 checkpoint (2026-08-22)
 
 Gate 11 is complete. Commit `4b3137e19bd62b567e48f04ed84629681e5abe7a` remains
 recorded as a deterministic TypeNative-to-C bootstrap checkpoint only. The
@@ -43,7 +70,7 @@ guarded A → B → C → D plus repeat bootstrap reached a normalized direct-LL
 fixed point, and `scripts/verify-all.sh` passed the full product, runtime, ABI,
 Node, Redis, sanitizer, and fuzz matrix.
 
-## Current Gate 12 status (2026-08-22)
+## Historical Gate 12 checkpoint (2026-08-22)
 
 Gate 12 extends the direct-LLVM implementation with the Forge conformance
 application, a repeatable Redis comparison, and enforced sealed hierarchy
@@ -64,7 +91,7 @@ recorded in [`gate12-evidence.md`](gate12-evidence.md). The only intentionally
 remaining worktree change is the preserved unstaged
 `benchmarks/json-parser/results.json` file.
 
-## Foreign declaration syntax cleanup (2026-08-14)
+## Historical foreign declaration syntax cleanup (2026-08-14)
 
 The ordinary Rust-bootstrap compiler now has one foreign declaration-block
 spelling: `declare extern "C" { ... }`. The lexer reserves `declare`, the
@@ -103,7 +130,7 @@ executable now also passes the protocol, concurrency, and canonical sanitizer
 harnesses; native-source retirement and independent self-hosting remain open
 acceptance work.
 
-## Ordinary Gate 9 convergence checkpoint (2026-08-13)
+## Historical Gate 9 convergence checkpoint (2026-08-13)
 
 The post-collection bootstrap checkpoint adds the remaining ordinary language
 and tooling boundaries without touching the protected self-hosting tree:
@@ -209,7 +236,7 @@ from the previous document corpus. Their former fifteen-example count and
 self-hosting results must not be read as current evidence for the rewritten
 canonical corpus or as a final independent compiler result.
 
-## Gate zero: canonical design
+## Historical Gate zero: canonical design
 
 Status: complete.
 
@@ -247,7 +274,7 @@ Implementation decision recorded on 2026-08-09:
 - Resolved the `@export` keyword/identifier grammar contradiction by adding `attribute_name` to the
   normative grammar and design-audit entry 104. The parser fixture exercises the resolved form.
 
-## Gate one: syntax and tooling foundation
+## Historical Gate one: syntax and tooling foundation
 
 Status: complete.
 
@@ -304,7 +331,7 @@ Implementation decisions recorded on 2026-08-09:
   is lexed and parsed normally with absolute source spans. This preserves literal spelling and gives
   nested interpolation expressions the same grammar and recovery behavior as ordinary expressions.
 
-## Gate two: semantic core and ownership
+## Historical Gate two: semantic core and ownership
 
 Status: complete.
 
@@ -492,7 +519,7 @@ Implementation decision recorded on 2026-08-10:
   `move intoIterator(): Iter` and `mut next(): Item | undefined` operations. Language-spec,
   architecture, and design-audit entry 106 agree, and semantic plus MIR/ownership regressions pass.
 
-## Gate three: native execution
+## Historical Gate three: native execution
 
 Status: complete on the active macOS ARM64 target.
 
@@ -564,7 +591,7 @@ PASS
 The macOS ARM64 native, debug-information, and sanitizer acceptance evidence
 is complete. The Linux records in this section are historical only.
 
-## Gate three: native execution — current evidence
+## Historical Gate three: native execution — current evidence
 
 Status: complete on macOS ARM64. The native, LLVM, debug-information, and
 AddressSanitizer/UndefinedBehaviorSanitizer matrix is green on the active target.
@@ -627,7 +654,7 @@ surface in `runtime/runtime.c`, use `PRId64` for portable Redis integer formatti
 host target in the CLI validation fixture, and accept both Mach-O and ELF TypeNative symbols in
 the debug-information check.
 
-## Gate four: hosted standard library
+## Historical Gate four: hosted standard library
 
 Status: in progress. The hosted standard-library and allocation/refcount/UTF-8/runtime suite passes
 on macOS ARM64; the remaining work is API completeness and self-hosted execution.
@@ -715,7 +742,7 @@ TN_BIN=/Users/ronnie/.cargo.target/debug/tn TYPENATIVE_RUNTIME_ROOT=/Users/ronni
 PASS: debug-information=pass
 ```
 
-## Gate five: concurrency and async
+## Historical Gate five: concurrency and async
 
 Status: complete on macOS ARM64. Cold promises, single-await completion,
 generic results, cancellation/drop paths, channels, reference counts, reactor
@@ -737,7 +764,7 @@ BLOCKED BY HOST: ThreadSanitizer reports an incompatible Rosetta memory layout b
                 the runtime probe, even with seccomp unconfined and SYS_PTRACE.
 ```
 
-## Gate six: C and Node-API interoperability
+## Historical Gate six: C and Node-API interoperability
 
 Status: complete on macOS ARM64. ABI, shared-library, Node-API, declaration,
 and sanitizer checks pass on the active target. Linux records below are
@@ -757,7 +784,7 @@ scripts/verify-node.sh
 PASS: node-api-validation=pass
 ```
 
-## Gate seven: Redis systems validation
+## Historical Gate seven: Redis systems validation
 
 Status: complete on macOS ARM64. The RESP2 protocol, fragmented input,
 expiration, concurrent clients, shutdown, debug/optimized servers, and
@@ -779,7 +806,7 @@ During this gate the lifecycle sanitizer exposed and fixed two real defects: a l
 on shutdown and double-free cleanup after a partial RESP command. Both regression paths are now
 covered by the lifecycle and sanitizer checks.
 
-## Gate eight: self-hosting
+## Historical Gate eight: self-hosting
 
 Status: in progress. The checked-in TypeNative compiler sources pass formatter and semantic checks,
 the pinned LLVM-major guard and dynamically loaded LLVM C API context/module create-dispose-roundtrip
@@ -1139,7 +1166,7 @@ PASS: bootstrap-repeatable=26fbdfdc551f1b86a80f2f8cb97c4383af76d475e2e59b4b78f17
 PASS: bootstrap-source-fixed-point=4a882a717d32b36a72d66c1a5bbec6106a1889a0f17cfc3585b1bda308db65ee
 ```
 
-## Gate nine: language-surface convergence
+## Historical Gate nine: language-surface convergence
 
 Status: in progress. Canonical source and ordinary bootstrap convergence
 evidence is recorded; the final gate remains open until native acceptance and
@@ -1249,7 +1276,7 @@ project-owned native sources (Gate 10), migration of the protected
 This gate cannot be completed until Gates 3–8 are complete and the canonical
 documents, audit, grammar, implementation, and fixtures agree.
 
-## Gate ten: TypeNative source migration and C-free repository
+## Historical Gate ten: TypeNative source migration and C-free repository
 
 Status: preparation recorded; implementation and retirement evidence remain
 open. See [`gate10-native-inventory.md`](gate10-native-inventory.md).
@@ -1264,7 +1291,7 @@ Planned scope:
 - Add source-tree, dependency-provenance, ABI, sanitizer, and clean-checkout
   evidence proving that normal TypeNative builds do not require project-owned C.
 
-## Gate eleven: independent full self-hosting
+## Historical Gate eleven: independent full self-hosting
 
 Status: complete. The final result is recorded in
 [`gate11-parity-ledger.md`](gate11-parity-ledger.md); the original C-bootstrap
@@ -1281,7 +1308,7 @@ Delivered scope:
 - Ran the prior-gate product, runtime, sanitizer, ABI, Node, Redis, and fuzz
   verification matrix successfully.
 
-## Gate twelve: final conformance and cross-host verification
+## Historical Gate twelve: final conformance and cross-host verification
 
 Status: planned; not started. No verification evidence exists for this gate.
 
@@ -1293,7 +1320,7 @@ Planned scope:
 - Record exact commands, toolchains, artifact digests, results, and genuine
   blockers before any completion claim.
 
-## Consolidated verification ledger
+## Historical consolidated verification ledger
 
 ```text
 TN_BIN=/Users/ronnie/.cargo.target/debug/tn TYPENATIVE_RUNTIME_ROOT=/Users/ronnie/Projects/typenative/runtime scripts/verify-all.sh
