@@ -19,6 +19,21 @@ Build profiles may change optimization and debug information. They must not
 change ownership, lifetime, error, overflow, bounds, cleanup, cancellation, or
 observable program behavior.
 
+The following compact example is part of the executable specification. The CLI
+test suite extracts every `tn-executable` block, type-checks it, and runs the
+native product so the documentation cannot drift from the active compiler:
+
+```tn-executable
+function answer(): i32 {
+  const base: i32 = 40;
+  return base + 2;
+}
+
+function main(): i32 {
+  return answer();
+}
+```
+
 ## 2. Source text and lexical rules
 
 Source is UTF-8 and uses the `.tn` suffix. Invalid UTF-8 is rejected before

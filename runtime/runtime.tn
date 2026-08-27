@@ -2,141 +2,143 @@ import { MemoryOrder } from "std/core";
 import { c_size, c_ssize } from "std/ffi";
 
 declare extern "C" {
-  function calloc(count: c_size, size: c_size): * mut u8;
-  function free(pointer: * mut u8): void;
-  function malloc(size: c_size): * mut u8;
-  function realloc(pointer: * mut u8, size: c_size): * mut u8;
-  function memcpy(destination: * mut u8, source: * const u8, length: c_size): * mut u8;
-  function memmove(destination: * mut u8, source: * const u8, length: c_size): * mut u8;
-  function memcmp(left: * const u8, right: * const u8, length: c_size): i32;
-  function strcmp(left: * const u8, right: * const u8): i32;
-  function strtoul(text: * const u8, end: * mut * mut u8, base: i32): c_size;
-  function snprintf(buffer: * mut u8, capacity: c_size, format: * const u8, value: i64): c_size;
-  function memset(pointer: * mut u8, value: i32, size: c_size): * mut u8;
-  function write(fd: i32, bytes: * const u8, length: c_size): c_ssize;
+  function calloc(count: c_size, size: c_size): *mut u8;
+  function free(pointer: *mut u8): void;
+  function malloc(size: c_size): *mut u8;
+  function realloc(pointer: *mut u8, size: c_size): *mut u8;
+  function memcpy(destination: *mut u8, source: *const u8, length: c_size): *mut u8;
+  function memmove(destination: *mut u8, source: *const u8, length: c_size): *mut u8;
+  function memcmp(left: *const u8, right: *const u8, length: c_size): i32;
+  function strcmp(left: *const u8, right: *const u8): i32;
+  function strtoul(text: *const u8, end: *mut *mut u8, base: i32): c_size;
+  function snprintf(buffer: *mut u8, capacity: c_size, format: *const u8, value: i64): c_size;
+  function memset(pointer: *mut u8, value: i32, size: c_size): *mut u8;
+  function write(fd: i32, bytes: *const u8, length: c_size): c_ssize;
   function abort(): void;
   function _exit(code: i32): void;
   function getpid(): i32;
-  function pthread_mutex_init(mutex: * mut u8, attributes: * const u8): i32;
-  function pthread_mutex_lock(mutex: * mut u8): i32;
-  function pthread_mutex_unlock(mutex: * mut u8): i32;
-  function pthread_mutex_destroy(mutex: * mut u8): i32;
-  function pthread_cond_init(condition: * mut u8, attributes: * const u8): i32;
-  function pthread_cond_wait(condition: * mut u8, mutex: * mut u8): i32;
-  function pthread_cond_signal(condition: * mut u8): i32;
-  function pthread_cond_broadcast(condition: * mut u8): i32;
-  function pthread_cond_destroy(condition: * mut u8): i32;
-  function pthread_rwlock_init(lock: * mut u8, attributes: * const u8): i32;
-  function pthread_rwlock_rdlock(lock: * mut u8): i32;
-  function pthread_rwlock_wrlock(lock: * mut u8): i32;
-  function pthread_rwlock_unlock(lock: * mut u8): i32;
-  function pthread_rwlock_destroy(lock: * mut u8): i32;
-  function pthread_create(thread: * mut u64, attributes: * const u8, entry: * mut u8, argument: * mut u8): i32;
-  function pthread_join(thread: u64, result: * mut * mut u8): i32;
+  function pthread_mutex_init(mutex: *mut u8, attributes: *const u8): i32;
+  function pthread_mutex_lock(mutex: *mut u8): i32;
+  function pthread_mutex_unlock(mutex: *mut u8): i32;
+  function pthread_mutex_destroy(mutex: *mut u8): i32;
+  function pthread_cond_init(condition: *mut u8, attributes: *const u8): i32;
+  function pthread_cond_wait(condition: *mut u8, mutex: *mut u8): i32;
+  function pthread_cond_signal(condition: *mut u8): i32;
+  function pthread_cond_broadcast(condition: *mut u8): i32;
+  function pthread_cond_destroy(condition: *mut u8): i32;
+  function pthread_rwlock_init(lock: *mut u8, attributes: *const u8): i32;
+  function pthread_rwlock_rdlock(lock: *mut u8): i32;
+  function pthread_rwlock_wrlock(lock: *mut u8): i32;
+  function pthread_rwlock_unlock(lock: *mut u8): i32;
+  function pthread_rwlock_destroy(lock: *mut u8): i32;
+  function pthread_create(thread: *mut u64, attributes: *const u8, entry: *mut u8, argument: *mut u8): i32;
+  function pthread_join(thread: u64, result: *mut *mut u8): i32;
   function pthread_detach(thread: u64): i32;
   function pthread_self(): u64;
   function tn_platform_last_error(): i32;
-  function nanosleep(request: * mut u8, remainder: * mut u8): i32;
+  function nanosleep(request: *mut u8, remainder: *mut u8): i32;
   function sched_yield(): i32;
-  function open(path: * const u8, flags: i32, mode: i32): i32;
-  function read(fd: i32, bytes: * mut u8, length: c_size): c_ssize;
+  function open(path: *const u8, flags: i32, mode: i32): i32;
+  function read(fd: i32, bytes: *mut u8, length: c_size): c_ssize;
   function close(fd: i32): i32;
   function fsync(fd: i32): i32;
-  function access(path: * const u8, mode: i32): i32;
-  function unlink(path: * const u8): i32;
-  function getcwd(buffer: * mut u8, capacity: c_size): * mut u8;
-  function opendir(path: * const u8): * mut u8;
-  function readdir(directory: * mut u8): * mut u8;
-  function closedir(directory: * mut u8): i32;
-  function getenv(name: * const u8): * const u8;
-  function dlopen(path: * const u8, flags: i32): * mut u8;
-  function dlsym(handle: * mut u8, name: * const u8): * mut u8;
-  function dlclose(handle: * mut u8): i32;
+  function access(path: *const u8, mode: i32): i32;
+  function unlink(path: *const u8): i32;
+  function getcwd(buffer: *mut u8, capacity: c_size): *mut u8;
+  function opendir(path: *const u8): *mut u8;
+  function readdir(directory: *mut u8): *mut u8;
+  function closedir(directory: *mut u8): i32;
+  function getenv(name: *const u8): *const u8;
+  function dlopen(path: *const u8, flags: i32): *mut u8;
+  function dlsym(handle: *mut u8, name: *const u8): *mut u8;
+  function dlclose(handle: *mut u8): i32;
   function socket(domain: i32, kind: i32, protocol: i32): i32;
-  function connect(handle: i32, address: * const u8, length: u32): i32;
-  function bind(handle: i32, address: * const u8, length: u32): i32;
+  function connect(handle: i32, address: *const u8, length: u32): i32;
+  function bind(handle: i32, address: *const u8, length: u32): i32;
   function listen(handle: i32, backlog: i32): i32;
-  function accept(handle: i32, address: * mut u8, length: * mut u32): i32;
-  function setsockopt(handle: i32, level: i32, option: i32, value: * const u8, length: u32): i32;
+  function accept(handle: i32, address: *mut u8, length: *mut u32): i32;
+  function setsockopt(handle: i32, level: i32, option: i32, value: *const u8, length: u32): i32;
   function shutdown(handle: i32, how: i32): i32;
-  function recv(handle: i32, bytes: * mut u8, length: c_size, flags: i32): c_ssize;
-  function send(handle: i32, bytes: * const u8, length: c_size, flags: i32): c_ssize;
-  function recvfrom(handle: i32, bytes: * mut u8, length: c_size, flags: i32, address: * mut u8, addressLength: * mut u32): c_ssize;
-  function sendto(handle: i32, bytes: * const u8, length: c_size, flags: i32, address: * const u8, addressLength: u32): c_ssize;
-  function inet_pton(family: i32, source: * const u8, destination: * mut u8): i32;
+  function recv(handle: i32, bytes: *mut u8, length: c_size, flags: i32): c_ssize;
+  function send(handle: i32, bytes: *const u8, length: c_size, flags: i32): c_ssize;
+  function recvfrom(handle: i32, bytes: *mut u8, length: c_size, flags: i32, address: *mut u8, addressLength: *mut u32): c_ssize;
+  function sendto(handle: i32, bytes: *const u8, length: c_size, flags: i32, address: *const u8, addressLength: u32): c_ssize;
+  function inet_pton(family: i32, source: *const u8, destination: *mut u8): i32;
   function htons(value: u16): u16;
   function fcntl(handle: i32, command: i32, value: i32): i32;
-  function poll(descriptors: * mut u8, count: c_size, timeout: u64): i32;
-  function tn_platform_reactor_create(): * mut u8;
-  function tn_platform_reactor_watch(reactor: * mut u8, descriptor: i32, events: i32): i32;
-  function tn_platform_reactor_unwatch(reactor: * mut u8, descriptor: i32): i32;
-  function tn_platform_reactor_wait(reactor: * mut u8, timeout: u64, ready: * mut i32, events: * mut i32,): i32;
-  function tn_platform_reactor_destroy(reactor: * mut u8): i32;
-  function waitpid(process: i32, status: * mut i32, options: i32): i32;
+  function poll(descriptors: *mut u8, count: c_size, timeout: u64): i32;
+  function tn_platform_reactor_create(): *mut u8;
+  function tn_platform_reactor_watch(reactor: *mut u8, descriptor: i32, events: i32): i32;
+  function tn_platform_reactor_unwatch(reactor: *mut u8, descriptor: i32): i32;
+  function tn_platform_reactor_wait(reactor: *mut u8, timeout: u64, ready: *mut i32, events: *mut i32,): i32;
+  function tn_platform_reactor_destroy(reactor: *mut u8): i32;
+  function waitpid(process: i32, status: *mut i32, options: i32): i32;
   function kill(process: i32, signal: i32): i32;
   function fork(): i32;
-  function execvp(command: * const u8, arguments: * mut * mut u8): i32;
+  function execvp(command: *const u8, arguments: *mut *mut u8): i32;
 }
-function isNullIntrinsic<T>(pointer: * const T): bool {
+function isNullIntrinsic<T>(pointer: *const T): bool {
   return false;
 }
-function nullPointerIntrinsic<T>(): * mut T {
+function nullPointerIntrinsic<T>(): *mut T {
   unsafe {
-    return calloc(0usize, 0usize)as * mut T;
+    return calloc(0usize, 0usize)as *mut T;
   }
 }
-function borrowElement<T>(pointer: * const T, index: usize): & T {
+function borrowElement<T>(pointer: *const T, index: usize): &T {
   unsafe {
     return & * pointer;
   }
 }
-function borrowElementI32<T>(pointer: * const T, index: i32): & T {
+function borrowElementI32<T>(pointer: *const T, index: i32): &T {
   unsafe {
     return & * pointer;
   }
 }
 function sizeOfIntrinsic<T>(): usize {
-  return 0usize;
+  return 0;
 }
-function storeRawIntrinsic<T>(pointer: * mut T, value: T): bool {
+function storeRawIntrinsic<T>(pointer: *mut T, value: T): bool {
   return false;
 }
 function platformSockAddrFamily(): u16 {
-  return 0u16;
+  return 0;
 }
 function platformSocketReuseAddressOption(): i32 {
-  return 0i32;
+  return 0;
 }
 function platformSocketLevel(): i32 {
-  return 0i32;
+  return 0;
 }
-function callRaw(callback: * mut u8, first: * mut u8, second: * mut u8): bool {
+function callRaw(callback: *mut u8, first: *mut u8, second: *mut u8): bool {
   return false;
 }
-function callRawVoid(callback: * mut u8, argument: * mut u8): bool {
+function callRawVoid(callback: *mut u8, argument: *mut u8): bool {
   return false;
 }
-function callRawPointer(callback: * mut u8, argument: * mut u8): * mut u8 {
+function callRawPointer(callback: *mut u8, argument: *mut u8): *mut u8 {
   return nullPointerIntrinsic<u8>();
 }
-function atomicUsizeLoad(pointer: * const usize, order: MemoryOrder): usize {
-  return 0usize;
+function atomicUsizeLoad(pointer: *const usize, order: MemoryOrder): usize {
+  return 0;
 }
-function atomicUsizeCompareExchange(pointer: * mut usize, expected: * mut usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
+function atomicUsizeCompareExchange(pointer: *mut usize, expected: *mut usize, desired: usize, success: MemoryOrder, failure: MemoryOrder,): bool {
   return false;
 }
 function atomicFence(order: MemoryOrder): bool {
   return false;
 }
-static mut argumentCount: i32 = 0i32;
-static mut argumentValues: * mut u8 = undefined;
-static mut allocationCount: u64 = 0u64;
-static mut freeCount: u64 = 0u64;
+static mut argumentCount: i32 = 0;
+static mut argumentValues: *mut u8 = undefined;
+static mut allocationCount: u64 = 0;
+static mut freeCount: u64 = 0;
 static mut allocationFailureAfter: usize = ~0usize;
-static mut allocationAttempts: usize = 0usize;
+static mut allocationAttempts: usize = 0;
 static mut allocationFailureEnabled: bool = false;
-static mut executorState: usize = 0usize;
-static mut executorHandle: * mut u8 = undefined;
+static mut executorState: usize = 0;
+static mut executorHandle: *mut u8 = undefined;
+static mut sharedReactorState: usize = 0;
+static mut sharedReactorHandle: *mut u8 = undefined;
 unsafe function allocationAllowed(): bool {
   unsafe {
     if (allocationFailureEnabled && allocationAttempts >= allocationFailureAfter) {
@@ -149,7 +151,7 @@ unsafe function allocationAllowed(): bool {
     return true;
   }
 }
-unsafe function controlledCalloc(count: usize, size: usize): * mut u8 {
+unsafe function controlledCalloc(count: usize, size: usize): *mut u8 {
   unsafe {
     if (!allocationAllowed()) {
       return nullPointerIntrinsic<u8>();
@@ -188,65 +190,65 @@ struct SockAddrIn {
   public address: u32;
   public padding0: u64;
 }
-function byteAt(pointer: * const u8, index: usize): u8 {
+function byteAt(pointer: *const u8, index: usize): u8 {
   unsafe {
     const address = byteAddress(pointer, index);
-    return *(address as * const u8);
+    return *(address as *const u8);
   }
 }
-function setByte(pointer: * mut u8, index: usize, value: u8): void {
+function setByte(pointer: *mut u8, index: usize, value: u8): void {
   unsafe {
-    const address = byteAddress(pointer as * const u8, index);
-    storeRawIntrinsic<u8>(address as * mut u8, value);
+    const address = byteAddress(pointer as *const u8, index);
+    storeRawIntrinsic<u8>(address as *mut u8, value);
   }
 }
-function rcHeader(pointer: * const u8): * mut RcHeader {
+function rcHeader(pointer: *const u8): *mut RcHeader {
   unsafe {
     const address = byteAddressI32(pointer, - 16i32);
-    return address as * mut RcHeader;
+    return address as *mut RcHeader;
   }
 }
-function rcData(pointer: * mut u8): * mut u8 {
+function rcData(pointer: *mut u8): *mut u8 {
   unsafe {
-    const address = byteAddress(pointer as * const u8, sizeOfIntrinsic<RcHeader>());
-    return address as * mut u8;
+    const address = byteAddress(pointer as *const u8, sizeOfIntrinsic<RcHeader>());
+    return address as *mut u8;
   }
 }
-function arcHeader(pointer: * const u8): * mut ArcHeader {
+function arcHeader(pointer: *const u8): *mut ArcHeader {
   unsafe {
     const address = byteAddressI32(pointer, - 24i32);
-    return address as * mut ArcHeader;
+    return address as *mut ArcHeader;
   }
 }
-function arcData(pointer: * mut u8): * mut u8 {
+function arcData(pointer: *mut u8): *mut u8 {
   unsafe {
-    const address = byteAddress(pointer as * const u8, sizeOfIntrinsic<ArcHeader>());
-    return address as * mut u8;
+    const address = byteAddress(pointer as *const u8, sizeOfIntrinsic<ArcHeader>());
+    return address as *mut u8;
   }
 }
-function arcStrongPointer(header: * mut ArcHeader): * mut usize {
+function arcStrongPointer(header: *mut ArcHeader): *mut usize {
   unsafe {
-    return byteAddress(header as * const u8, 0usize)as * mut usize;
+    return byteAddress(header as *const u8, 0usize)as *mut usize;
   }
 }
-function arcWeakPointer(header: * mut ArcHeader): * mut usize {
+function arcWeakPointer(header: *mut ArcHeader): *mut usize {
   unsafe {
-    return byteAddress(header as * const u8, sizeOfIntrinsic<usize>())as * mut usize;
+    return byteAddress(header as *const u8, sizeOfIntrinsic<usize>())as *mut usize;
   }
 }
-function stringHeader(pointer: * const u8): * mut StringHeader {
+function stringHeader(pointer: *const u8): *mut StringHeader {
   unsafe {
     const address = byteAddressI32(pointer, - 16i32);
-    return address as * mut StringHeader;
+    return address as *mut StringHeader;
   }
 }
-function stringData(block: * mut StringHeader): * mut u8 {
+function stringData(block: *mut StringHeader): *mut u8 {
   unsafe {
-    const address = byteAddress(block as * const u8, sizeOfIntrinsic<StringHeader>(),);
-    return address as * mut u8;
+    const address = byteAddress(block as *const u8, sizeOfIntrinsic<StringHeader>(),);
+    return address as *mut u8;
   }
 }
-export function processSetArgs(argc: i32, argv: * mut u8): void {
+export function processSetArgs(argc: i32, argv: *mut u8): void {
   unsafe {
     argumentCount = argc;
     argumentValues = argv;
@@ -257,13 +259,13 @@ export function processArgc(): i32 {
     return argumentCount;
   }
 }
-export function processArgv(index: i32): * const u8 {
+export function processArgv(index: i32): *const u8 {
   unsafe {
-    if (index<0i32 || index >= argumentCount || isNullIntrinsic<u8>(argumentValues as * const u8)) {
-      return nullPointerIntrinsic<u8>()as * const u8;
+    if (index<0i32 || index >= argumentCount || isNullIntrinsic<u8>(argumentValues as *const u8)) {
+      return nullPointerIntrinsic<u8>()as *const u8;
     }
-    const address = borrowElement< * mut u8>(argumentValues as * const * mut u8, index as usize);
-    const value = *(address as * const * const u8);
+    const address = borrowElement< *mut u8>(argumentValues as *const *mut u8, index as usize);
+    const value = *(address as *const *const u8);
     return value;
   }
 }
@@ -279,42 +281,42 @@ export function processExit(code: i32): void {
 }
 export function runtimeAbort(code: u32): void {
   unsafe {
-    write(2i32, "TypeNative panic\n" as * const u8, 17usize);
+    write(2i32, "TypeNative panic\n" as *const u8, 17usize);
     abort();
   }
 }
-export function runtimeAlloc(size: usize): * mut u8 {
+export function runtimeAlloc(size: usize): *mut u8 {
   unsafe {
     const pointer = controlledCalloc(1usize, size === 0usize?1usize: size);
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
       abort();
     }
     allocationCount = allocationCount + 1u64;
     return pointer;
   }
 }
-export function runtimeTryAlloc(size: usize): * mut u8 {
+export function runtimeTryAlloc(size: usize): *mut u8 {
   unsafe {
     const result = controlledCalloc(1usize, size === 0usize?1usize: size);
-    if (!isNullIntrinsic<u8>(result as * const u8)) {
+    if (!isNullIntrinsic<u8>(result as *const u8)) {
       allocationCount = allocationCount + 1u64;
     }
     return result;
   }
 }
-export function runtimeRealloc(pointer: * mut u8, size: usize): * mut u8 {
+export function runtimeRealloc(pointer: *mut u8, size: usize): *mut u8 {
   unsafe {
     if (!allocationAllowed()) {
       abort();
     }
     const result = realloc(pointer, size === 0usize?1usize: size);
-    if (isNullIntrinsic<u8>(result as * const u8)) {
+    if (isNullIntrinsic<u8>(result as *const u8)) {
       abort();
     }
     return result;
   }
 }
-export function runtimeTryRealloc(pointer: * mut u8, size: usize): * mut u8 {
+export function runtimeTryRealloc(pointer: *mut u8, size: usize): *mut u8 {
   unsafe {
     if (!allocationAllowed()) {
       return nullPointerIntrinsic<u8>();
@@ -322,18 +324,18 @@ export function runtimeTryRealloc(pointer: * mut u8, size: usize): * mut u8 {
     return realloc(pointer, size === 0usize?1usize: size);
   }
 }
-export function runtimeFree(pointer: * mut u8): void {
+export function runtimeFree(pointer: *mut u8): void {
   unsafe {
     free(pointer);
-    if (!isNullIntrinsic<u8>(pointer as * const u8)) {
+    if (!isNullIntrinsic<u8>(pointer as *const u8)) {
       freeCount = freeCount + 1u64;
     }
   }
 }
-export function nullPointer(): * mut u8 {
+export function nullPointer(): *mut u8 {
   return nullPointerIntrinsic<u8>();
 }
-export function pointerIsNull(pointer: * const u8): i32 {
+export function pointerIsNull(pointer: *const u8): i32 {
   return isNullIntrinsic<u8>(pointer)?1i32: 0i32;
 }
 export function runtimeAllocationCount(): u64 {
@@ -375,7 +377,7 @@ export function runtimeClearAllocFailure(): void {
     allocationFailureEnabled = false;
   }
 }
-export function rcAlloc(size: usize): * mut u8 {
+export function rcAlloc(size: usize): *mut u8 {
   unsafe {
     const headerSize = sizeOfIntrinsic<RcHeader>();
     if (size > ~0usize - headerSize) {
@@ -383,27 +385,27 @@ export function rcAlloc(size: usize): * mut u8 {
     }
     const total = headerSize + size;
     const block = controlledCalloc(1usize, total === 0usize?1usize: total);
-    if (isNullIntrinsic<u8>(block as * const u8)) {
+    if (isNullIntrinsic<u8>(block as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const header: RcHeader = {
       strong: 1usize, size: size
     };
-    storeRawIntrinsic<RcHeader>(block as * mut RcHeader, header);
+    storeRawIntrinsic<RcHeader>(block as *mut RcHeader, header);
     allocationCount = allocationCount + 1u64;
     return rcData(block);
   }
 }
-export function rcTryAlloc(size: usize): * mut u8 {
+export function rcTryAlloc(size: usize): *mut u8 {
   return rcAlloc(size);
 }
-export function rcRetain(pointer: * mut u8): * mut u8 {
+export function rcRetain(pointer: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    const headerPointer = rcHeader(pointer as * const u8);
-    let header = *(headerPointer as * const RcHeader);
+    const headerPointer = rcHeader(pointer as *const u8);
+    let header = *(headerPointer as *const RcHeader);
     if (header.strong === 0usize) {
       return nullPointerIntrinsic<u8>();
     }
@@ -415,41 +417,41 @@ export function rcRetain(pointer: * mut u8): * mut u8 {
     return pointer;
   }
 }
-export function rcRelease(pointer: * mut u8): i32 {
+export function rcRelease(pointer: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
+      return 0;
     }
-    const headerPointer = rcHeader(pointer as * const u8);
-    let header = *(headerPointer as * const RcHeader);
+    const headerPointer = rcHeader(pointer as *const u8);
+    let header = *(headerPointer as *const RcHeader);
     if (header.strong === 0usize) {
-      return 0i32;
+      return 0;
     }
     header.strong = header.strong - 1usize;
     if (header.strong === 0usize) {
       storeRawIntrinsic<RcHeader>(headerPointer, header);
-      return 1i32;
+      return 1;
     }
     storeRawIntrinsic<RcHeader>(headerPointer, header);
-    return 0i32;
+    return 0;
   }
 }
-export function rcDestroy(pointer: * mut u8): i32 {
+export function rcDestroy(pointer: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
+      return 0;
     }
-    const headerPointer = rcHeader(pointer as * const u8);
-    const header = *(headerPointer as * const RcHeader);
+    const headerPointer = rcHeader(pointer as *const u8);
+    const header = *(headerPointer as *const RcHeader);
     if (header.strong !== 0usize) {
-      return 0i32;
+      return 0;
     }
-    free(headerPointer as * mut u8);
+    free(headerPointer as *mut u8);
     freeCount = freeCount + 1u64;
-    return 1i32;
+    return 1;
   }
 }
-export function arcAlloc(size: usize): * mut u8 {
+export function arcAlloc(size: usize): *mut u8 {
   unsafe {
     const headerSize = sizeOfIntrinsic<ArcHeader>();
     if (size > ~0usize - headerSize) {
@@ -457,171 +459,171 @@ export function arcAlloc(size: usize): * mut u8 {
     }
     const total = headerSize + size;
     const block = controlledCalloc(1usize, total === 0usize?1usize: total);
-    if (isNullIntrinsic<u8>(block as * const u8)) {
+    if (isNullIntrinsic<u8>(block as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const header: ArcHeader = {
       strong: 1usize, weak: 1usize, size: size
     };
-    storeRawIntrinsic<ArcHeader>(block as * mut ArcHeader, header);
+    storeRawIntrinsic<ArcHeader>(block as *mut ArcHeader, header);
     allocationCount = allocationCount + 1u64;
     return arcData(block);
   }
 }
-export function arcTryAlloc(size: usize): * mut u8 {
+export function arcTryAlloc(size: usize): *mut u8 {
   return arcAlloc(size);
 }
-export function arcRetain(pointer: * mut u8): * mut u8 {
+export function arcRetain(pointer: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    const headerPointer = arcHeader(pointer as * const u8);
+    const headerPointer = arcHeader(pointer as *const u8);
     const strongPointer = arcStrongPointer(headerPointer);
-    let current = atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Relaxed);
+    let current = atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Relaxed);
     while (true) {
       if (current === 0usize || current === ~0usize) {
         return nullPointerIntrinsic<u8>();
       }
       let expected = current;
-      if (atomicUsizeCompareExchange(strongPointer,( & mut expected)as * mut usize, current + 1usize, MemoryOrder.Relaxed, MemoryOrder.Relaxed)) {
+      if (atomicUsizeCompareExchange(strongPointer,( &mut expected)as *mut usize, current + 1usize, MemoryOrder.Relaxed, MemoryOrder.Relaxed)) {
         return pointer;
       }
-      current = atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Relaxed);
+      current = atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Relaxed);
     }
     return nullPointerIntrinsic<u8>();
   }
 }
-export function arcRelease(pointer: * mut u8): i32 {
+export function arcRelease(pointer: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
+      return 0;
     }
-    const headerPointer = arcHeader(pointer as * const u8);
+    const headerPointer = arcHeader(pointer as *const u8);
     const strongPointer = arcStrongPointer(headerPointer);
-    let current = atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Relaxed);
+    let current = atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Relaxed);
     while (true) {
       if (current === 0usize) {
-        return 0i32;
+        return 0;
       }
       let expected = current;
       const next = current - 1usize;
-      if (atomicUsizeCompareExchange(strongPointer,( & mut expected)as * mut usize, next, MemoryOrder.Release, MemoryOrder.Relaxed)) {
+      if (atomicUsizeCompareExchange(strongPointer,( &mut expected)as *mut usize, next, MemoryOrder.Release, MemoryOrder.Relaxed)) {
         if (next === 0usize) {
           atomicFence(MemoryOrder.Acquire);
-          return 1i32;
+          return 1;
         }
-        return 0i32;
+        return 0;
       }
-      current = atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Relaxed);
+      current = atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Relaxed);
     }
-    return 0i32;
+    return 0;
   }
 }
-export function arcDowngrade(pointer: * mut u8): * mut u8 {
+export function arcDowngrade(pointer: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    const headerPointer = arcHeader(pointer as * const u8);
+    const headerPointer = arcHeader(pointer as *const u8);
     const strongPointer = arcStrongPointer(headerPointer);
     const weakPointer = arcWeakPointer(headerPointer);
-    if (atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Acquire) === 0usize) {
+    if (atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Acquire) === 0usize) {
       return nullPointerIntrinsic<u8>();
     }
-    let current = atomicUsizeLoad(weakPointer as * const usize, MemoryOrder.Relaxed);
+    let current = atomicUsizeLoad(weakPointer as *const usize, MemoryOrder.Relaxed);
     while (true) {
       if (current === ~0usize) {
         return nullPointerIntrinsic<u8>();
       }
       let expected = current;
-      if (atomicUsizeCompareExchange(weakPointer,( & mut expected)as * mut usize, current + 1usize, MemoryOrder.Relaxed, MemoryOrder.Relaxed)) {
+      if (atomicUsizeCompareExchange(weakPointer,( &mut expected)as *mut usize, current + 1usize, MemoryOrder.Relaxed, MemoryOrder.Relaxed)) {
         return pointer;
       }
-      current = atomicUsizeLoad(weakPointer as * const usize, MemoryOrder.Relaxed);
+      current = atomicUsizeLoad(weakPointer as *const usize, MemoryOrder.Relaxed);
     }
     return nullPointerIntrinsic<u8>();
   }
 }
-export function arcUpgrade(pointer: * mut u8): * mut u8 {
+export function arcUpgrade(pointer: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    const headerPointer = arcHeader(pointer as * const u8);
+    const headerPointer = arcHeader(pointer as *const u8);
     const strongPointer = arcStrongPointer(headerPointer);
-    let current = atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Acquire);
+    let current = atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Acquire);
     while (true) {
       if (current === 0usize || current === ~0usize) {
         return nullPointerIntrinsic<u8>();
       }
       let expected = current;
-      if (atomicUsizeCompareExchange(strongPointer,( & mut expected)as * mut usize, current + 1usize, MemoryOrder.Acquire, MemoryOrder.Relaxed)) {
+      if (atomicUsizeCompareExchange(strongPointer,( &mut expected)as *mut usize, current + 1usize, MemoryOrder.Acquire, MemoryOrder.Relaxed)) {
         return pointer;
       }
-      current = atomicUsizeLoad(strongPointer as * const usize, MemoryOrder.Acquire);
+      current = atomicUsizeLoad(strongPointer as *const usize, MemoryOrder.Acquire);
     }
     return nullPointerIntrinsic<u8>();
   }
 }
-export function arcDestroy(pointer: * mut u8): i32 {
+export function arcDestroy(pointer: *mut u8): i32 {
   return arcReleaseWeak(pointer);
 }
-export function arcReleaseWeak(pointer: * mut u8): i32 {
+export function arcReleaseWeak(pointer: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(pointer as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(pointer as *const u8)) {
+      return 0;
     }
-    const headerPointer = arcHeader(pointer as * const u8);
+    const headerPointer = arcHeader(pointer as *const u8);
     const weakPointer = arcWeakPointer(headerPointer);
-    let current = atomicUsizeLoad(weakPointer as * const usize, MemoryOrder.Relaxed);
+    let current = atomicUsizeLoad(weakPointer as *const usize, MemoryOrder.Relaxed);
     while (true) {
       if (current === 0usize) {
-        return 0i32;
+        return 0;
       }
       let expected = current;
       const next = current - 1usize;
-      if (atomicUsizeCompareExchange(weakPointer,( & mut expected)as * mut usize, next, MemoryOrder.Release, MemoryOrder.Relaxed)) {
+      if (atomicUsizeCompareExchange(weakPointer,( &mut expected)as *mut usize, next, MemoryOrder.Release, MemoryOrder.Relaxed)) {
         if (next === 0usize) {
           atomicFence(MemoryOrder.Acquire);
-          free(headerPointer as * mut u8);
+          free(headerPointer as *mut u8);
           freeCount = freeCount + 1u64;
-          return 1i32;
+          return 1;
         }
-        return 0i32;
+        return 0;
       }
-      current = atomicUsizeLoad(weakPointer as * const usize, MemoryOrder.Relaxed);
+      current = atomicUsizeLoad(weakPointer as *const usize, MemoryOrder.Relaxed);
     }
-    return 0i32;
+    return 0;
   }
 }
-export function consoleWrite(fd: i32, bytes: * const u8, length: usize): i32 {
+export function consoleWrite(fd: i32, bytes: *const u8, length: usize): i32 {
   return ioWriteAll(fd, bytes, length);
 }
-export function ioWriteAll(fd: i32, bytes: * const u8, length: usize): i32 {
-  let written: usize = 0usize;
+export function ioWriteAll(fd: i32, bytes: *const u8, length: usize): i32 {
+  let written: usize = 0;
   while (written !== length) {
     unsafe {
       const pointer = byteAddress(bytes, written);
-      const result = write(fd, pointer as * const u8, length - written);
+      const result = write(fd, pointer as *const u8, length - written);
       if (result <= 0isize ||(result as usize) > length - written) {
         return - 1i32;
       }
       written = written +(result as usize);
     }
   }
-  return 0i32;
+  return 0;
 }
 export function ioFlush(fd: i32): i32 {
-  return 0i32;
+  return 0;
 }
-export function stringFromBytes(bytes: * const u8, length: usize): * mut u8 {
+export function stringFromBytes(bytes: *const u8, length: usize): *mut u8 {
   unsafe {
     const headerSize = sizeOfIntrinsic<StringHeader>();
     if (length > ~0usize - headerSize - 1usize) {
       return nullPointerIntrinsic<u8>();
     }
-    const block = runtimeAlloc(headerSize + length + 1usize)as * mut StringHeader;
+    const block = runtimeAlloc(headerSize + length + 1usize)as *mut StringHeader;
     storeRawIntrinsic<StringHeader>(block, {
       magic: 6076299263593804116u64, length: length
     });
@@ -633,7 +635,22 @@ export function stringFromBytes(bytes: * const u8, length: usize): * mut u8 {
     return result;
   }
 }
-export function stringEquals(left: * const u8, leftLength: usize, right: * const u8, rightLength: usize): i32 {
+function stringAllocate(length: usize): *mut u8 {
+  unsafe {
+    const headerSize = sizeOfIntrinsic<StringHeader>();
+    if (length > ~0usize - headerSize - 1usize) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const block = runtimeAlloc(headerSize + length + 1usize)as *mut StringHeader;
+    storeRawIntrinsic<StringHeader>(block, {
+      magic: 6076299263593804116u64, length: length,
+    });
+    const result = stringData(block);
+    setByte(result, length, 0u8);
+    return result;
+  }
+}
+export function stringEquals(left: *const u8, leftLength: usize, right: *const u8, rightLength: usize): i32 {
   unsafe {
     const leftNull = isNullIntrinsic<u8>(left);
     const rightNull = isNullIntrinsic<u8>(right);
@@ -641,21 +658,21 @@ export function stringEquals(left: * const u8, leftLength: usize, right: * const
       return(leftNull && rightNull)?1i32: 0i32;
     }
     if (leftLength !== rightLength) {
-      return 0i32;
+      return 0;
     }
     if (leftLength === 0usize) {
-      return 1i32;
+      return 1;
     }
     return memcmp(left, right, leftLength) === 0i32?1i32: 0i32;
   }
 }
-export function stringCompare(left: * const u8, leftLength: usize, right: * const u8, rightLength: usize): i32 {
+export function stringCompare(left: *const u8, leftLength: usize, right: *const u8, rightLength: usize): i32 {
   unsafe {
     const leftNull = isNullIntrinsic<u8>(left);
     const rightNull = isNullIntrinsic<u8>(right);
     if (leftNull || rightNull) {
       if (rightNull) {
-        return 0i32;
+        return 0;
       }
       return - 1i32;
     }
@@ -666,37 +683,37 @@ export function stringCompare(left: * const u8, leftLength: usize, right: * cons
         return - 1i32;
       }
       if (status > 0i32) {
-        return 1i32;
+        return 1;
       }
     }
     return leftLength<rightLength? - 1i32:(leftLength > rightLength?1i32: 0i32);
   }
 }
-export function stringLength(text: * const u8): usize {
+export function stringLength(text: *const u8): usize {
   unsafe {
     if (isNullIntrinsic<u8>(text)) {
-      return 0usize;
+      return 0;
     }
-    const header = *(stringHeader(text)as * const StringHeader);
+    const header = *(stringHeader(text)as *const StringHeader);
     if (header.magic === 6076299263593804116u64) {
       return header.length;
     }
-    return 0usize;
+    return 0;
   }
 }
-export function stringScalarLength(text: * const u8): usize {
+export function stringScalarLength(text: *const u8): usize {
   unsafe {
     if (isNullIntrinsic<u8>(text)) {
-      return 0usize;
+      return 0;
     }
     const length = stringLength(text);
     return stringScalarLengthBytes(text, length);
   }
 }
-export function stringScalarLengthBytes(bytes: * const u8, length: usize): usize {
+export function stringScalarLengthBytes(bytes: *const u8, length: usize): usize {
   unsafe {
     if (length === 0usize || utf8Validate(bytes, length) === 0i32) {
-      return 0usize;
+      return 0;
     }
     let index = 0usize;
     let count = 0usize;
@@ -710,28 +727,28 @@ export function stringScalarLengthBytes(bytes: * const u8, length: usize): usize
     return count;
   }
 }
-export function stringFree(text: * mut u8): void {
+export function stringFree(text: *mut u8): void {
   unsafe {
-    if (isNullIntrinsic<u8>(text as * const u8)) {
+    if (isNullIntrinsic<u8>(text as *const u8)) {
       return;
     }
-    const block = byteAddressI32(text as * const u8, - 16i32)as * const StringHeader;
+    const block = byteAddressI32(text as *const u8, - 16i32)as *const StringHeader;
     if (( * block).magic === 6076299263593804116u64) {
-      runtimeFree(block as * mut u8);
+      runtimeFree(block as *mut u8);
     }
   }
 }
-export function stringToAsciiUpper(text: * const u8): * mut u8 {
+export function stringToAsciiUpper(text: *const u8): *mut u8 {
   unsafe {
     if (isNullIntrinsic<u8>(text)) {
       return nullPointerIntrinsic<u8>();
     }
     const length = stringLength(text);
     const result = stringFromBytes(text, length);
-    if (isNullIntrinsic<u8>(result as * const u8)) {
+    if (isNullIntrinsic<u8>(result as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== length) {
       let value = byteAt(text, index);
       if (value >= 97u8 && value <= 122u8) {
@@ -743,17 +760,367 @@ export function stringToAsciiUpper(text: * const u8): * mut u8 {
     return result;
   }
 }
-export function utf8Validate(bytes: * const u8, length: usize): i32 {
+function unicodeUppercaseScalar(value: u32): u32 {
+  // Unicode's simple uppercase mapping is intentionally expressed as ranges
+  // here so the runtime does not depend on the host locale.  The ranges cover
+  // the scalar blocks used by the standard Unicode casing tables; the explicit
+  // exceptions below cover the non-contiguous members of those blocks.
+  if (value >= 97 && value <= 122) {
+    return value - 32;
+  }
+  if ((value >= 224 && value <= 246) ||(value >= 248 && value <= 254)) {
+    return value - 32;
+  }
+  if (value === 255) {
+    return 376;
+  }
+  if (value >= 257 && value <= 501 &&(value & 1) !== 0) {
+    return value - 1;
+  }
+  if (value >= 507 && value <= 511 &&(value & 1) !== 0) {
+    return value - 1;
+  }
+  if (value >= 513 && value <= 591 &&(value & 1) !== 0) {
+    return value - 1;
+  }
+  if (value >= 592 && value <= 687 &&(value & 1) === 0) {
+    return value + 1;
+  }
+  if (value >= 945 && value <= 961) {
+    return value - 32;
+  }
+  if (value >= 963 && value <= 972) {
+    return value - 32;
+  }
+  if (value >= 945 && value <= 974 &&(value & 1) !== 0) {
+    return value - 1;
+  }
+  if (value >= 1072 && value <= 1103) {
+    return value - 32;
+  }
+  if (value >= 1121 && value <= 1153 &&(value & 1) !== 0) {
+    return value - 1;
+  }
+  if (value >= 1163 && value <= 1319 &&(value & 1) !== 0) {
+    return value - 1;
+  }
+  if (value >= 1377 && value <= 1414) {
+    return value - 48;
+  }
+  if (value >= 7936 && value <= 7951) {
+    return value - 8;
+  }
+  if (value >= 7952 && value <= 7967) {
+    return value - 9;
+  }
+  if (value >= 7968 && value <= 7975) {
+    return value - 8;
+  }
+  if (value >= 7984 && value <= 7991) {
+    return value - 9;
+  }
+  if (value >= 8000 && value <= 8005) {
+    return value - 8;
+  }
+  if (value >= 8008 && value <= 8013) {
+    return value - 8;
+  }
+  if (value >= 8016 && value <= 8023) {
+    return value - 9;
+  }
+  if (value >= 8025 && value <= 8025) {
+    return value - 8;
+  }
+  if (value >= 8027 && value <= 8027) {
+    return value - 8;
+  }
+  if (value >= 8029 && value <= 8029) {
+    return value - 8;
+  }
+  if (value >= 8031 && value <= 8031) {
+    return value - 8;
+  }
+  if (value >= 8048 && value <= 8061) {
+    return value - 9;
+  }
+  if (value >= 8064 && value <= 8071) {
+    return value - 8;
+  }
+  if (value >= 8072 && value <= 8079) {
+    return value - 9;
+  }
+  if (value >= 8080 && value <= 8087) {
+    return value - 8;
+  }
+  if (value >= 8088 && value <= 8095) {
+    return value - 9;
+  }
+  if (value >= 8096 && value <= 8103) {
+    return value - 8;
+  }
+  if (value >= 8104 && value <= 8111) {
+    return value - 9;
+  }
+  if (value >= 8112 && value <= 8116) {
+    return value - 8;
+  }
+  if (value >= 8118 && value <= 8119) {
+    return value - 9;
+  }
+  if (value >= 8126 && value <= 8126) {
+    return value - 8;
+  }
+  if (value >= 8130 && value <= 8132) {
+    return value - 9;
+  }
+  if (value >= 8134 && value <= 8140) {
+    return value - 8;
+  }
+  if (value >= 8144 && value <= 8147) {
+    return value - 9;
+  }
+  if (value >= 8150 && value <= 8155) {
+    return value - 8;
+  }
+  if (value >= 8157 && value <= 8175) {
+    return value - 9;
+  }
+  if (value >= 8178 && value <= 8180) {
+    return value - 8;
+  }
+  if (value >= 8182 && value <= 8188) {
+    return value - 9;
+  }
+  if (value >= 8192 && value <= 8203) {
+    return value - 8;
+  }
+  if (value >= 8204 && value <= 8205) {
+    return value - 9;
+  }
+  if (value >= 8206 && value <= 8207) {
+    return value - 8;
+  }
+  if (value >= 8210 && value <= 8215) {
+    return value - 9;
+  }
+  if (value >= 8218 && value <= 8221) {
+    return value - 8;
+  }
+  if (value >= 8224 && value <= 8231) {
+    return value - 9;
+  }
+  if (value >= 8232 && value <= 8239) {
+    return value - 8;
+  }
+  if (value >= 8240 && value <= 8247) {
+    return value - 9;
+  }
+  if (value >= 8248 && value <= 8255) {
+    return value - 8;
+  }
+  if (value >= 8256 && value <= 8263) {
+    return value - 9;
+  }
+  if (value >= 8264 && value <= 8269) {
+    return value - 8;
+  }
+  if (value >= 8272 && value <= 8277) {
+    return value - 9;
+  }
+  if (value >= 8279 && value <= 8286) {
+    return value - 8;
+  }
+  if (value >= 8288 && value <= 8291) {
+    return value - 9;
+  }
+  if (value >= 8293 && value <= 8294) {
+    return value - 8;
+  }
+  if (value >= 8296 && value <= 8303) {
+    return value - 9;
+  }
+  if (value >= 8304 && value <= 8305) {
+    return value - 8;
+  }
+  if (value >= 8308 && value <= 8313) {
+    return value - 9;
+  }
+  if (value >= 8319 && value <= 8319) {
+    return value - 8;
+  }
+  if (value >= 8320 && value <= 8329) {
+    return value - 9;
+  }
+  if (value >= 8336 && value <= 8348) {
+    return value - 8;
+  }
+  if (value >= 8352 && value <= 8365) {
+    return value - 9;
+  }
+  if (value >= 8544 && value <= 8584) {
+    return value - 16;
+  }
+  if (value === 962 || value === 963) {
+    return 931;
+  }
+  if (value === 305) {
+    return 73;
+  }
+  if (value === 940) {
+    return 902;
+  }
+  if (value === 941) {
+    return 904;
+  }
+  if (value === 942) {
+    return 905;
+  }
+  if (value === 943) {
+    return 906;
+  }
+  if (value === 972) {
+    return 908;
+  }
+  if (value === 973) {
+    return 910;
+  }
+  if (value === 974) {
+    return 911;
+  }
+  return value;
+}
+function utf8EncodedLength(value: u32): usize {
+  if (value<128) {
+    return 1;
+  }
+  if (value<2048) {
+    return 2;
+  }
+  if (value<65536) {
+    return 3;
+  }
+  return 4;
+}
+function utf8Write(destination: *mut u8, offset: usize, value: u32): usize {
+  unsafe {
+    if (value<128) {
+      setByte(destination, offset, value as u8);
+      return 1;
+    }
+    if (value<2048) {
+      setByte(destination, offset,(192u32 |(value >> 6))as u8);
+      setByte(destination, offset + 1,(128u32 |(value & 63u32))as u8);
+      return 2;
+    }
+    if (value<65536) {
+      setByte(destination, offset,(224u32 |(value >> 12))as u8);
+      setByte(destination, offset + 1,(128u32 |((value >> 6) & 63u32))as u8);
+      setByte(destination, offset + 2,(128u32 |(value & 63u32))as u8);
+      return 3;
+    }
+    setByte(destination, offset,(240u32 |(value >> 18))as u8);
+    setByte(destination, offset + 1,(128u32 |((value >> 12) & 63u32))as u8);
+    setByte(destination, offset + 2,(128u32 |((value >> 6) & 63u32))as u8);
+    setByte(destination, offset + 3,(128u32 |(value & 63u32))as u8);
+    return 4;
+  }
+}
+export function stringToUpper(text: *const u8): *mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(text)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const length = stringLength(text);
+    // Full Unicode uppercase mappings may expand one scalar into three
+    // scalars (for example, Greek characters with a dialytika and tonos).
+    // Allocate from the UTF-8 byte length so those mappings cannot overrun
+    // the destination buffer.
+    const capacity = length * 4 + 1;
+    const result = stringAllocate(capacity - 1);
+    if (isNullIntrinsic<u8>(result as *const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    let input = 0usize;
+    let output = 0usize;
+    while (input !== length) {
+      let codepoint: u32 = 0;
+      let next: usize = input;
+      let decodeStatus: i32 = 0;
+      unsafe {
+        const codepointOutput = &mut codepoint;
+        const nextOutput = &mut next;
+        decodeStatus = utf8Decode(text, length, input, codepointOutput as *mut u32, nextOutput as *mut usize);
+      }
+      if (decodeStatus <= 0) {
+        stringFree(result);
+        return nullPointerIntrinsic<u8>();
+      }
+      const upper = unicodeUppercaseScalar(codepoint);
+      if (codepoint === 223) {
+        output = output + utf8Write(result, output, 83);
+        output = output + utf8Write(result, output, 83);
+      } else if (codepoint === 329) {
+        // LATIN SMALL LETTER N PRECEDED BY APOSTROPHE: ʼN.
+        output = output + utf8Write(result, output, 700);
+        output = output + utf8Write(result, output, 78);
+      } else if (codepoint === 912) {
+        // GREEK SMALL LETTER IOTA WITH DIALYTIKA AND TONOS: Ϊ́.
+        output = output + utf8Write(result, output, 921);
+        output = output + utf8Write(result, output, 776);
+        output = output + utf8Write(result, output, 769);
+      } else if (codepoint === 944) {
+        // GREEK SMALL LETTER UPSILON WITH DIALYTIKA AND TONOS: Ϋ́.
+        output = output + utf8Write(result, output, 933);
+        output = output + utf8Write(result, output, 776);
+        output = output + utf8Write(result, output, 769);
+      } else if (codepoint === 1415) {
+        // ARMENIAN SMALL LIGATURE ECH YIWN: ԵՒ.
+        output = output + utf8Write(result, output, 1333);
+        output = output + utf8Write(result, output, 1362);
+      } else if (codepoint === 64256) {
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 70);
+      } else if (codepoint === 64257) {
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 73);
+      } else if (codepoint === 64258) {
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 76);
+      } else if (codepoint === 64259) {
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 73);
+      } else if (codepoint === 64260) {
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 70);
+        output = output + utf8Write(result, output, 76);
+      } else if (codepoint === 64261 || codepoint === 64262) {
+        output = output + utf8Write(result, output, 83);
+        output = output + utf8Write(result, output, 84);
+      } else {
+        output = output + utf8Write(result, output, upper);
+      }
+      input = next;
+    }
+    setByte(result, output, 0);
+    const header = stringHeader(result as *const u8);
+    let value = *(header as *const StringHeader);
+    value.length = output;
+    storeRawIntrinsic<StringHeader>(header, value);
+    return result;
+  }
+}
+export function utf8Validate(bytes: *const u8, length: usize): i32 {
   unsafe {
     if (length > 0usize && isNullIntrinsic<u8>(bytes)) {
-      return 0i32;
+      return 0;
     }
-    let offset: usize = 0usize;
+    let offset: usize = 0;
     while (offset !== length) {
       const first = byteAt(bytes, offset);
       offset = offset + 1usize;
-      let continuation: usize = 0usize;
-      let value: u32 = 0u32;
+      let continuation: usize = 0;
+      let value: u32 = 0;
       if (first<128u8) {
         continue;
       } else if (first >= 194u8 && first <= 223u8) {
@@ -766,45 +1133,45 @@ export function utf8Validate(bytes: * const u8, length: usize): i32 {
         continuation = 3usize;
         value =(first as u32) & 7u32;
       } else {
-        return 0i32;
+        return 0;
       }
       if (continuation > length - offset) {
-        return 0i32;
+        return 0;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index !== continuation) {
         const next = byteAt(bytes, offset);
         offset = offset + 1usize;
         if ((next & 192u8) !== 128u8) {
-          return 0i32;
+          return 0;
         }
         value =(value << 6u32) |((next as u32) & 63u32);
         index = index + 1usize;
       }
       if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32)) {
-        return 0i32;
+        return 0;
       }
       if ((continuation === 2usize && value<2048u32) ||(continuation === 3usize && value<65536u32)) {
-        return 0i32;
+        return 0;
       }
     }
-    return 1i32;
+    return 1;
   }
 }
-export function utf8ValidateAndHash(bytes: * const u8, length: usize, hashOutput: * mut u64): i32 {
+export function utf8ValidateAndHash(bytes: *const u8, length: usize, hashOutput: *mut u64): i32 {
   unsafe {
-    if ((length > 0usize && isNullIntrinsic<u8>(bytes)) || isNullIntrinsic<u64>(hashOutput as * const u64)) {
-      return 0i32;
+    if ((length > 0usize && isNullIntrinsic<u8>(bytes)) || isNullIntrinsic<u64>(hashOutput as *const u64)) {
+      return 0;
     }
     const prime = 4294967291u64;
     let hash = 2166136261u64;
-    let offset: usize = 0usize;
+    let offset: usize = 0;
     while (offset !== length) {
       const first = byteAt(bytes, offset);
       hash =(hash +((first as u64) & 255u64) +(offset as u64)) % prime;
       offset = offset + 1usize;
-      let continuation: usize = 0usize;
-      let value: u32 = 0u32;
+      let continuation: usize = 0;
+      let value: u32 = 0;
       if (first<128u8) {
         continue;
       } else if (first >= 194u8 && first <= 223u8) {
@@ -817,40 +1184,40 @@ export function utf8ValidateAndHash(bytes: * const u8, length: usize, hashOutput
         continuation = 3usize;
         value =(first as u32) & 7u32;
       } else {
-        return 0i32;
+        return 0;
       }
       if (continuation > length - offset) {
-        return 0i32;
+        return 0;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index !== continuation) {
         const next = byteAt(bytes, offset);
         hash =(hash +((next as u64) & 255u64) +(offset as u64)) % prime;
         offset = offset + 1usize;
         if ((next & 192u8) !== 128u8) {
-          return 0i32;
+          return 0;
         }
         value =(value << 6u32) |((next as u32) & 63u32);
         index = index + 1usize;
       }
       if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32)) {
-        return 0i32;
+        return 0;
       }
       if ((continuation === 2usize && value<2048u32) ||(continuation === 3usize && value<65536u32)) {
-        return 0i32;
+        return 0;
       }
     }
     storeRawIntrinsic<u64>(hashOutput, hash +((length as u64) % prime));
-    return 1i32;
+    return 1;
   }
 }
-export function utf8ValidateAndAsciiKey(bytes: * const u8, length: usize, keyOutput: * mut u64): i32 {
+export function utf8ValidateAndAsciiKey(bytes: *const u8, length: usize, keyOutput: *mut u64): i32 {
   unsafe {
-    if ((length > 0usize && isNullIntrinsic<u8>(bytes)) || isNullIntrinsic<u64>(keyOutput as * const u64)) {
-      return 0i32;
+    if ((length > 0usize && isNullIntrinsic<u8>(bytes)) || isNullIntrinsic<u64>(keyOutput as *const u64)) {
+      return 0;
     }
-    let key: u64 = 0u64;
-    let offset: usize = 0usize;
+    let key: u64 = 0;
+    let offset: usize = 0;
     while (offset !== length) {
       const first = byteAt(bytes, offset);
       if (first >= 128u8) {
@@ -872,18 +1239,18 @@ export function utf8ValidateAndAsciiKey(bytes: * const u8, length: usize, keyOut
       key = 0u64;
     }
     storeRawIntrinsic<u64>(keyOutput, key);
-    return 1i32;
+    return 1;
   }
 }
-export function utf8Decode(bytes: * const u8, length: usize, offset: usize, codepoint: * mut u32, next: * mut usize): i32 {
+export function utf8Decode(bytes: *const u8, length: usize, offset: usize, codepoint: *mut u32, next: *mut usize): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(bytes) || isNullIntrinsic<u32>(codepoint as * const u32) || isNullIntrinsic<usize>(next as * const usize) || offset >= length) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(bytes) || isNullIntrinsic<u32>(codepoint as *const u32) || isNullIntrinsic<usize>(next as *const usize) || offset >= length) {
+      return 0;
     }
     const first = byteAt(bytes, offset);
     let cursor = offset + 1usize;
-    let continuation: usize = 0usize;
-    let value: u32 = 0u32;
+    let continuation: usize = 0;
+    let value: u32 = 0;
     if (first<128u8) {
       value = first as u32;
     } else if (first >= 194u8 && first <= 223u8) {
@@ -901,7 +1268,7 @@ export function utf8Decode(bytes: * const u8, length: usize, offset: usize, code
     if (continuation > length - cursor) {
       return - 22i32;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== continuation) {
       const nextByte = byteAt(bytes, cursor);
       cursor = cursor + 1usize;
@@ -909,38 +1276,39 @@ export function utf8Decode(bytes: * const u8, length: usize, offset: usize, code
         return - 22i32;
       }
       value =(value << 6u32) |((nextByte as u32) & 63u32);
+      index = index + 1usize;
     }
     if (value > 1114111u32 ||(value >= 55296u32 && value <= 57343u32) ||(continuation === 2usize && value<2048u32) ||(continuation === 3usize && value<65536u32)) {
       return - 22i32;
     }
     storeRawIntrinsic<u32>(codepoint, value);
     storeRawIntrinsic<usize>(next, cursor);
-    return 1i32;
+    return 1;
   }
 }
-export function utf8SliceCopy(bytes: * const u8, length: usize, start: usize, end: usize, destination: * mut u8, capacity: usize, written: * mut usize): i32 {
+export function utf8SliceCopy(bytes: *const u8, length: usize, start: usize, end: usize, destination: *mut u8, capacity: usize, written: *mut usize): i32 {
   unsafe {
-    if (start > end || end > length || capacity<end - start + 1usize ||(end > start && isNullIntrinsic<u8>(destination as * const u8))) {
+    if (start > end || end > length || capacity<end - start + 1usize ||(end > start && isNullIntrinsic<u8>(destination as *const u8))) {
       return - 22i32;
     }
     if (utf8Validate(bytes, length) === 0i32) {
       return - 84i32;
     }
-    let boundary: usize = 0usize;
+    let boundary: usize = 0;
     let startValid = start === 0usize;
     let endValid = end === 0usize;
     while (boundary !== length) {
-      const codepointPointer = runtimeAlloc(4usize)as * mut u32;
-      const nextPointer = runtimeAlloc(sizeOfIntrinsic<usize>())as * mut usize;
+      const codepointPointer = runtimeAlloc(4usize)as *mut u32;
+      const nextPointer = runtimeAlloc(sizeOfIntrinsic<usize>())as *mut usize;
       const status = utf8Decode(bytes, length, boundary, codepointPointer, nextPointer);
       if (status <= 0i32) {
-        runtimeFree(codepointPointer as * mut u8);
-        runtimeFree(nextPointer as * mut u8);
+        runtimeFree(codepointPointer as *mut u8);
+        runtimeFree(nextPointer as *mut u8);
         return - 84i32;
       }
-      const nextBoundary = *(nextPointer as * const usize);
-      runtimeFree(codepointPointer as * mut u8);
-      runtimeFree(nextPointer as * mut u8);
+      const nextBoundary = *(nextPointer as *const usize);
+      runtimeFree(codepointPointer as *mut u8);
+      runtimeFree(nextPointer as *mut u8);
       if (nextBoundary === start) {
         startValid = true;
       }
@@ -958,181 +1326,137 @@ export function utf8SliceCopy(bytes: * const u8, length: usize, start: usize, en
     const count = end - start;
     if (count > 0usize) {
       const source = byteAddress(bytes, start);
-      memcpy(destination, source as * const u8, count);
+      memcpy(destination, source as *const u8, count);
     }
     setByte(destination, count, 0u8);
-    if (!isNullIntrinsic<usize>(written as * const usize)) {
+    if (!isNullIntrinsic<usize>(written as *const usize)) {
       storeRawIntrinsic<usize>(written, count);
     }
-    return 0i32;
+    return 0;
   }
 }
-export function bytesCopy(source: * const u8, length: usize, destination: * mut u8): usize {
+export function bytesCopy(source: *const u8, length: usize, destination: *mut u8): usize {
   unsafe {
-    if (length > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8))) {
-      return 0usize;
+    if (length > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as *const u8))) {
+      return 0;
     }
     memcpy(destination, source, length);
     return length;
   }
 }
-export function bytesMove(source: * const u8, length: usize, destination: * mut u8): usize {
+export function bytesMove(source: *const u8, length: usize, destination: *mut u8): usize {
   unsafe {
-    if (length > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8))) {
-      return 0usize;
+    if (length > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as *const u8))) {
+      return 0;
     }
     memmove(destination, source, length);
     return length;
   }
 }
-export function bytesCopyAt(source: * const u8, length: usize, offset: usize, count: usize, destination: * mut u8): i32 {
+export function bytesCopyAt(source: *const u8, length: usize, offset: usize, count: usize, destination: *mut u8): i32 {
   unsafe {
-    if (offset > length || count > length - offset ||(count > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as * const u8)))) {
+    if (offset > length || count > length - offset ||(count > 0usize &&(isNullIntrinsic<u8>(source) || isNullIntrinsic<u8>(destination as *const u8)))) {
       return - 22i32;
     }
     const start = byteAddress(source, offset);
-    memcpy(destination, start as * const u8, count);
-    return 0i32;
+    memcpy(destination, start as *const u8, count);
+    return 0;
   }
 }
-export function bytesCopyToAt(source: * const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: * mut u8, destinationLength: usize, destinationOffset: usize): i32 {
+export function bytesCopyToAt(source: *const u8, sourceLength: usize, sourceOffset: usize, count: usize, destination: *mut u8, destinationLength: usize, destinationOffset: usize): i32 {
   unsafe {
     if (sourceOffset > sourceLength || count > sourceLength - sourceOffset || destinationOffset > destinationLength || count > destinationLength - destinationOffset) {
       return - 22i32;
     }
     const sourceStart = byteAddress(source, sourceOffset);
-    const destinationStart = byteAddress(destination as * const u8, destinationOffset);
-    memcpy(destinationStart as * mut u8, sourceStart as * const u8, count);
-    return 0i32;
+    const destinationStart = byteAddress(destination as *const u8, destinationOffset);
+    memcpy(destinationStart as *mut u8, sourceStart as *const u8, count);
+    return 0;
   }
 }
-export function bytesMoveAt(bytes: * mut u8, length: usize, sourceOffset: usize, destinationOffset: usize, count: usize): i32 {
+export function bytesMoveAt(bytes: *mut u8, length: usize, sourceOffset: usize, destinationOffset: usize, count: usize): i32 {
   unsafe {
     if (sourceOffset > length || destinationOffset > length || count > length - sourceOffset || count > length - destinationOffset) {
       return - 22i32;
     }
-    const sourceStart = byteAddress(bytes as * const u8, sourceOffset);
-    const destinationStart = byteAddress(bytes as * const u8, destinationOffset);
-    memmove(destinationStart as * mut u8, sourceStart as * const u8, count);
-    return 0i32;
+    const sourceStart = byteAddress(bytes as *const u8, sourceOffset);
+    const destinationStart = byteAddress(bytes as *const u8, destinationOffset);
+    memmove(destinationStart as *mut u8, sourceStart as *const u8, count);
+    return 0;
   }
 }
-export function bytesReadU8(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32 {
+export function bytesReadU8(bytes: *const u8, length: usize, index: usize, value: *mut u8): i32 {
   unsafe {
-    if (index >= length || isNullIntrinsic<u8>(bytes) || isNullIntrinsic<u8>(value as * const u8)) {
+    if (index >= length || isNullIntrinsic<u8>(bytes) || isNullIntrinsic<u8>(value as *const u8)) {
       return - 22i32;
     }
     storeRawIntrinsic<u8>(value, byteAt(bytes, index));
-    return 0i32;
+    return 0;
   }
 }
-export function bytesReadU8Mut(bytes: * const u8, length: usize, index: usize, value: * mut u8): i32 {
+export function bytesReadU8Mut(bytes: *const u8, length: usize, index: usize, value: *mut u8): i32 {
   return bytesReadU8(bytes, length, index, value);
 }
-export function bytesWriteU8(bytes: * mut u8, length: usize, index: usize, value: u8): i32 {
+export function bytesWriteU8(bytes: *mut u8, length: usize, index: usize, value: u8): i32 {
   if (index >= length) {
     return - 22i32;
   }
   setByte(bytes, index, value);
-  return 0i32;
+  return 0;
 }
-export function bytesSlice(bytes: * const u8, length: usize, start: usize, end: usize): * const u8 {
+export function bytesSlice(bytes: *const u8, length: usize, start: usize, end: usize): *const u8 {
   unsafe {
     if (start > end || end > length) {
-      return nullPointerIntrinsic<u8>()as * const u8;
+      return nullPointerIntrinsic<u8>()as *const u8;
     }
     const address = byteAddress(bytes, start);
-    return address as * const u8;
+    return address as *const u8;
   }
 }
-export function bytesSliceMut(bytes: * mut u8, length: usize, start: usize, end: usize): * const u8 {
+export function bytesSliceMut(bytes: *mut u8, length: usize, start: usize, end: usize): *const u8 {
   unsafe {
-    return bytesSlice(bytes as * const u8, length, start, end);
-  }
-}
-export function bytesFindCrlf(bytes: * const u8, length: usize, start: usize): usize {
-  unsafe {
-    if (start >= length || isNullIntrinsic<u8>(bytes)) {
-      return ~0usize;
-    }
-    let index = start;
-    while (index + 1usize < length) {
-      if (byteAt(bytes, index) === 13u8 && byteAt(bytes, index + 1usize) === 10u8) {
-        return index;
-      }
-      index += 1usize;
-    }
-    return ~0usize;
-  }
-}
-export function bytesHasCrlfAt(bytes: * const u8, length: usize, index: usize): i32 {
-  unsafe {
-    if (index >= length || length - index<2usize || isNullIntrinsic<u8>(bytes)) {
-      return 0i32;
-    }
-    return(byteAt(bytes, index) === 13u8 && byteAt(bytes, index + 1usize) === 10u8)?1i32: 0i32;
-  }
-}
-export function bytesParseUnsignedLine(bytes: * const u8, length: usize, start: usize, marker: u8, value: * mut usize, next: * mut usize): i32 {
-  unsafe {
-    if (start >= length || isNullIntrinsic<u8>(bytes)) {
-      return 1i32;
-    }
-    if (byteAt(bytes, start) !== marker) {
-      return 2i32;
-    }
-    const end = bytesFindCrlf(bytes, length, start + 1usize);
-    if (end === ~0usize) {
-      return 1i32;
-    }
-    const digits = bytesSlice(bytes, length, start + 1usize, end);
-    let errorOffset: usize = 0usize;
-    if (parseAscii(digits, end - start - 1usize, value,( & mut errorOffset)as * mut usize) !== 0i32) {
-      return 3i32;
-    }
-    storeRawIntrinsic<usize>(next, end + 2usize);
-    return 0i32;
+    return bytesSlice(bytes as *const u8, length, start, end);
   }
 }
 function asciiLowerByte(value: u8): u8 {
   return(value >= 65u8 && value <= 90u8)?value + 32u8: value;
 }
-export function bytesEqualAsciiIgnoreCase(left: * const u8, leftLength: usize, right: * const u8, rightLength: usize): i32 {
+export function bytesEqualAsciiIgnoreCase(left: *const u8, leftLength: usize, right: *const u8, rightLength: usize): i32 {
   unsafe {
     if (leftLength !== rightLength ||(leftLength > 0usize &&(isNullIntrinsic<u8>(left) || isNullIntrinsic<u8>(right)))) {
-      return 0i32;
+      return 0;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index<leftLength) {
       if (asciiLowerByte(byteAt(left, index)) !== asciiLowerByte(byteAt(right, index))) {
-        return 0i32;
+        return 0;
       }
       index += 1usize;
     }
-    return 1i32;
+    return 1;
   }
 }
-export function bytesEqualString(left: * const u8, leftLength: usize, right: * const u8): i32 {
+export function bytesEqualString(left: *const u8, leftLength: usize, right: *const u8): i32 {
   return stringEquals(left, leftLength, right, stringLength(right));
 }
-export function bytesAppendAscii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize {
+export function bytesAppendAscii(buffer: *mut u8, capacity: usize, length: usize, text: *const u8, textLength: usize): usize {
   unsafe {
     if (length > capacity || textLength > capacity - length ||(textLength > 0usize && isNullIntrinsic<u8>(text))) {
       return ~0usize;
     }
-    const destination = byteAddress(buffer as * const u8, length);
-    memcpy(destination as * mut u8, text, textLength);
+    const destination = byteAddress(buffer as *const u8, length);
+    memcpy(destination as *mut u8, text, textLength);
     return length + textLength;
   }
 }
-export function bytesTryAppendString(buffer: * mut u8, capacity: usize, length: usize, text: * const u8): usize {
+export function bytesTryAppendString(buffer: *mut u8, capacity: usize, length: usize, text: *const u8): usize {
   return bytesAppendAscii(buffer, capacity, length, text, stringLength(text));
 }
-export function bytesAppendSafeAscii(buffer: * mut u8, capacity: usize, length: usize, text: * const u8, textLength: usize): usize {
+export function bytesAppendSafeAscii(buffer: *mut u8, capacity: usize, length: usize, text: *const u8, textLength: usize): usize {
   if (length > capacity || textLength > capacity - length) {
     return ~0usize;
   }
-  let index: usize = 0usize;
+  let index: usize = 0;
   while (index !== textLength) {
     let value = byteAt(text, index);
     if (value === 10u8 || value === 13u8) {
@@ -1143,16 +1467,16 @@ export function bytesAppendSafeAscii(buffer: * mut u8, capacity: usize, length: 
   }
   return length + textLength;
 }
-export function bytesAppendBytes(buffer: * mut u8, capacity: usize, length: usize, source: * const u8, sourceLength: usize): usize {
+export function bytesAppendBytes(buffer: *mut u8, capacity: usize, length: usize, source: *const u8, sourceLength: usize): usize {
   return bytesAppendAscii(buffer, capacity, length, source, sourceLength);
 }
-export function bytesAppendDecimal(buffer: * mut u8, capacity: usize, length: usize, value: i64): usize {
+export function bytesAppendDecimal(buffer: *mut u8, capacity: usize, length: usize, value: i64): usize {
   unsafe {
     if (length >= capacity) {
       return ~0usize;
     }
     const scratch = runtimeAlloc(32usize);
-    let magnitude: u64 = 0u64;
+    let magnitude: u64 = 0;
     let negative = false;
     if (value<0i64) {
       negative = true;
@@ -1160,7 +1484,7 @@ export function bytesAppendDecimal(buffer: * mut u8, capacity: usize, length: us
     } else {
       magnitude = value as u64;
     }
-    let count: usize = 0usize;
+    let count: usize = 0;
     if (magnitude === 0u64) {
       setByte(scratch, 0usize, 48u8);
       count = 1usize;
@@ -1179,9 +1503,9 @@ export function bytesAppendDecimal(buffer: * mut u8, capacity: usize, length: us
       runtimeFree(scratch);
       return ~0usize;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== count) {
-      const source = byteAt(scratch as * const u8, count - index - 1usize);
+      const source = byteAt(scratch as *const u8, count - index - 1usize);
       setByte(buffer, length + index, source);
       index = index + 1usize;
     }
@@ -1189,13 +1513,13 @@ export function bytesAppendDecimal(buffer: * mut u8, capacity: usize, length: us
     return length + count;
   }
 }
-export function bytesAppendUsize(buffer: * mut u8, capacity: usize, length: usize, value: usize): usize {
+export function bytesAppendUsize(buffer: *mut u8, capacity: usize, length: usize, value: usize): usize {
   unsafe {
     if (length >= capacity) {
       return ~0usize;
     }
     let magnitude = value as u64;
-    let count: usize = 0usize;
+    let count: usize = 0;
     if (magnitude === 0u64) {
       count = 1usize;
     } else {
@@ -1217,16 +1541,16 @@ export function bytesAppendUsize(buffer: * mut u8, capacity: usize, length: usiz
     return length + count;
   }
 }
-export function parseAscii(bytes: * const u8, length: usize, value: * mut usize, offset: * mut usize): i32 {
+export function parseAscii(bytes: *const u8, length: usize, value: *mut usize, offset: *mut usize): i32 {
   unsafe {
-    if (length === 0usize || isNullIntrinsic<u8>(bytes) || isNullIntrinsic<usize>(value as * const usize) || isNullIntrinsic<usize>(offset as * const usize)) {
-      if (!isNullIntrinsic<usize>(offset as * const usize)) {
+    if (length === 0usize || isNullIntrinsic<u8>(bytes) || isNullIntrinsic<usize>(value as *const usize) || isNullIntrinsic<usize>(offset as *const usize)) {
+      if (!isNullIntrinsic<usize>(offset as *const usize)) {
         storeRawIntrinsic<usize>(offset, 0usize);
       }
       return - 22i32;
     }
-    let parsed: usize = 0usize;
-    let index: usize = 0usize;
+    let parsed: usize = 0;
+    let index: usize = 0;
     while (index !== length) {
       const digit = byteAt(bytes, index);
       if (digit<48u8 || digit > 57u8) {
@@ -1243,15 +1567,15 @@ export function parseAscii(bytes: * const u8, length: usize, value: * mut usize,
     }
     storeRawIntrinsic<usize>(value, parsed);
     storeRawIntrinsic<usize>(offset, length);
-    return 0i32;
+    return 0;
   }
 }
-export function cstringLength(bytes: * const u8): usize {
+export function cstringLength(bytes: *const u8): usize {
   unsafe {
     if (isNullIntrinsic<u8>(bytes)) {
-      return 0usize;
+      return 0;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (true) {
       if (byteAt(bytes, index) === 0u8) {
         return index;
@@ -1259,29 +1583,29 @@ export function cstringLength(bytes: * const u8): usize {
       index = index + 1usize;
     }
   }
-  return 0usize;
+  return 0;
 }
-export function cstringValidate(bytes: * const u8, length: usize): i32 {
+export function cstringValidate(bytes: *const u8, length: usize): i32 {
   unsafe {
     if (isNullIntrinsic<u8>(bytes)) {
       return - 22i32;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== length) {
       if (byteAt(bytes, index) === 0u8) {
         return - 22i32;
       }
       index = index + 1usize;
     }
-    return 0i32;
+    return 0;
   }
 }
-export function cstringFirstNul(bytes: * const u8, length: usize): usize {
+export function cstringFirstNul(bytes: *const u8, length: usize): usize {
   unsafe {
     if (isNullIntrinsic<u8>(bytes)) {
       return length;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== length) {
       if (byteAt(bytes, index) === 0u8) {
         return index;
@@ -1291,35 +1615,35 @@ export function cstringFirstNul(bytes: * const u8, length: usize): usize {
   }
   return length;
 }
-export function cstringAlloc(bytes: * const u8, length: usize): * mut u8 {
+export function cstringAlloc(bytes: *const u8, length: usize): *mut u8 {
   if (cstringValidate(bytes, length) !== 0i32) {
     return nullPointerIntrinsic<u8>();
   }
   return stringFromBytes(bytes, length);
 }
-export function stringCompareSlots(left: * const u8, right: * const u8): i32 {
+export function stringCompareSlots(left: *const u8, right: *const u8): i32 {
   unsafe {
-    const leftText = *(left as * const * const u8);
-    const rightText = *(right as * const * const u8);
+    const leftText = *(left as *const *const u8);
+    const rightText = *(right as *const *const u8);
     if (isNullIntrinsic<u8>(leftText) || isNullIntrinsic<u8>(rightText)) {
-      return 0i32;
+      return 0;
     }
     return stringCompare(leftText, stringLength(leftText), rightText, stringLength(rightText),);
   }
 }
-export function stringHashSlots(value: * const u8): u64 {
+export function stringHashSlots(value: *const u8): u64 {
   unsafe {
     if (isNullIntrinsic<u8>(value)) {
-      return 0u64;
+      return 0;
     }
-    const text = *(value as * const * const u8);
+    const text = *(value as *const *const u8);
     if (isNullIntrinsic<u8>(text)) {
-      return 0u64;
+      return 0;
     }
     const length = stringLength(text)as u64;
     const prime = 4294967291u64;
     let hash = 2166136261u64;
-    let index: u64 = 0u64;
+    let index: u64 = 0;
     while (index !== length) {
       hash =(hash +(byteAt(text, index as usize)as u64) + index) % prime;
       index = index + 1u64;
@@ -1327,15 +1651,15 @@ export function stringHashSlots(value: * const u8): u64 {
     return hash +(length % prime);
   }
 }
-export function bytesHash(value: * const u8, length: usize): u64 {
+export function bytesHash(value: *const u8, length: usize): u64 {
   unsafe {
     if (isNullIntrinsic<u8>(value)) {
-      return 0u64;
+      return 0;
     }
     const prime = 4294967291u64;
     const byteLength = length as u64;
     let hash = 2166136261u64;
-    let index: u64 = 0u64;
+    let index: u64 = 0;
     while (index !== byteLength) {
       hash =(hash +(byteAt(value, index as usize)as u64) + index) % prime;
       index = index + 1u64;
@@ -1343,68 +1667,68 @@ export function bytesHash(value: * const u8, length: usize): u64 {
     return hash +(byteLength % prime);
   }
 }
-export function stringEqualsSlots(left: * const u8, right: * const u8): i32 {
+export function stringEqualsSlots(left: *const u8, right: *const u8): i32 {
   unsafe {
     if (isNullIntrinsic<u8>(left) || isNullIntrinsic<u8>(right)) {
-      return 0i32;
+      return 0;
     }
-    const leftText = *(left as * const * const u8);
-    const rightText = *(right as * const * const u8);
+    const leftText = *(left as *const *const u8);
+    const rightText = *(right as *const *const u8);
     return stringEquals(leftText, stringLength(leftText), rightText, stringLength(rightText),);
   }
 }
 struct AsyncPromise {
-  public mutex: * mut u8;
-  public condition: * mut u8;
-  public poll: * mut u8;
-  public drop: * mut u8;
-  public context: * mut u8;
-  public result: * mut u8;
+  public mutex: *mut u8;
+  public condition: *mut u8;
+  public poll: *mut u8;
+  public drop: *mut u8;
+  public context: *mut u8;
+  public result: *mut u8;
   public resultOffset: usize;
   public state: i32;
-  public group: * mut u8;
+  public group: *mut u8;
   public references: usize;
   public groupReference: i32;
   public resourcesReleased: i32;
 }
-function asyncRead(handle: * mut u8): AsyncPromise {
+function asyncRead(handle: *mut u8): AsyncPromise {
   unsafe {
-    return *(handle as * const AsyncPromise);
+    return *(handle as *const AsyncPromise);
   }
 }
-function asyncWrite(handle: * mut u8, promise: AsyncPromise): void {
+function asyncWrite(handle: *mut u8, promise: AsyncPromise): void {
   unsafe {
-    storeRawIntrinsic<AsyncPromise>(handle as * mut AsyncPromise, promise);
+    storeRawIntrinsic<AsyncPromise>(handle as *mut AsyncPromise, promise);
   }
 }
-function asyncReleaseContext(drop: * mut u8, context: * mut u8): void {
+function asyncReleaseContext(drop: *mut u8, context: *mut u8): void {
   unsafe {
-    if (!isNullIntrinsic<u8>(drop as * const u8)) {
+    if (!isNullIntrinsic<u8>(drop as *const u8)) {
       callRawVoid(drop, context);
     } else {
       runtimeFree(context);
     }
   }
 }
-export function asyncCreate(resultSize: usize, resultOffset: usize, poll: * mut u8, context: * mut u8, drop: * mut u8): * mut u8 {
+export function asyncCreate(resultSize: usize, resultOffset: usize, poll: *mut u8, context: *mut u8, drop: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(poll as * const u8)) {
+    if (isNullIntrinsic<u8>(poll as *const u8)) {
       runtimeFree(context);
       return nullPointerIntrinsic<u8>();
     }
     const handle = runtimeTryAlloc(sizeOfIntrinsic<AsyncPromise>());
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       asyncReleaseContext(drop, context);
       return nullPointerIntrinsic<u8>();
     }
     const result = runtimeTryAlloc(resultSize === 0usize?1usize: resultSize);
-    if (isNullIntrinsic<u8>(result as * const u8)) {
+    if (isNullIntrinsic<u8>(result as *const u8)) {
       asyncReleaseContext(drop, context);
       runtimeFree(handle);
       return nullPointerIntrinsic<u8>();
     }
     const mutex = controlledCalloc(1usize, 128usize);
-    if (isNullIntrinsic<u8>(mutex as * const u8) || pthread_mutex_init(mutex, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+    if (isNullIntrinsic<u8>(mutex as *const u8) || pthread_mutex_init(mutex, nullPointerIntrinsic<u8>()as *const u8) !== 0i32) {
       runtimeFree(mutex);
       asyncReleaseContext(drop, context);
       runtimeFree(result);
@@ -1412,7 +1736,7 @@ export function asyncCreate(resultSize: usize, resultOffset: usize, poll: * mut 
       return nullPointerIntrinsic<u8>();
     }
     const condition = controlledCalloc(1usize, 128usize);
-    if (isNullIntrinsic<u8>(condition as * const u8) || pthread_cond_init(condition, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+    if (isNullIntrinsic<u8>(condition as *const u8) || pthread_cond_init(condition, nullPointerIntrinsic<u8>()as *const u8) !== 0i32) {
       runtimeFree(condition);
       pthread_mutex_destroy(mutex);
       runtimeFree(mutex);
@@ -1428,16 +1752,16 @@ export function asyncCreate(resultSize: usize, resultOffset: usize, poll: * mut 
     return handle;
   }
 }
-export function asyncWait(handle: * mut u8): i32 {
+export function asyncWait(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return - 22i32;
     }
     let promise = asyncRead(handle);
     pthread_mutex_lock(promise.mutex);
     if (promise.state === 2i32) {
       pthread_mutex_unlock(promise.mutex);
-      return 0i32;
+      return 0;
     }
     if (promise.state === 3i32) {
       pthread_mutex_unlock(promise.mutex);
@@ -1471,57 +1795,57 @@ export function asyncWait(handle: * mut u8): i32 {
     return status;
   }
 }
-export function asyncResult(handle: * mut u8): * mut u8 {
+export function asyncResult(handle: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const promise = asyncRead(handle);
-    if (isNullIntrinsic<u8>(promise.result as * const u8)) {
+    if (isNullIntrinsic<u8>(promise.result as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
-    const address = byteAddress(promise.result as * const u8, promise.resultOffset);
-    return address as * mut u8;
+    const address = byteAddress(promise.result as *const u8, promise.resultOffset);
+    return address as *mut u8;
   }
 }
-export function asyncRawResult(handle: * mut u8): * mut u8 {
+export function asyncRawResult(handle: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     return asyncRead(handle).result;
   }
 }
-function asyncAttachGroup(handle: * mut u8, group: * mut u8): i32 {
+function asyncAttachGroup(handle: *mut u8, group: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(group as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8) || isNullIntrinsic<u8>(group as *const u8)) {
+      return 22;
     }
     let promise = asyncRead(handle);
     pthread_mutex_lock(promise.mutex);
-    if (promise.state !== 0i32 || !isNullIntrinsic<u8>(promise.group as * const u8)) {
+    if (promise.state !== 0i32 || !isNullIntrinsic<u8>(promise.group as *const u8)) {
       pthread_mutex_unlock(promise.mutex);
-      return 114i32;
+      return 114;
     }
     promise.group = group;
     promise.references = promise.references + 1usize;
     promise.groupReference = 1i32;
     asyncWrite(handle, promise);
     pthread_mutex_unlock(promise.mutex);
-    return 0i32;
+    return 0;
   }
 }
-function asyncRelease(handle: * mut u8, finalizeGroup: bool): i32 {
+function asyncRelease(handle: *mut u8, finalizeGroup: bool): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 0;
     }
     let promise = asyncRead(handle);
     pthread_mutex_lock(promise.mutex);
     if (finalizeGroup) {
       if (promise.groupReference === 0i32) {
         pthread_mutex_unlock(promise.mutex);
-        return 0i32;
+        return 0;
       }
       promise.groupReference = 0i32;
       promise.group = nullPointerIntrinsic<u8>();
@@ -1530,14 +1854,14 @@ function asyncRelease(handle: * mut u8, finalizeGroup: bool): i32 {
       const groupReferences = promise.groupReference === 0i32?0usize: 1usize;
       if (promise.references <= groupReferences) {
         pthread_mutex_unlock(promise.mutex);
-        return 0i32;
+        return 0;
       }
       promise.references = promise.references - 1usize;
     }
     if (promise.references !== 0usize) {
       asyncWrite(handle, promise);
       pthread_mutex_unlock(promise.mutex);
-      return 0i32;
+      return 0;
     }
     while (promise.state === 1i32) {
       pthread_cond_wait(promise.condition, promise.mutex);
@@ -1545,7 +1869,7 @@ function asyncRelease(handle: * mut u8, finalizeGroup: bool): i32 {
     }
     if (promise.resourcesReleased !== 0i32) {
       pthread_mutex_unlock(promise.mutex);
-      return 0i32;
+      return 0;
     }
     const started = promise.state !== 0i32;
     promise.state = 3i32;
@@ -1570,19 +1894,36 @@ function asyncRelease(handle: * mut u8, finalizeGroup: bool): i32 {
     }
     runtimeFree(result);
     runtimeFree(handle);
-    return 0i32;
+    return 0;
   }
 }
-export function asyncDestroy(handle: * mut u8): i32 {
+export function asyncDestroy(handle: *mut u8): i32 {
   return asyncRelease(handle, false);
 }
-function asyncGroupRelease(handle: * mut u8): i32 {
+export function asyncRetain(handle: *mut u8): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
+    }
+    let promise = asyncRead(handle);
+    pthread_mutex_lock(promise.mutex);
+    if (promise.resourcesReleased !== 0i32 || promise.references === 0usize) {
+      pthread_mutex_unlock(promise.mutex);
+      return 114;
+    }
+    promise.references = promise.references + 1usize;
+    asyncWrite(handle, promise);
+    pthread_mutex_unlock(promise.mutex);
+    return 0;
+  }
+}
+function asyncGroupRelease(handle: *mut u8): i32 {
   return asyncRelease(handle, true);
 }
-function asyncCancelQueued(handle: * mut u8): i32 {
+function asyncCancelQueued(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     let promise = asyncRead(handle);
     pthread_mutex_lock(promise.mutex);
@@ -1592,81 +1933,88 @@ function asyncCancelQueued(handle: * mut u8): i32 {
       pthread_cond_broadcast(promise.condition);
     }
     pthread_mutex_unlock(promise.mutex);
-    return 0i32;
+    return 0;
   }
 }
-export function promiseWait(handle: * mut u8): void {
+export function promiseWait(handle: *mut u8): void {
   unsafe {
-    if (!isNullIntrinsic<u8>(handle as * const u8)) {
+    if (!isNullIntrinsic<u8>(handle as *const u8)) {
       asyncWait(handle);
     }
   }
 }
-export function promiseTakeI32(handle: * mut u8): i32 {
+export function promiseTakeI32(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8) || asyncWait(handle) !== 0i32) {
+    if (isNullIntrinsic<u8>(handle as *const u8) || asyncWait(handle) !== 0i32) {
       asyncDestroy(handle);
-      return 0i32;
+      return 0;
     }
     const result = asyncResult(handle);
-    const value = isNullIntrinsic<u8>(result as * const u8)?0i32: *(result as * const i32);
+    const value = isNullIntrinsic<u8>(result as *const u8)?0i32: *(result as *const i32);
     asyncDestroy(handle);
     return value;
   }
 }
 struct MutexState {
-  public pointer: * mut u8;
+  public pointer: *mut u8;
 }
 struct BarrierState {
-  public mutex: * mut u8;
-  public condition: * mut u8;
+  public mutex: *mut u8;
+  public condition: *mut u8;
   public threshold: usize;
   public waiting: usize;
   public generation: u64;
 }
 struct ChannelState {
-  public storage: * mut u8;
-  public initialized: * mut u8;
+  public storage: *mut u8;
+  public initialized: *mut u8;
   public elementSize: usize;
   public capacity: usize;
   public length: usize;
   public head: usize;
   public unbuffered: i32;
   public closed: i32;
-  public mutex: * mut u8;
-  public readable: * mut u8;
-  public writable: * mut u8;
+  public mutex: *mut u8;
+  public readable: *mut u8;
+  public writable: *mut u8;
 }
 struct ThreadState {
   public thread: u64;
 }
-function mutexHandleCreate(initializer: * mut u8): * mut u8 {
+struct ThreadTaskState {
+  public invoke: *mut u8;
+  public code: *mut u8;
+  public environment: *mut u8;
+  public drop: *mut u8;
+  public result: *mut u8;
+}
+function mutexHandleCreate(initializer: *mut u8): *mut u8 {
   unsafe {
     const handle = controlledCalloc(1usize, 128usize);
-    if (isNullIntrinsic<u8>(handle as * const u8) || pthread_mutex_init(handle, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+    if (isNullIntrinsic<u8>(handle as *const u8) || pthread_mutex_init(handle, nullPointerIntrinsic<u8>()as *const u8) !== 0i32) {
       runtimeFree(handle);
       return nullPointerIntrinsic<u8>();
     }
     return handle;
   }
 }
-export function mutexCreate(): * mut u8 {
+export function mutexCreate(): *mut u8 {
   return mutexHandleCreate(nullPointerIntrinsic<u8>());
 }
-export function mutexLock(handle: * mut u8): i32 {
+export function mutexLock(handle: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_mutex_lock(handle);
+    return isNullIntrinsic<u8>(handle as *const u8)?22i32: pthread_mutex_lock(handle);
   }
 }
-export function mutexUnlock(handle: * mut u8): i32 {
+export function mutexUnlock(handle: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_mutex_unlock(handle);
+    return isNullIntrinsic<u8>(handle as *const u8)?22i32: pthread_mutex_unlock(handle);
   }
 }
-export function mutexDestroy(handle: * mut u8): i32 {
+export function mutexDestroy(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     const result = pthread_mutex_destroy(handle);
     if (result === 0i32) {
@@ -1675,35 +2023,35 @@ export function mutexDestroy(handle: * mut u8): i32 {
     return result;
   }
 }
-export function rwlockCreate(): * mut u8 {
+export function rwlockCreate(): *mut u8 {
   unsafe {
     const handle = controlledCalloc(1usize, 128usize);
-    if (isNullIntrinsic<u8>(handle as * const u8) || pthread_rwlock_init(handle, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+    if (isNullIntrinsic<u8>(handle as *const u8) || pthread_rwlock_init(handle, nullPointerIntrinsic<u8>()as *const u8) !== 0i32) {
       runtimeFree(handle);
       return nullPointerIntrinsic<u8>();
     }
     return handle;
   }
 }
-export function rwlockReadLock(handle: * mut u8): i32 {
+export function rwlockReadLock(handle: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_rwlock_rdlock(handle);
+    return isNullIntrinsic<u8>(handle as *const u8)?22i32: pthread_rwlock_rdlock(handle);
   }
 }
-export function rwlockWriteLock(handle: * mut u8): i32 {
+export function rwlockWriteLock(handle: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_rwlock_wrlock(handle);
+    return isNullIntrinsic<u8>(handle as *const u8)?22i32: pthread_rwlock_wrlock(handle);
   }
 }
-export function rwlockUnlock(handle: * mut u8): i32 {
+export function rwlockUnlock(handle: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?22i32: pthread_rwlock_unlock(handle);
+    return isNullIntrinsic<u8>(handle as *const u8)?22i32: pthread_rwlock_unlock(handle);
   }
 }
-export function rwlockDestroy(handle: * mut u8): i32 {
+export function rwlockDestroy(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     const result = pthread_rwlock_destroy(handle);
     if (result === 0i32) {
@@ -1712,38 +2060,38 @@ export function rwlockDestroy(handle: * mut u8): i32 {
     return result;
   }
 }
-export function conditionCreate(): * mut u8 {
+export function conditionCreate(): *mut u8 {
   unsafe {
     const handle = controlledCalloc(1usize, 128usize);
-    if (isNullIntrinsic<u8>(handle as * const u8) || pthread_cond_init(handle, nullPointerIntrinsic<u8>()as * const u8) !== 0i32) {
+    if (isNullIntrinsic<u8>(handle as *const u8) || pthread_cond_init(handle, nullPointerIntrinsic<u8>()as *const u8) !== 0i32) {
       runtimeFree(handle);
       return nullPointerIntrinsic<u8>();
     }
     return handle;
   }
 }
-export function conditionWait(condition: * mut u8, mutex: * mut u8): i32 {
+export function conditionWait(condition: *mut u8, mutex: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(condition as * const u8) || isNullIntrinsic<u8>(mutex as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(condition as *const u8) || isNullIntrinsic<u8>(mutex as *const u8)) {
+      return 22;
     }
     return pthread_cond_wait(condition, mutex);
   }
 }
-export function conditionSignal(condition: * mut u8): i32 {
+export function conditionSignal(condition: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(condition as * const u8)?22i32: pthread_cond_signal(condition);
+    return isNullIntrinsic<u8>(condition as *const u8)?22i32: pthread_cond_signal(condition);
   }
 }
-export function conditionBroadcast(condition: * mut u8): i32 {
+export function conditionBroadcast(condition: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(condition as * const u8)?22i32: pthread_cond_broadcast(condition);
+    return isNullIntrinsic<u8>(condition as *const u8)?22i32: pthread_cond_broadcast(condition);
   }
 }
-export function conditionDestroy(condition: * mut u8): i32 {
+export function conditionDestroy(condition: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(condition as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(condition as *const u8)) {
+      return 22;
     }
     const result = pthread_cond_destroy(condition);
     if (result === 0i32) {
@@ -1752,18 +2100,18 @@ export function conditionDestroy(condition: * mut u8): i32 {
     return result;
   }
 }
-export function barrierCreate(threshold: usize): * mut u8 {
+export function barrierCreate(threshold: usize): *mut u8 {
   unsafe {
     if (threshold === 0usize) {
       return nullPointerIntrinsic<u8>();
     }
     const handle = runtimeTryAlloc(sizeOfIntrinsic<BarrierState>());
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const mutex = mutexCreate();
     const condition = conditionCreate();
-    if (isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+    if (isNullIntrinsic<u8>(mutex as *const u8) || isNullIntrinsic<u8>(condition as *const u8)) {
       mutexDestroy(mutex);
       conditionDestroy(condition);
       runtimeFree(handle);
@@ -1772,62 +2120,62 @@ export function barrierCreate(threshold: usize): * mut u8 {
     const barrier: BarrierState = {
       mutex: mutex, condition: condition, threshold: threshold, waiting: 0usize, generation: 0u64
     };
-    storeRawIntrinsic<BarrierState>(handle as * mut BarrierState, barrier);
+    storeRawIntrinsic<BarrierState>(handle as *mut BarrierState, barrier);
     return handle;
   }
 }
-export function barrierWait(handle: * mut u8): i32 {
+export function barrierWait(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
-    let barrier = *(handle as * const BarrierState);
+    let barrier = *(handle as *const BarrierState);
     mutexLock(barrier.mutex);
     const generation = barrier.generation;
     barrier.waiting = barrier.waiting + 1usize;
     if (barrier.waiting === barrier.threshold) {
       barrier.waiting = 0usize;
       barrier.generation = barrier.generation + 1u64;
-      storeRawIntrinsic<BarrierState>(handle as * mut BarrierState, barrier);
+      storeRawIntrinsic<BarrierState>(handle as *mut BarrierState, barrier);
       conditionBroadcast(barrier.condition);
       mutexUnlock(barrier.mutex);
-      return 1i32;
+      return 1;
     }
-    storeRawIntrinsic<BarrierState>(handle as * mut BarrierState, barrier);
+    storeRawIntrinsic<BarrierState>(handle as *mut BarrierState, barrier);
     while (barrier.generation === generation) {
       conditionWait(barrier.condition, barrier.mutex);
-      barrier = *(handle as * const BarrierState);
+      barrier = *(handle as *const BarrierState);
     }
     mutexUnlock(barrier.mutex);
-    return 0i32;
+    return 0;
   }
 }
-export function barrierDestroy(handle: * mut u8): i32 {
+export function barrierDestroy(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 0;
     }
-    const barrier = *(handle as * const BarrierState);
+    const barrier = *(handle as *const BarrierState);
     const conditionStatus = conditionDestroy(barrier.condition);
     const mutexStatus = mutexDestroy(barrier.mutex);
     if (conditionStatus === 0i32 && mutexStatus === 0i32) {
       runtimeFree(handle);
-      return 0i32;
+      return 0;
     }
     return conditionStatus !== 0i32?conditionStatus: mutexStatus;
   }
 }
-function channelRead(handle: * mut u8): ChannelState {
+function channelRead(handle: *mut u8): ChannelState {
   unsafe {
-    return *(handle as * const ChannelState);
+    return *(handle as *const ChannelState);
   }
 }
-function channelWrite(handle: * mut u8, channel: ChannelState): void {
+function channelWrite(handle: *mut u8, channel: ChannelState): void {
   unsafe {
-    storeRawIntrinsic<ChannelState>(handle as * mut ChannelState, channel);
+    storeRawIntrinsic<ChannelState>(handle as *mut ChannelState, channel);
   }
 }
-export function channelCreate(elementSize: usize, capacity: usize): * mut u8 {
+export function channelCreate(elementSize: usize, capacity: usize): *mut u8 {
   unsafe {
     if (elementSize === 0usize ||(capacity !== 0usize && elementSize > ~0usize / capacity)) {
       return nullPointerIntrinsic<u8>();
@@ -1840,7 +2188,7 @@ export function channelCreate(elementSize: usize, capacity: usize): * mut u8 {
     const mutex = mutexCreate();
     const readable = conditionCreate();
     const writable = conditionCreate();
-    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(storage as * const u8) || isNullIntrinsic<u8>(initialized as * const u8) || isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(readable as * const u8) || isNullIntrinsic<u8>(writable as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8) || isNullIntrinsic<u8>(storage as *const u8) || isNullIntrinsic<u8>(initialized as *const u8) || isNullIntrinsic<u8>(mutex as *const u8) || isNullIntrinsic<u8>(readable as *const u8) || isNullIntrinsic<u8>(writable as *const u8)) {
       runtimeFree(handle);
       runtimeFree(storage);
       runtimeFree(initialized);
@@ -1856,33 +2204,33 @@ export function channelCreate(elementSize: usize, capacity: usize): * mut u8 {
     return handle;
   }
 }
-export function channelStorage(handle: * mut u8): * mut u8 {
+export function channelStorage(handle: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     return channelRead(handle).storage;
   }
 }
-export function channelInitialized(handle: * mut u8): * mut u8 {
+export function channelInitialized(handle: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     return channelRead(handle).initialized;
   }
 }
-export function channelCapacity(handle: * mut u8): usize {
+export function channelCapacity(handle: *mut u8): usize {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 0usize;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 0;
     }
     return channelRead(handle).capacity;
   }
 }
-export function channelSendIndexBegin(handle: * mut u8): usize {
+export function channelSendIndexBegin(handle: *mut u8): usize {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return ~0usize;
     }
     let channel = channelRead(handle);
@@ -1898,10 +2246,10 @@ export function channelSendIndexBegin(handle: * mut u8): usize {
     return(channel.head + channel.length) % channel.capacity;
   }
 }
-export function channelSendIndexCommit(handle: * mut u8): i32 {
+export function channelSendIndexCommit(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     let channel = channelRead(handle);
     channel.length = channel.length + 1usize;
@@ -1914,12 +2262,12 @@ export function channelSendIndexCommit(handle: * mut u8): i32 {
       }
     }
     mutexUnlock(channel.mutex);
-    return 0i32;
+    return 0;
   }
 }
-export function channelReceiveIndexBegin(handle: * mut u8): usize {
+export function channelReceiveIndexBegin(handle: *mut u8): usize {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return ~0usize;
     }
     let channel = channelRead(handle);
@@ -1940,20 +2288,20 @@ export function channelReceiveIndexBegin(handle: * mut u8): usize {
     return index;
   }
 }
-export function channelReceiveIndexCommit(handle: * mut u8): i32 {
+export function channelReceiveIndexCommit(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     const channel = channelRead(handle);
     mutexUnlock(channel.mutex);
-    return 0i32;
+    return 0;
   }
 }
-export function channelClose(handle: * mut u8): i32 {
+export function channelClose(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     let channel = channelRead(handle);
     mutexLock(channel.mutex);
@@ -1962,13 +2310,13 @@ export function channelClose(handle: * mut u8): i32 {
     conditionBroadcast(channel.readable);
     conditionBroadcast(channel.writable);
     mutexUnlock(channel.mutex);
-    return 0i32;
+    return 0;
   }
 }
-export function channelDestroy(handle: * mut u8): i32 {
+export function channelDestroy(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 0;
     }
     const channel = channelRead(handle);
     const readableStatus = conditionDestroy(channel.readable);
@@ -1978,7 +2326,7 @@ export function channelDestroy(handle: * mut u8): i32 {
       runtimeFree(channel.storage);
       runtimeFree(channel.initialized);
       runtimeFree(handle);
-      return 0i32;
+      return 0;
     }
     return readableStatus !== 0i32?readableStatus:(writableStatus !== 0i32?writableStatus: mutexStatus);
   }
@@ -1988,7 +2336,7 @@ export function threadSleepNs(nanoseconds: u64): void {
     let request: Timespec = {
       seconds:(nanoseconds / 1000000000u64)as i64, nanoseconds:(nanoseconds % 1000000000u64)as i64
     };
-    nanosleep(( & mut request)as * mut u8, nullPointerIntrinsic<u8>());
+    nanosleep(( &mut request)as *mut u8, nullPointerIntrinsic<u8>());
   }
 }
 export function threadYield(): void {
@@ -2001,55 +2349,73 @@ export function threadId(): u64 {
     return pthread_self();
   }
 }
-function threadSpawnRawPointer(entry: * mut u8, argument: * mut u8): * mut u8 {
+function threadTaskEntry(argument: *mut u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(entry as * const u8)) {
+    if (isNullIntrinsic<u8>(argument as *const u8)) {
+      return nullPointerIntrinsic<u8>();
+    }
+    const task = *(argument as *const ThreadTaskState);
+    if (!isNullIntrinsic<u8>(task.invoke as *const u8)) {
+      callRawVoid(task.invoke, argument);
+    }
+    if (!isNullIntrinsic<u8>(task.drop as *const u8)) {
+      callRawVoid(task.drop, task.environment);
+    }
+    const result = task.result;
+    runtimeFree(argument);
+    return result;
+  }
+}
+export function threadSpawnTask(invoke: *mut u8, code: *mut u8, environment: *mut u8, drop: *mut u8, resultSize: usize): *mut u8 {
+  unsafe {
+    if (isNullIntrinsic<u8>(invoke as *const u8) || isNullIntrinsic<u8>(code as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const handle = runtimeTryAlloc(sizeOfIntrinsic<ThreadState>());
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return nullPointerIntrinsic<u8>();
-    }
-    const callback = entry as * mut u8;
-    let state: ThreadState = {
-      thread: 0u64
-    };
-    const threadAddress =( & mut state.thread)as * mut u64;
-    if (pthread_create(threadAddress, nullPointerIntrinsic<u8>()as * const u8, callback, argument) !== 0i32) {
+    const task = runtimeTryAlloc(sizeOfIntrinsic<ThreadTaskState>());
+    const result = runtimeTryAlloc(resultSize === 0usize?1usize: resultSize);
+    if (isNullIntrinsic<u8>(handle as *const u8) || isNullIntrinsic<u8>(task as *const u8) || isNullIntrinsic<u8>(result as *const u8)) {
       runtimeFree(handle);
+      runtimeFree(task);
+      runtimeFree(result);
       return nullPointerIntrinsic<u8>();
     }
-    storeRawIntrinsic<ThreadState>(handle as * mut ThreadState, state);
+    storeRawIntrinsic<ThreadTaskState>(task as *mut ThreadTaskState, {
+      invoke: invoke, code: code, environment: environment, drop: drop, result: result,
+    });
+    let state: ThreadState = {
+      thread: 0u64,
+    };
+    const threadAddress =( &mut state.thread)as *mut u64;
+    if (pthread_create(threadAddress, nullPointerIntrinsic<u8>()as *const u8, threadTaskEntry as *mut u8, task) !== 0i32) {
+      runtimeFree(handle);
+      runtimeFree(task);
+      runtimeFree(result);
+      return nullPointerIntrinsic<u8>();
+    }
+    storeRawIntrinsic<ThreadState>(handle as *mut ThreadState, state);
     return handle;
   }
 }
-export function threadSpawnRaw(entry: usize, argument: * mut u8): * mut u8 {
+export function threadJoin(handle: *mut u8, result: *mut u8): i32 {
   unsafe {
-    return threadSpawnRawPointer(entry as * mut u8, argument);
-  }
-}
-export function threadSpawnRawPointerExport(entry: * mut u8, argument: * mut u8): * mut u8 {
-  return threadSpawnRawPointer(entry, argument);
-}
-export function threadJoin(handle: * mut u8, result: * mut u8): i32 {
-  unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
-    const thread =( *(handle as * const ThreadState)).thread;
-    const status = pthread_join(thread, result as * mut * mut u8);
+    const thread =( *(handle as *const ThreadState)).thread;
+    const status = pthread_join(thread, result as *mut *mut u8);
     if (status === 0i32) {
       runtimeFree(handle);
     }
     return status;
   }
 }
-export function threadDetach(handle: * mut u8): i32 {
+export function threadDetach(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
-    const thread =( *(handle as * const ThreadState)).thread;
+    const thread =( *(handle as *const ThreadState)).thread;
     const status = pthread_detach(thread);
     if (status === 0i32) {
       runtimeFree(handle);
@@ -2057,49 +2423,49 @@ export function threadDetach(handle: * mut u8): i32 {
     return status;
   }
 }
-function byteAddress(pointer: * const u8, offset: usize): * mut u8 {
+function byteAddress(pointer: *const u8, offset: usize): *mut u8 {
   unsafe {
-    return pointer as * mut u8;
+    return pointer as *mut u8;
   }
 }
-function byteAddressI32(pointer: * const u8, offset: i32): * mut u8 {
+function byteAddressI32(pointer: *const u8, offset: i32): *mut u8 {
   unsafe {
-    return pointer as * mut u8;
+    return pointer as *mut u8;
   }
 }
-export function processCwd(buffer: * mut u8, capacity: usize): i32 {
+export function processCwd(buffer: *mut u8, capacity: usize): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(buffer as * const u8) || capacity === 0usize || isNullIntrinsic<u8>(getcwd(buffer, capacity)as * const u8)) {
+    if (isNullIntrinsic<u8>(buffer as *const u8) || capacity === 0usize || isNullIntrinsic<u8>(getcwd(buffer, capacity)as *const u8)) {
       return - 34i32;
     }
-    return 0i32;
+    return 0;
   }
 }
-export function fileOpen(path: * const u8, flags: i32, mode: i32): i32 {
+export function fileOpen(path: *const u8, flags: i32, mode: i32): i32 {
   unsafe {
     return open(path, flags, mode);
   }
 }
-export function fileOpenCreate(path: * const u8, flags: i32, mode: i32): i32 {
+export function fileOpenCreate(path: *const u8, flags: i32, mode: i32): i32 {
   unsafe {
     return open(path, flags | 64i32, mode);
   }
 }
-export function fileRead(handle: i32, bytes: * mut u8, length: usize): isize {
+export function fileRead(handle: i32, bytes: *mut u8, length: usize): isize {
   unsafe {
     return read(handle, bytes, length);
   }
 }
-export function fileWrite(handle: i32, bytes: * const u8, length: usize): isize {
+export function fileWrite(handle: i32, bytes: *const u8, length: usize): isize {
   unsafe {
     return write(handle, bytes, length);
   }
 }
-export function fileReadExact(handle: i32, bytes: * mut u8, length: usize): isize {
+export function fileReadExact(handle: i32, bytes: *mut u8, length: usize): isize {
   unsafe {
-    let offset: usize = 0usize;
+    let offset: usize = 0;
     while (offset !== length) {
-      const destination = byteAddress(bytes as * const u8, offset);
+      const destination = byteAddress(bytes as *const u8, offset);
       const received = read(handle, destination, length - offset);
       if (received<0isize) {
         return - 5isize;
@@ -2109,15 +2475,15 @@ export function fileReadExact(handle: i32, bytes: * mut u8, length: usize): isiz
       }
       offset = offset +(received as usize);
     }
-    return 0isize;
+    return 0;
   }
 }
-export function fileWriteAll(handle: i32, bytes: * const u8, length: usize): isize {
+export function fileWriteAll(handle: i32, bytes: *const u8, length: usize): isize {
   unsafe {
-    let offset: usize = 0usize;
+    let offset: usize = 0;
     while (offset !== length) {
       const source = byteAddress(bytes, offset);
-      const written = write(handle, source as * const u8, length - offset);
+      const written = write(handle, source as *const u8, length - offset);
       if (written<0isize) {
         return - 5isize;
       }
@@ -2126,7 +2492,7 @@ export function fileWriteAll(handle: i32, bytes: * const u8, length: usize): isi
       }
       offset = offset +(written as usize);
     }
-    return 0isize;
+    return 0;
   }
 }
 export function fileClose(handle: i32): i32 {
@@ -2134,24 +2500,24 @@ export function fileClose(handle: i32): i32 {
     return close(handle);
   }
 }
-export function fileExists(path: * const u8): i32 {
+export function fileExists(path: *const u8): i32 {
   unsafe {
     return access(path, 0i32) === 0i32?1i32: 0i32;
   }
 }
-export function fileRemove(path: * const u8): i32 {
+export function fileRemove(path: *const u8): i32 {
   unsafe {
     return unlink(path);
   }
 }
-export function pathJoin(left: * const u8, right: * const u8, output: * mut u8, capacity: usize): i32 {
+export function pathJoin(left: *const u8, right: *const u8, output: *mut u8, capacity: usize): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(left) || isNullIntrinsic<u8>(right) || isNullIntrinsic<u8>(output as * const u8) || capacity === 0usize) {
+    if (isNullIntrinsic<u8>(left) || isNullIntrinsic<u8>(right) || isNullIntrinsic<u8>(output as *const u8) || capacity === 0usize) {
       return - 22i32;
     }
     const leftLength = stringLength(left);
     const rightLength = stringLength(right);
-    let rightStart: usize = 0usize;
+    let rightStart: usize = 0;
     while (rightStart + 1usize < rightLength && byteAt(right, rightStart) === 46u8 && byteAt(right, rightStart + 1usize) === 47u8) {
       rightStart = rightStart + 2usize;
     }
@@ -2167,20 +2533,20 @@ export function pathJoin(left: * const u8, right: * const u8, output: * mut u8, 
       setByte(output, leftLength, 47u8);
     }
     if (rightCount > 0usize) {
-      memcpy(byteAddress(output as * const u8, leftLength + separator), byteAddress(right, rightStart)as * const u8, rightCount);
+      memcpy(byteAddress(output as *const u8, leftLength + separator), byteAddress(right, rightStart)as *const u8, rightCount);
     }
     setByte(output, leftLength + separator + rightCount, 0u8);
-    return 0i32;
+    return 0;
   }
 }
-export function pathBasename(path: * const u8, output: * mut u8, capacity: usize): i32 {
+export function pathBasename(path: *const u8, output: *mut u8, capacity: usize): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(path) || isNullIntrinsic<u8>(output as * const u8) || capacity === 0usize) {
+    if (isNullIntrinsic<u8>(path) || isNullIntrinsic<u8>(output as *const u8) || capacity === 0usize) {
       return - 22i32;
     }
     const length = stringLength(path);
-    let start: usize = 0usize;
-    let index: usize = 0usize;
+    let start: usize = 0;
+    let index: usize = 0;
     while (index !== length) {
       if (byteAt(path, index) === 47u8) {
         start = index + 1usize;
@@ -2192,27 +2558,27 @@ export function pathBasename(path: * const u8, output: * mut u8, capacity: usize
       return - 36i32;
     }
     if (count > 0usize) {
-      memcpy(output, byteAddress(path, start)as * const u8, count);
+      memcpy(output, byteAddress(path, start)as *const u8, count);
     }
     setByte(output, count, 0u8);
-    return 0i32;
+    return 0;
   }
 }
-export function processGetenv(name: * const u8): * const u8 {
+export function processGetenv(name: *const u8): *const u8 {
   unsafe {
     return getenv(name);
   }
 }
-export function processGetenvLength(name: * const u8): usize {
+export function processGetenvLength(name: *const u8): usize {
   unsafe {
     const value = getenv(name);
     return isNullIntrinsic<u8>(value)?~0usize: cstringLength(value);
   }
 }
-export function processGetenvCopy(name: * const u8, destination: * mut u8, capacity: usize): i32 {
+export function processGetenvCopy(name: *const u8, destination: *mut u8, capacity: usize): i32 {
   unsafe {
     const value = getenv(name);
-    if (isNullIntrinsic<u8>(value) || isNullIntrinsic<u8>(destination as * const u8)) {
+    if (isNullIntrinsic<u8>(value) || isNullIntrinsic<u8>(destination as *const u8)) {
       return - 2i32;
     }
     const length = cstringLength(value);
@@ -2221,77 +2587,93 @@ export function processGetenvCopy(name: * const u8, destination: * mut u8, capac
     }
     memcpy(destination, value, length);
     setByte(destination, length, 0u8);
-    return 0i32;
+    return 0;
   }
 }
-export function libraryOpen(path: * const u8): * mut u8 {
+export function libraryOpen(path: *const u8): *mut u8 {
   unsafe {
     return dlopen(path, 2i32 | 8i32);
   }
 }
-export function librarySymbol(handle: * mut u8, name: * const u8): * mut u8 {
+export function librarySymbol(handle: *mut u8, name: *const u8): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     return dlsym(handle, name);
   }
 }
-export function libraryClose(handle: * mut u8): i32 {
+export function libraryClose(handle: *mut u8): i32 {
   unsafe {
-    return isNullIntrinsic<u8>(handle as * const u8)?0i32: dlclose(handle);
+    return isNullIntrinsic<u8>(handle as *const u8)?0i32: dlclose(handle);
   }
 }
-export function processSpawnArgv(arguments: * const * const u8, count: usize): i32 {
+function processSpawnArgv(arguments: *const *const u8, count: usize): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(arguments as * const u8) || count === 0usize) {
+    if (isNullIntrinsic<u8>(arguments as *const u8) || count === 0usize) {
       return - 22i32;
     }
     if (count === ~0usize) {
       return - 75i32;
     }
-    const argv = runtimeTryAlloc((count + 1usize) * sizeOfIntrinsic< * mut u8>());
-    if (isNullIntrinsic<u8>(argv as * const u8)) {
+    const argv = runtimeTryAlloc((count + 1usize) * sizeOfIntrinsic< *mut u8>());
+    if (isNullIntrinsic<u8>(argv as *const u8)) {
       return - 12i32;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== count) {
-      const offset = index * sizeOfIntrinsic< * mut u8>();
-      const argument = *(byteAddress(arguments as * const u8, offset)as * const * const u8);
+      const offset = index * sizeOfIntrinsic< *mut u8>();
+      const argument = *(byteAddress(arguments as *const u8, offset)as *const *const u8);
       if (isNullIntrinsic<u8>(argument)) {
         runtimeFree(argv);
         return - 22i32;
       }
-      storeRawIntrinsic< * mut u8>(byteAddress(argv as * const u8, offset)as * mut * mut u8, argument as * mut u8);
+      storeRawIntrinsic< *mut u8>(byteAddress(argv as *const u8, offset)as *mut *mut u8, argument as *mut u8);
       index = index + 1usize;
     }
-    const terminatorOffset = count * sizeOfIntrinsic< * mut u8>();
-    storeRawIntrinsic< * mut u8>(byteAddress(argv as * const u8, terminatorOffset)as * mut * mut u8, nullPointerIntrinsic<u8>());
+    const terminatorOffset = count * sizeOfIntrinsic< *mut u8>();
+    storeRawIntrinsic< *mut u8>(byteAddress(argv as *const u8, terminatorOffset)as *mut *mut u8, nullPointerIntrinsic<u8>());
     const child = fork();
     if (child === 0i32) {
-      const command = *(argv as * const * const u8);
-      execvp(command, argv as * mut * mut u8);
+      const command = *(argv as *const *const u8);
+      execvp(command, argv as *mut *mut u8);
       _exit(127i32);
     }
     runtimeFree(argv);
     return child > 0i32?child: - 1i32;
   }
 }
-export function processWait(process: i32, exitCode: * mut i32): i32 {
+export function processSpawnArray(arguments: *const u8, count: usize): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(arguments) || count === 0usize) {
+      return - 22i32;
+    }
+    // Array<T> has a stable native object prefix: descriptor, storage,
+    // initialization bitmap, length, capacity, and element size.
+    const length = *(byteAddress(arguments, 24usize)as *const usize);
+    const elementSize = *(byteAddress(arguments, 40usize)as *const usize);
+    if (length !== count || elementSize !== sizeOfIntrinsic< *const u8>()) {
+      return - 22i32;
+    }
+    const storage = *(byteAddress(arguments, 8usize)as *const *const u8);
+    return processSpawnArgv(storage as *const *const u8, count);
+  }
+}
+export function processWait(process: i32, exitCode: *mut i32): i32 {
   unsafe {
     if (process <= 0i32) {
-      return 22i32;
+      return 22;
     }
-    let status: i32 = 0i32;
-    if (waitpid(process,( & mut status)as * mut i32, 0i32) < 0i32) {
+    let status: i32 = 0;
+    if (waitpid(process,( &mut status)as *mut i32, 0i32) < 0i32) {
       return - 1i32;
     }
-    if (!isNullIntrinsic<i32>(exitCode as * const i32)) {
+    if (!isNullIntrinsic<i32>(exitCode as *const i32)) {
       const exited =(status & 127i32) === 0i32;
       const value = exited?(status >> 8i32) & 255i32: 128i32 +(status & 127i32);
       storeRawIntrinsic<i32>(exitCode, value);
     }
-    return 0i32;
+    return 0;
   }
 }
 export function processKill(process: i32, signal: i32): i32 {
@@ -2300,29 +2682,36 @@ export function processKill(process: i32, signal: i32): i32 {
   }
 }
 struct ReactorState {
-  public native: * mut u8;
+  public native: *mut u8;
+  public mutex: *mut u8;
+  public pending: *mut u8;
 }
-function socketAddress(host: * const u8, port: u16, address: * mut SockAddrIn): i32 {
+struct ReactorReady {
+  public descriptor: i32;
+  public events: i32;
+  public next: *mut u8;
+}
+function socketAddress(host: *const u8, port: u16, address: *mut SockAddrIn): i32 {
   unsafe {
-    if (isNullIntrinsic<SockAddrIn>(address as * const SockAddrIn)) {
+    if (isNullIntrinsic<SockAddrIn>(address as *const SockAddrIn)) {
       return - 22i32;
     }
     let value: SockAddrIn = {
       family: platformSockAddrFamily(), port: htons(port), address: 0u32, padding0: 0u64
     };
     if (!isNullIntrinsic<u8>(host) && stringLength(host) !== 0usize) {
-      if (inet_pton(2i32, host,( & mut value.address)as * mut u8) !== 1i32) {
-        if (strcmp(host, "localhost" as * const u8) !== 0i32) {
+      if (inet_pton(2i32, host,( &mut value.address)as *mut u8) !== 1i32) {
+        if (strcmp(host, "localhost" as *const u8) !== 0i32) {
           return - 1i32;
         }
         value.address = 16777343u32;
       }
     }
     storeRawIntrinsic<SockAddrIn>(address, value);
-    return 0i32;
+    return 0;
   }
 }
-export function netTcpConnect(host: * const u8, port: u16): i32 {
+export function netTcpConnect(host: *const u8, port: u16): i32 {
   unsafe {
     const handle = socket(2i32, 1i32, 0i32);
     if (handle<0i32) {
@@ -2331,11 +2720,11 @@ export function netTcpConnect(host: * const u8, port: u16): i32 {
     let address: SockAddrIn = {
       family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
     };
-    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32) {
+    if (socketAddress(host, port,( &mut address)as *mut SockAddrIn) !== 0i32) {
       close(handle);
       return - 1i32;
     }
-    if (connect(handle,( & address)as * const u8, 16u32) !== 0i32) {
+    if (connect(handle,( &address)as *const u8, 16u32) !== 0i32) {
       const error = tn_platform_last_error();
       close(handle);
       return - error;
@@ -2343,14 +2732,14 @@ export function netTcpConnect(host: * const u8, port: u16): i32 {
     return handle;
   }
 }
-export function netTcpListen(host: * const u8, port: u16, backlog: i32): i32 {
+export function netTcpListen(host: *const u8, port: u16, backlog: i32): i32 {
   unsafe {
     const handle = socket(2i32, 1i32, 0i32);
     if (handle<0i32) {
       return - 1i32;
     }
-    const reuse: i32 = 1i32;
-    if (setsockopt(handle, platformSocketLevel(), platformSocketReuseAddressOption(),( & reuse)as * const u8, 4u32) !== 0i32) {
+    const reuse: i32 = 1;
+    if (setsockopt(handle, platformSocketLevel(), platformSocketReuseAddressOption(),( &reuse)as *const u8, 4u32) !== 0i32) {
       const error = tn_platform_last_error();
       close(handle);
       return - error;
@@ -2358,7 +2747,7 @@ export function netTcpListen(host: * const u8, port: u16, backlog: i32): i32 {
     let address: SockAddrIn = {
       family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
     };
-    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32 || bind(handle,( & address)as * const u8, 16u32) !== 0i32 || listen(handle, backlog > 0i32?backlog: 128i32) !== 0i32) {
+    if (socketAddress(host, port,( &mut address)as *mut SockAddrIn) !== 0i32 || bind(handle,( &address)as *const u8, 16u32) !== 0i32 || listen(handle, backlog > 0i32?backlog: 128i32) !== 0i32) {
       close(handle);
       return - 1i32;
     }
@@ -2369,14 +2758,14 @@ export function netTcpListen(host: * const u8, port: u16, backlog: i32): i32 {
     return handle;
   }
 }
-export function netTcpListenAddress(address: * const u8, backlog: i32): i32 {
+export function netTcpListenAddress(address: *const u8, backlog: i32): i32 {
   unsafe {
     if (isNullIntrinsic<u8>(address)) {
       return - 1i32;
     }
     const length = stringLength(address);
-    let separator: usize = 0usize;
-    let separatorIndex: usize = 0usize;
+    let separator: usize = 0;
+    let separatorIndex: usize = 0;
     while (separatorIndex !== length) {
       if (byteAt(address, separatorIndex) === 58u8) {
         separator = separatorIndex;
@@ -2388,24 +2777,24 @@ export function netTcpListenAddress(address: * const u8, backlog: i32): i32 {
     }
     const hostLength = separator;
     const host = runtimeTryAlloc(hostLength + 1usize);
-    if (isNullIntrinsic<u8>(host as * const u8)) {
+    if (isNullIntrinsic<u8>(host as *const u8)) {
       return - 12i32;
     }
     memcpy(host, address, hostLength);
     setByte(host, hostLength, 0u8);
-    const port = strtoul(byteAddress(address, separator + 1usize)as * const u8, nullPointerIntrinsic< * mut u8>()as * mut * mut u8, 10i32);
+    const port = strtoul(byteAddress(address, separator + 1usize)as *const u8, nullPointerIntrinsic< *mut u8>()as *mut *mut u8, 10i32);
     if (port > 65535usize) {
       runtimeFree(host);
       return - 1i32;
     }
-    const handle = netTcpListen(host as * const u8, port as u16, backlog);
+    const handle = netTcpListen(host as *const u8, port as u16, backlog);
     runtimeFree(host);
     return handle;
   }
 }
 export function netTcpAccept(handle: i32): i32 {
   unsafe {
-    const accepted = accept(handle, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u32>()as * mut u32);
+    const accepted = accept(handle, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u32>()as *mut u32);
     if (accepted<0i32) {
       return - tn_platform_last_error();
     }
@@ -2431,7 +2820,7 @@ export function netShutdown(handle: i32): i32 {
     return shutdown(handle, 2i32);
   }
 }
-export function netRead(handle: i32, bytes: * mut u8, length: usize): isize {
+export function netRead(handle: i32, bytes: *mut u8, length: usize): isize {
   unsafe {
     const result = recv(handle, bytes, length, 0i32);
     if (result<0isize) {
@@ -2440,20 +2829,20 @@ export function netRead(handle: i32, bytes: * mut u8, length: usize): isize {
     return result;
   }
 }
-export function netReadInto(handle: i32, bytes: * mut u8, capacity: usize, length: usize, received: * mut usize): i32 {
+export function netReadInto(handle: i32, bytes: *mut u8, capacity: usize, length: usize, received: *mut usize): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(bytes as * const u8) || isNullIntrinsic<usize>(received as * const usize) || length > capacity) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(bytes as *const u8) || isNullIntrinsic<usize>(received as *const usize) || length > capacity) {
+      return 22;
     }
-    const result = recv(handle, byteAddress(bytes as * const u8, length), capacity - length, 0i32);
+    const result = recv(handle, byteAddress(bytes as *const u8, length), capacity - length, 0i32);
     if (result<0isize) {
       return tn_platform_last_error();
     }
     storeRawIntrinsic<usize>(received, result as usize);
-    return 0i32;
+    return 0;
   }
 }
-export function netWrite(handle: i32, bytes: * const u8, length: usize): isize {
+export function netWrite(handle: i32, bytes: *const u8, length: usize): isize {
   unsafe {
     const result = send(handle, bytes, length, 0i32);
     if (result<0isize) {
@@ -2462,45 +2851,45 @@ export function netWrite(handle: i32, bytes: * const u8, length: usize): isize {
     return result;
   }
 }
-export function netWriteAt(handle: i32, bytes: * const u8, offset: usize, length: usize, written: * mut usize): i32 {
+export function netWriteAt(handle: i32, bytes: *const u8, offset: usize, length: usize, written: *mut usize): i32 {
   unsafe {
-    if (isNullIntrinsic<usize>(written as * const usize)) {
-      return 22i32;
+    if (isNullIntrinsic<usize>(written as *const usize)) {
+      return 22;
     }
-    const result = send(handle, byteAddress(bytes, offset)as * const u8, length, 0i32);
+    const result = send(handle, byteAddress(bytes, offset)as *const u8, length, 0i32);
     if (result<0isize) {
       return tn_platform_last_error();
     }
     storeRawIntrinsic<usize>(written, result as usize);
-    return 0i32;
+    return 0;
   }
 }
-export function netReadExact(handle: i32, bytes: * mut u8, length: usize): i32 {
+export function netReadExact(handle: i32, bytes: *mut u8, length: usize): i32 {
   unsafe {
-    let offset: usize = 0usize;
+    let offset: usize = 0;
     while (offset !== length) {
-      const result = recv(handle, byteAddress(bytes as * const u8, offset), length - offset, 0i32);
+      const result = recv(handle, byteAddress(bytes as *const u8, offset), length - offset, 0i32);
       if (result === - 1isize || result === 0isize) {
         return result === 0isize?32i32: tn_platform_last_error();
       }
       const progress: usize = result as usize;
       offset = offset + progress;
     }
-    return 0i32;
+    return 0;
   }
 }
-export function netWriteAll(handle: i32, bytes: * const u8, length: usize): i32 {
+export function netWriteAll(handle: i32, bytes: *const u8, length: usize): i32 {
   unsafe {
-    let offset: usize = 0usize;
+    let offset: usize = 0;
     while (offset !== length) {
-      const result = send(handle, byteAddress(bytes, offset)as * const u8, length - offset, 0i32);
+      const result = send(handle, byteAddress(bytes, offset)as *const u8, length - offset, 0i32);
       if (result === - 1isize || result === 0isize) {
         return result === 0isize?5i32: tn_platform_last_error();
       }
       const progress: usize = result as usize;
       offset = offset + progress;
     }
-    return 0i32;
+    return 0;
   }
 }
 export function netClose(handle: i32): i32 {
@@ -2511,7 +2900,7 @@ export function netClose(handle: i32): i32 {
 export function netWouldBlock(code: i32): i32 {
   return code === 11i32 || code === 35i32?1i32: 0i32;
 }
-export function netUdpBind(host: * const u8, port: u16): i32 {
+export function netUdpBind(host: *const u8, port: u16): i32 {
   unsafe {
     const handle = socket(2i32, 2i32, 0i32);
     if (handle<0i32) {
@@ -2520,7 +2909,7 @@ export function netUdpBind(host: * const u8, port: u16): i32 {
     let address: SockAddrIn = {
       family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
     };
-    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32 || bind(handle,( & address)as * const u8, 16u32) !== 0i32) {
+    if (socketAddress(host, port,( &mut address)as *mut SockAddrIn) !== 0i32 || bind(handle,( &address)as *const u8, 16u32) !== 0i32) {
       close(handle);
       return - 1i32;
     }
@@ -2531,148 +2920,325 @@ export function netUdpBind(host: * const u8, port: u16): i32 {
     return handle;
   }
 }
-export function netUdpSend(handle: i32, bytes: * const u8, length: usize, host: * const u8, port: u16): i32 {
+export function netUdpSend(handle: i32, bytes: *const u8, length: usize, host: *const u8, port: u16): i32 {
   unsafe {
     let address: SockAddrIn = {
       family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
     };
-    if (socketAddress(host, port,( & mut address)as * mut SockAddrIn) !== 0i32) {
-      return 22i32;
+    if (socketAddress(host, port,( &mut address)as *mut SockAddrIn) !== 0i32) {
+      return 22;
     }
-    const result = sendto(handle, bytes, length, 0i32,( & address)as * const u8, 16u32);
+    const result = sendto(handle, bytes, length, 0i32,( &address)as *const u8, 16u32);
     if (result<0isize) {
       return tn_platform_last_error();
     }
-    return 0i32;
+    return 0;
   }
 }
-export function netUdpReceive(handle: i32, bytes: * mut u8, length: usize): isize {
+export function netUdpReceive(handle: i32, bytes: *mut u8, length: usize): isize {
   unsafe {
-    const result = recvfrom(handle, bytes, length, 0i32, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u32>()as * mut u32);
+    const result = recvfrom(handle, bytes, length, 0i32, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u32>()as *mut u32);
     if (result<0isize) {
       return -(tn_platform_last_error()as isize);
     }
     return result;
   }
 }
-export function netResolveIpv4(host: * const u8, address: * mut u32): i32 {
+export function netResolveIpv4(host: *const u8, address: *mut u32): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(host) || isNullIntrinsic<u32>(address as * const u32)) {
+    if (isNullIntrinsic<u8>(host) || isNullIntrinsic<u32>(address as *const u32)) {
       return - 1i32;
     }
     const value: SockAddrIn = {
       family: 0u16, port: 0u16, address: 0u32, padding0: 0u64
     };
-    if (inet_pton(2i32, host,( & mut value.address)as * mut u8) !== 1i32) {
+    if (inet_pton(2i32, host,( &mut value.address)as *mut u8) !== 1i32) {
       return - 1i32;
     }
     storeRawIntrinsic<u32>(address, value.address);
-    return 0i32;
+    return 0;
   }
 }
-export function reactorCreate(): * mut u8 {
+export function reactorCreate(): *mut u8 {
   unsafe {
     const handle = runtimeTryAlloc(sizeOfIntrinsic<ReactorState>());
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const native = tn_platform_reactor_create();
-    if (isNullIntrinsic<u8>(native as * const u8)) {
+    const mutex = mutexCreate();
+    if (isNullIntrinsic<u8>(native as *const u8) || isNullIntrinsic<u8>(mutex as *const u8)) {
+      mutexDestroy(mutex);
       runtimeFree(handle);
       return nullPointerIntrinsic<u8>();
     }
     const state: ReactorState = {
-      native: native,
+      native: native, mutex: mutex, pending: nullPointerIntrinsic<u8>(),
     };
-    storeRawIntrinsic<ReactorState>(handle as * mut ReactorState, state);
+    storeRawIntrinsic<ReactorState>(handle as *mut ReactorState, state);
     return handle;
   }
 }
-export function reactorWatch(handle: * mut u8, descriptor: i32, events: i32): i32 {
+function reactorPendingPush(handle: *mut ReactorState, descriptor: i32, events: i32): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    const node = runtimeTryAlloc(sizeOfIntrinsic<ReactorReady>());
+    if (isNullIntrinsic<u8>(node as *const u8)) {
+      return - 12i32;
     }
-    const reactor = *(handle as * const ReactorState);
-    return tn_platform_reactor_watch(reactor.native, descriptor, events);
+    let state = * handle;
+    storeRawIntrinsic<ReactorReady>(node as *mut ReactorReady, {
+      descriptor: descriptor, events: events, next: state.pending,
+    });
+    state.pending = node;
+    storeRawIntrinsic<ReactorState>(handle, state);
+    return 0;
   }
 }
-export function reactorUnwatch(handle: * mut u8, descriptor: i32): i32 {
+function reactorPendingTake(handle: *mut ReactorState, descriptor: i32, requested: i32, readyEvents: *mut i32): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    let state = * handle;
+    let previous = nullPointerIntrinsic<u8>();
+    let current = state.pending;
+    while (!isNullIntrinsic<u8>(current as *const u8)) {
+      const node = *(current as *const ReactorReady);
+      const matchingDescriptor = node.descriptor === descriptor;
+      const matchingEvents =(node.events & requested) !== 0i32 ||(node.events & 24i32) !== 0i32;
+      if (matchingDescriptor && matchingEvents) {
+        if (isNullIntrinsic<u8>(previous as *const u8)) {
+          state.pending = node.next;
+          storeRawIntrinsic<ReactorState>(handle, state);
+        } else {
+          let previousNode = *(previous as *const ReactorReady);
+          previousNode.next = node.next;
+          storeRawIntrinsic<ReactorReady>(previous as *mut ReactorReady, previousNode);
+        }
+        if (!isNullIntrinsic<i32>(readyEvents as *const i32)) {
+          storeRawIntrinsic<i32>(readyEvents, node.events);
+        }
+        runtimeFree(current);
+        return 1;
+      }
+      previous = current;
+      current = node.next;
     }
-    const reactor = *(handle as * const ReactorState);
-    return tn_platform_reactor_unwatch(reactor.native, descriptor);
+    return 0;
   }
 }
-export function reactorWait(handle: * mut u8, timeout: u64, ready: * mut i32, events: * mut i32): i32 {
+function reactorPendingTakeAny(handle: *mut ReactorState, ready: *mut i32, readyEvents: *mut i32): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    let state = * handle;
+    const current = state.pending;
+    if (isNullIntrinsic<u8>(current as *const u8)) {
+      return 0;
+    }
+    const node = *(current as *const ReactorReady);
+    state.pending = node.next;
+    storeRawIntrinsic<ReactorState>(handle, state);
+    if (!isNullIntrinsic<i32>(ready as *const i32)) {
+      storeRawIntrinsic<i32>(ready, node.descriptor);
+    }
+    if (!isNullIntrinsic<i32>(readyEvents as *const i32)) {
+      storeRawIntrinsic<i32>(readyEvents, node.events);
+    }
+    runtimeFree(current);
+    return 1;
+  }
+}
+function reactorPendingRemove(handle: *mut ReactorState, descriptor: i32): void {
+  unsafe {
+    let state = * handle;
+    let previous = nullPointerIntrinsic<u8>();
+    let current = state.pending;
+    while (!isNullIntrinsic<u8>(current as *const u8)) {
+      const node = *(current as *const ReactorReady);
+      if (node.descriptor === descriptor) {
+        if (isNullIntrinsic<u8>(previous as *const u8)) {
+          state.pending = node.next;
+        } else {
+          let previousNode = *(previous as *const ReactorReady);
+          previousNode.next = node.next;
+          storeRawIntrinsic<ReactorReady>(previous as *mut ReactorReady, previousNode);
+        }
+        runtimeFree(current);
+        current = isNullIntrinsic<u8>(previous as *const u8)?state.pending:( *(previous as *const ReactorReady)).next;
+        continue;
+      }
+      previous = current;
+      current = node.next;
+    }
+    storeRawIntrinsic<ReactorState>(handle, state);
+  }
+}
+/// Returns the process-wide reactor used by asynchronous networking.  A single lazily-created
+/// reactor lets all waits share the same readiness queue instead of allocating one poller per
+/// operation.  Initialization uses the same acquire/release state machine as the executor.
+export function reactorShared(): *mut u8 {
+  unsafe {
+    if (atomicUsizeLoad(( &sharedReactorState)as *const usize, MemoryOrder.Acquire) !== 2usize) {
+      let expected: usize = 0;
+      if (atomicUsizeCompareExchange(( &mut sharedReactorState)as *mut usize,( &mut expected)as *mut usize, 1usize, MemoryOrder.Acquire, MemoryOrder.Relaxed)) {
+        sharedReactorHandle = reactorCreate();
+        let initializing: usize = 1;
+        atomicUsizeCompareExchange(( &mut sharedReactorState)as *mut usize,( &mut initializing)as *mut usize, 2usize, MemoryOrder.Release, MemoryOrder.Relaxed);
+      } else {
+        while (atomicUsizeLoad(( &sharedReactorState)as *const usize, MemoryOrder.Acquire) === 1usize) {
+          threadYield();
+        }
+      }
+    }
+    return sharedReactorHandle;
+  }
+}
+export function reactorWatch(handle: *mut u8, descriptor: i32, events: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
+    }
+    const reactor = handle as *mut ReactorState;
+    const state = * reactor;
+    mutexLock(state.mutex);
+    const status = tn_platform_reactor_watch(state.native, descriptor, events);
+    mutexUnlock(state.mutex);
+    return status;
+  }
+}
+export function reactorUnwatch(handle: *mut u8, descriptor: i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
+    }
+    const reactor = handle as *mut ReactorState;
+    const state = * reactor;
+    mutexLock(state.mutex);
+    reactorPendingRemove(reactor, descriptor);
+    const status = tn_platform_reactor_unwatch(state.native, descriptor);
+    mutexUnlock(state.mutex);
+    return status;
+  }
+}
+export function reactorWait(handle: *mut u8, timeout: u64, ready: *mut i32, events: *mut i32): i32 {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return - 22i32;
     }
-    const reactor = *(handle as * const ReactorState);
-    return tn_platform_reactor_wait(reactor.native, timeout, ready, events);
+    const reactor = handle as *mut ReactorState;
+    const state = * reactor;
+    mutexLock(state.mutex);
+    if (reactorPendingTakeAny(reactor, ready, events) !== 0i32) {
+      mutexUnlock(state.mutex);
+      return 1;
+    }
+    const status = tn_platform_reactor_wait(state.native, timeout, ready, events);
+    mutexUnlock(state.mutex);
+    return status;
   }
 }
-export function reactorDestroy(handle: * mut u8): i32 {
+export function reactorWaitFor(handle: *mut u8, descriptor: i32, requested: i32, timeout: u64, readyEvents: *mut i32): i32 {
   unsafe {
-    if (!isNullIntrinsic<u8>(handle as * const u8)) {
-      const reactor = *(handle as * const ReactorState);
-      tn_platform_reactor_destroy(reactor.native);
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return - 22i32;
+    }
+    const reactor = handle as *mut ReactorState;
+    const state = * reactor;
+    mutexLock(state.mutex);
+    if (reactorPendingTake(reactor, descriptor, requested, readyEvents) !== 0i32) {
+      mutexUnlock(state.mutex);
+      return 1;
+    }
+    let ready: i32 = - 1;
+    let events: i32 = 0;
+    const status = tn_platform_reactor_wait(state.native, timeout,( &mut ready)as *mut i32,( &mut events)as *mut i32,);
+    if (status<0i32) {
+      mutexUnlock(state.mutex);
+      return status;
+    }
+    if (status === 0i32) {
+      mutexUnlock(state.mutex);
+      return 0;
+    }
+    const matchingDescriptor = ready === descriptor;
+    const matchingEvents =(events & requested) !== 0i32 ||(events & 24i32) !== 0i32;
+    if (matchingDescriptor && matchingEvents) {
+      if (!isNullIntrinsic<i32>(readyEvents as *const i32)) {
+        storeRawIntrinsic<i32>(readyEvents, events);
+      }
+      mutexUnlock(state.mutex);
+      return 1;
+    }
+    const queueStatus = reactorPendingPush(reactor, ready, events);
+    mutexUnlock(state.mutex);
+    return queueStatus === 0i32?0i32: queueStatus;
+  }
+}
+export function reactorDestroy(handle: *mut u8): i32 {
+  unsafe {
+    if (!isNullIntrinsic<u8>(handle as *const u8)) {
+      const reactor = handle as *mut ReactorState;
+      const state = * reactor;
+      mutexLock(state.mutex);
+      let current = state.pending;
+      while (!isNullIntrinsic<u8>(current as *const u8)) {
+        const node = *(current as *const ReactorReady);
+        const next = node.next;
+        runtimeFree(current);
+        current = next;
+      }
+      tn_platform_reactor_destroy(state.native);
+      mutexUnlock(state.mutex);
+      mutexDestroy(state.mutex);
       runtimeFree(handle);
     }
   }
-  return 0i32;
+  return 0;
 }
 struct TaskGroupState {
-  public mutex: * mut u8;
-  public condition: * mut u8;
+  public mutex: *mut u8;
+  public condition: *mut u8;
   public cancelled: i32;
   public active: usize;
-  public allTasks: * mut u8;
+  public allTasks: *mut u8;
   public closing: i32;
 }
 struct ExecutorState {
-  public mutex: * mut u8;
-  public condition: * mut u8;
-  public queueHead: * mut u8;
-  public queueTail: * mut u8;
+  public mutex: *mut u8;
+  public condition: *mut u8;
+  public queueHead: *mut u8;
+  public queueTail: *mut u8;
   public workerCount: usize;
   public idleWorkers: usize;
 }
 struct ExecutorTaskState {
-  public group: * mut u8;
-  public promise: * mut u8;
-  public next: * mut u8;
-  public allNext: * mut u8;
+  public group: *mut u8;
+  public promise: *mut u8;
+  public next: *mut u8;
+  public allNext: *mut u8;
 }
 struct RawPromiseState {
-  public mutex: * mut u8;
-  public condition: * mut u8;
-  public value: * mut u8;
-  public error: * mut u8;
+  public mutex: *mut u8;
+  public condition: *mut u8;
+  public value: *mut u8;
+  public error: *mut u8;
   public waiters: usize;
   public ready: i32;
   public failed: i32;
   public consumed: i32;
 }
-function rawPromiseRead(handle: * mut u8): RawPromiseState {
+function rawPromiseRead(handle: *mut u8): RawPromiseState {
   unsafe {
-    return *(handle as * const RawPromiseState);
+    return *(handle as *const RawPromiseState);
   }
 }
-function rawPromiseWrite(handle: * mut u8, promise: RawPromiseState): void {
+function rawPromiseWrite(handle: *mut u8, promise: RawPromiseState): void {
   unsafe {
-    storeRawIntrinsic<RawPromiseState>(handle as * mut RawPromiseState, promise);
+    storeRawIntrinsic<RawPromiseState>(handle as *mut RawPromiseState, promise);
   }
 }
-export function rawPromiseCreate(): * mut u8 {
+export function rawPromiseCreate(): *mut u8 {
   unsafe {
     const handle = runtimeTryAlloc(sizeOfIntrinsic<RawPromiseState>());
     const mutex = mutexCreate();
     const condition = conditionCreate();
-    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8) || isNullIntrinsic<u8>(mutex as *const u8) || isNullIntrinsic<u8>(condition as *const u8)) {
       runtimeFree(handle);
       mutexDestroy(mutex);
       conditionDestroy(condition);
@@ -2685,16 +3251,16 @@ export function rawPromiseCreate(): * mut u8 {
     return handle;
   }
 }
-function rawPromiseComplete(handle: * mut u8, value: * mut u8, error: * mut u8, failed: i32): i32 {
+function rawPromiseComplete(handle: *mut u8, value: *mut u8, error: *mut u8, failed: i32): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     let promise = rawPromiseRead(handle);
     mutexLock(promise.mutex);
     if (promise.ready !== 0i32 || promise.consumed !== 0i32) {
       mutexUnlock(promise.mutex);
-      return 114i32;
+      return 114;
     }
     promise.value = value;
     promise.error = error;
@@ -2703,22 +3269,22 @@ function rawPromiseComplete(handle: * mut u8, value: * mut u8, error: * mut u8, 
     rawPromiseWrite(handle, promise);
     conditionBroadcast(promise.condition);
     mutexUnlock(promise.mutex);
-    return 0i32;
+    return 0;
   }
 }
-export function rawPromiseResolve(handle: * mut u8, value: * mut u8): i32 {
+export function rawPromiseResolve(handle: *mut u8, value: *mut u8): i32 {
   return rawPromiseComplete(handle, value, nullPointerIntrinsic<u8>(), 0i32);
 }
-export function rawPromiseReject(handle: * mut u8, error: * mut u8): i32 {
+export function rawPromiseReject(handle: *mut u8, error: *mut u8): i32 {
   return rawPromiseComplete(handle, nullPointerIntrinsic<u8>(), error, 1i32);
 }
-export function rawPromiseCancel(handle: * mut u8): i32 {
+export function rawPromiseCancel(handle: *mut u8): i32 {
   return rawPromiseComplete(handle, nullPointerIntrinsic<u8>(), nullPointerIntrinsic<u8>(), 1i32);
 }
-export function rawPromiseWait(handle: * mut u8): i32 {
+export function rawPromiseWait(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
     let promise = rawPromiseRead(handle);
     mutexLock(promise.mutex);
@@ -2736,12 +3302,12 @@ export function rawPromiseWait(handle: * mut u8): i32 {
     return failed;
   }
 }
-export function rawPromiseWaitResult(handle: * mut u8): i32 {
+export function rawPromiseWaitResult(handle: *mut u8): i32 {
   return rawPromiseWait(handle);
 }
-export function rawPromiseTake(handle: * mut u8, failed: * mut i32): * mut u8 {
+export function rawPromiseTake(handle: *mut u8, failed: *mut i32): *mut u8 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     let promise = rawPromiseRead(handle);
@@ -2760,7 +3326,7 @@ export function rawPromiseTake(handle: * mut u8, failed: * mut i32): * mut u8 {
       return nullPointerIntrinsic<u8>();
     }
     const value = promise.failed !== 0i32?promise.error: promise.value;
-    if (!isNullIntrinsic<i32>(failed as * const i32)) {
+    if (!isNullIntrinsic<i32>(failed as *const i32)) {
       storeRawIntrinsic<i32>(failed, promise.failed);
     }
     promise.consumed = 1i32;
@@ -2777,16 +3343,16 @@ export function rawPromiseTake(handle: * mut u8, failed: * mut i32): * mut u8 {
     return value;
   }
 }
-export function rawPromiseDestroy(handle: * mut u8): i32 {
+export function rawPromiseDestroy(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 0i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 0;
     }
     let promise = rawPromiseRead(handle);
     mutexLock(promise.mutex);
     if (promise.consumed !== 0i32) {
       mutexUnlock(promise.mutex);
-      return 114i32;
+      return 114;
     }
     if (promise.ready === 0i32) {
       promise.ready = 1i32;
@@ -2802,26 +3368,26 @@ export function rawPromiseDestroy(handle: * mut u8): i32 {
     conditionDestroy(promise.condition);
     mutexDestroy(promise.mutex);
     runtimeFree(handle);
-    return 0i32;
+    return 0;
   }
 }
-function executorRead(handle: * mut u8): ExecutorState {
+function executorRead(handle: *mut u8): ExecutorState {
   unsafe {
-    return *(handle as * const ExecutorState);
+    return *(handle as *const ExecutorState);
   }
 }
-function executorWrite(handle: * mut u8, state: ExecutorState): void {
+function executorWrite(handle: *mut u8, state: ExecutorState): void {
   unsafe {
-    storeRawIntrinsic<ExecutorState>(handle as * mut ExecutorState, state);
+    storeRawIntrinsic<ExecutorState>(handle as *mut ExecutorState, state);
   }
 }
-function executorWorker(argument: * mut u8): * mut u8 {
+function executorWorker(argument: *mut u8): *mut u8 {
   unsafe {
     while (true) {
-      const executorMutex =( *(argument as * const ExecutorState)).mutex;
+      const executorMutex =( *(argument as *const ExecutorState)).mutex;
       mutexLock(executorMutex);
       let executor = executorRead(argument);
-      while (isNullIntrinsic<u8>(executor.queueHead as * const u8)) {
+      while (isNullIntrinsic<u8>(executor.queueHead as *const u8)) {
         executor.idleWorkers = executor.idleWorkers + 1usize;
         executorWrite(argument, executor);
         conditionWait(executor.condition, executorMutex);
@@ -2829,16 +3395,16 @@ function executorWorker(argument: * mut u8): * mut u8 {
         executor.idleWorkers = executor.idleWorkers - 1usize;
       }
       const taskHandle = executor.queueHead;
-      const task = *(taskHandle as * const ExecutorTaskState);
+      const task = *(taskHandle as *const ExecutorTaskState);
       executor.queueHead = task.next;
-      if (isNullIntrinsic<u8>(executor.queueHead as * const u8)) {
+      if (isNullIntrinsic<u8>(executor.queueHead as *const u8)) {
         executor.queueTail = nullPointerIntrinsic<u8>();
       }
       executorWrite(argument, executor);
       mutexUnlock(executorMutex);
-      const groupMutex =( *(task.group as * const TaskGroupState)).mutex;
+      const groupMutex =( *(task.group as *const TaskGroupState)).mutex;
       mutexLock(groupMutex);
-      const group = *(task.group as * const TaskGroupState);
+      const group = *(task.group as *const TaskGroupState);
       const cancelled = group.cancelled !== 0i32;
       mutexUnlock(groupMutex);
       if (cancelled) {
@@ -2846,44 +3412,44 @@ function executorWorker(argument: * mut u8): * mut u8 {
       } else {
         asyncWait(task.promise);
       }
-      const completionMutex =( *(task.group as * const TaskGroupState)).mutex;
+      const completionMutex =( *(task.group as *const TaskGroupState)).mutex;
       mutexLock(completionMutex);
-      let completionGroup = *(task.group as * const TaskGroupState);
+      let completionGroup = *(task.group as *const TaskGroupState);
       if (completionGroup.active !== 0usize) {
         completionGroup.active = completionGroup.active - 1usize;
       }
-      storeRawIntrinsic<TaskGroupState>(task.group as * mut TaskGroupState, completionGroup);
+      storeRawIntrinsic<TaskGroupState>(task.group as *mut TaskGroupState, completionGroup);
       conditionBroadcast(completionGroup.condition);
       mutexUnlock(completionMutex);
     }
     return nullPointerIntrinsic<u8>();
   }
 }
-function executorStartWorker(argument: * mut u8): i32 {
+function executorStartWorker(argument: *mut u8): i32 {
   unsafe {
     const threadStorage = runtimeTryAlloc(sizeOfIntrinsic<u64>());
-    if (isNullIntrinsic<u8>(threadStorage as * const u8)) {
+    if (isNullIntrinsic<u8>(threadStorage as *const u8)) {
       return - 12i32;
     }
-    const status = pthread_create(threadStorage as * mut u64, nullPointerIntrinsic<u8>()as * const u8, executorWorker as * mut u8, argument);
+    const status = pthread_create(threadStorage as *mut u64, nullPointerIntrinsic<u8>()as *const u8, executorWorker as *mut u8, argument);
     if (status === 0i32) {
-      const thread = *(threadStorage as * const u64);
+      const thread = *(threadStorage as *const u64);
       pthread_detach(thread);
     }
     runtimeFree(threadStorage);
     return status;
   }
 }
-function executorInitialize(argument: * mut u8): void {
+function executorInitialize(argument: *mut u8): void {
   unsafe {
     const handle = runtimeTryAlloc(sizeOfIntrinsic<ExecutorState>());
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       executorHandle = nullPointerIntrinsic<u8>();
       return;
     }
     const mutex = mutexCreate();
     const condition = conditionCreate();
-    if (isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+    if (isNullIntrinsic<u8>(mutex as *const u8) || isNullIntrinsic<u8>(condition as *const u8)) {
       mutexDestroy(mutex);
       conditionDestroy(condition);
       runtimeFree(handle);
@@ -2897,16 +3463,16 @@ function executorInitialize(argument: * mut u8): void {
     executorHandle = handle;
   }
 }
-function executorGet(): * mut u8 {
+function executorGet(): *mut u8 {
   unsafe {
-    if (atomicUsizeLoad(( & executorState)as * const usize, MemoryOrder.Acquire) !== 2usize) {
-      let expected: usize = 0usize;
-      if (atomicUsizeCompareExchange(( & mut executorState)as * mut usize,( & mut expected)as * mut usize, 1usize, MemoryOrder.Acquire, MemoryOrder.Relaxed)) {
+    if (atomicUsizeLoad(( &executorState)as *const usize, MemoryOrder.Acquire) !== 2usize) {
+      let expected: usize = 0;
+      if (atomicUsizeCompareExchange(( &mut executorState)as *mut usize,( &mut expected)as *mut usize, 1usize, MemoryOrder.Acquire, MemoryOrder.Relaxed)) {
         executorInitialize(nullPointerIntrinsic<u8>());
-        let initializing: usize = 1usize;
-        atomicUsizeCompareExchange(( & mut executorState)as * mut usize,( & mut initializing)as * mut usize, 2usize, MemoryOrder.Release, MemoryOrder.Relaxed);
+        let initializing: usize = 1;
+        atomicUsizeCompareExchange(( &mut executorState)as *mut usize,( &mut initializing)as *mut usize, 2usize, MemoryOrder.Release, MemoryOrder.Relaxed);
       } else {
-        while (atomicUsizeLoad(( & executorState)as * const usize, MemoryOrder.Acquire) === 1usize) {
+        while (atomicUsizeLoad(( &executorState)as *const usize, MemoryOrder.Acquire) === 1usize) {
           threadYield();
         }
       }
@@ -2914,25 +3480,25 @@ function executorGet(): * mut u8 {
     return executorHandle;
   }
 }
-function executorEnqueue(executorHandle: * mut u8, taskHandle: * mut u8): i32 {
+function executorEnqueue(executorHandle: *mut u8, taskHandle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(executorHandle as * const u8) || isNullIntrinsic<u8>(taskHandle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(executorHandle as *const u8) || isNullIntrinsic<u8>(taskHandle as *const u8)) {
+      return 22;
     }
-    const executorMutex =( *(executorHandle as * const ExecutorState)).mutex;
+    const executorMutex =( *(executorHandle as *const ExecutorState)).mutex;
     mutexLock(executorMutex);
     let executor = executorRead(executorHandle);
-    let task = *(taskHandle as * const ExecutorTaskState);
+    let task = *(taskHandle as *const ExecutorTaskState);
     task.next = nullPointerIntrinsic<u8>();
-    if (isNullIntrinsic<u8>(executor.queueTail as * const u8)) {
+    if (isNullIntrinsic<u8>(executor.queueTail as *const u8)) {
       executor.queueHead = taskHandle;
     } else {
-      let tail = *(executor.queueTail as * const ExecutorTaskState);
+      let tail = *(executor.queueTail as *const ExecutorTaskState);
       tail.next = taskHandle;
-      storeRawIntrinsic<ExecutorTaskState>(executor.queueTail as * mut ExecutorTaskState, tail);
+      storeRawIntrinsic<ExecutorTaskState>(executor.queueTail as *mut ExecutorTaskState, tail);
     }
     executor.queueTail = taskHandle;
-    storeRawIntrinsic<ExecutorTaskState>(taskHandle as * mut ExecutorTaskState, task);
+    storeRawIntrinsic<ExecutorTaskState>(taskHandle as *mut ExecutorTaskState, task);
     let startWorker = false;
     if (executor.idleWorkers === 0usize && executor.workerCount<64usize) {
       executor.workerCount = executor.workerCount + 1usize;
@@ -2944,18 +3510,18 @@ function executorEnqueue(executorHandle: * mut u8, taskHandle: * mut u8): i32 {
     if (startWorker) {
       executorStartWorker(executorHandle);
     }
-    return 0i32;
+    return 0;
   }
 }
-export function taskGroupCreate(): * mut u8 {
+export function taskGroupCreate(): *mut u8 {
   unsafe {
     const handle = runtimeTryAlloc(sizeOfIntrinsic<TaskGroupState>());
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
       return nullPointerIntrinsic<u8>();
     }
     const mutex = mutexCreate();
     const condition = conditionCreate();
-    if (isNullIntrinsic<u8>(mutex as * const u8) || isNullIntrinsic<u8>(condition as * const u8)) {
+    if (isNullIntrinsic<u8>(mutex as *const u8) || isNullIntrinsic<u8>(condition as *const u8)) {
       mutexDestroy(mutex);
       conditionDestroy(condition);
       runtimeFree(handle);
@@ -2964,55 +3530,55 @@ export function taskGroupCreate(): * mut u8 {
     const state: TaskGroupState = {
       mutex: mutex, condition: condition, cancelled: 0i32, active: 0usize, allTasks: nullPointerIntrinsic<u8>(), closing: 0i32,
     };
-    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    storeRawIntrinsic<TaskGroupState>(handle as *mut TaskGroupState, state);
     return handle;
   }
 }
-export function taskGroupCancel(handle: * mut u8): i32 {
+export function taskGroupCancel(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
-    const groupMutex =( *(handle as * const TaskGroupState)).mutex;
+    const groupMutex =( *(handle as *const TaskGroupState)).mutex;
     mutexLock(groupMutex);
-    let state = *(handle as * const TaskGroupState);
+    let state = *(handle as *const TaskGroupState);
     state.cancelled = 1i32;
-    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    storeRawIntrinsic<TaskGroupState>(handle as *mut TaskGroupState, state);
     conditionBroadcast(state.condition);
     mutexUnlock(groupMutex);
-    return 0i32;
+    return 0;
   }
 }
-export function taskGroupIsCancelled(handle: * mut u8): i32 {
+export function taskGroupIsCancelled(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 1i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 1;
     }
-    const groupMutex =( *(handle as * const TaskGroupState)).mutex;
+    const groupMutex =( *(handle as *const TaskGroupState)).mutex;
     mutexLock(groupMutex);
-    const cancelled =( *(handle as * const TaskGroupState)).cancelled;
+    const cancelled =( *(handle as *const TaskGroupState)).cancelled;
     mutexUnlock(groupMutex);
     return cancelled;
   }
 }
-export function taskGroupSpawn(handle: * mut u8, promise: * mut u8): i32 {
+export function taskGroupSpawn(handle: *mut u8, promise: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8) || isNullIntrinsic<u8>(promise as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8) || isNullIntrinsic<u8>(promise as *const u8)) {
+      return 22;
     }
     const executor = executorGet();
-    if (isNullIntrinsic<u8>(executor as * const u8)) {
+    if (isNullIntrinsic<u8>(executor as *const u8)) {
       asyncDestroy(promise);
       return - 12i32;
     }
     const taskHandle = runtimeTryAlloc(sizeOfIntrinsic<ExecutorTaskState>());
-    if (isNullIntrinsic<u8>(taskHandle as * const u8)) {
+    if (isNullIntrinsic<u8>(taskHandle as *const u8)) {
       asyncDestroy(promise);
       return - 12i32;
     }
-    const groupMutex =( *(handle as * const TaskGroupState)).mutex;
+    const groupMutex =( *(handle as *const TaskGroupState)).mutex;
     mutexLock(groupMutex);
-    let group = *(handle as * const TaskGroupState);
+    let group = *(handle as *const TaskGroupState);
     if (group.cancelled !== 0i32 || group.closing !== 0i32) {
       mutexUnlock(groupMutex);
       runtimeFree(taskHandle);
@@ -3028,10 +3594,10 @@ export function taskGroupSpawn(handle: * mut u8, promise: * mut u8): i32 {
     const task: ExecutorTaskState = {
       group: handle, promise: promise, next: nullPointerIntrinsic<u8>(), allNext: group.allTasks,
     };
-    storeRawIntrinsic<ExecutorTaskState>(taskHandle as * mut ExecutorTaskState, task);
+    storeRawIntrinsic<ExecutorTaskState>(taskHandle as *mut ExecutorTaskState, task);
     group.allTasks = taskHandle;
     group.active = group.active + 1usize;
-    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, group);
+    storeRawIntrinsic<TaskGroupState>(handle as *mut TaskGroupState, group);
     mutexUnlock(groupMutex);
     const enqueueStatus = executorEnqueue(executor, taskHandle);
     if (enqueueStatus !== 0i32) {
@@ -3039,48 +3605,66 @@ export function taskGroupSpawn(handle: * mut u8, promise: * mut u8): i32 {
       runtimeFree(taskHandle);
       return enqueueStatus;
     }
-    return 0i32;
+    return 0;
   }
 }
-export function taskGroupWait(handle: * mut u8): i32 {
+export function taskGroupWait(handle: *mut u8): i32 {
   unsafe {
-    if (isNullIntrinsic<u8>(handle as * const u8)) {
-      return 22i32;
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 22;
     }
-    const groupMutex =( *(handle as * const TaskGroupState)).mutex;
+    const groupMutex =( *(handle as *const TaskGroupState)).mutex;
     mutexLock(groupMutex);
-    let state = *(handle as * const TaskGroupState);
+    let state = *(handle as *const TaskGroupState);
     state.closing = 1i32;
-    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    storeRawIntrinsic<TaskGroupState>(handle as *mut TaskGroupState, state);
     conditionBroadcast(state.condition);
     while (state.active !== 0usize) {
       conditionWait(state.condition, groupMutex);
-      state = *(handle as * const TaskGroupState);
+      state = *(handle as *const TaskGroupState);
     }
     const allTasks = state.allTasks;
     state.allTasks = nullPointerIntrinsic<u8>();
-    storeRawIntrinsic<TaskGroupState>(handle as * mut TaskGroupState, state);
+    storeRawIntrinsic<TaskGroupState>(handle as *mut TaskGroupState, state);
     mutexUnlock(groupMutex);
     let taskHandle = allTasks;
-    while (!isNullIntrinsic<u8>(taskHandle as * const u8)) {
-      const task = *(taskHandle as * const ExecutorTaskState);
+    while (!isNullIntrinsic<u8>(taskHandle as *const u8)) {
+      const task = *(taskHandle as *const ExecutorTaskState);
       asyncGroupRelease(task.promise);
       const next = task.allNext;
       runtimeFree(taskHandle);
       taskHandle = next;
     }
-    return 0i32;
+    return 0;
   }
 }
-export function taskGroupDestroy(handle: * mut u8): i32 {
+/// Marks a task group as closing and reports whether every queued task has completed.  The
+/// non-blocking operation is used by the async `TaskGroup.close()` loop so an executor worker is
+/// never parked on its own group's condition variable.
+export function taskGroupIsComplete(handle: *mut u8): i32 {
   unsafe {
-    if (!isNullIntrinsic<u8>(handle as * const u8)) {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return 1;
+    }
+    const groupMutex =( *(handle as *const TaskGroupState)).mutex;
+    mutexLock(groupMutex);
+    let state = *(handle as *const TaskGroupState);
+    state.closing = 1i32;
+    const complete = state.active === 0usize;
+    storeRawIntrinsic<TaskGroupState>(handle as *mut TaskGroupState, state);
+    mutexUnlock(groupMutex);
+    return complete?1i32: 0i32;
+  }
+}
+export function taskGroupDestroy(handle: *mut u8): i32 {
+  unsafe {
+    if (!isNullIntrinsic<u8>(handle as *const u8)) {
       taskGroupWait(handle);
-      const state = *(handle as * const TaskGroupState);
+      const state = *(handle as *const TaskGroupState);
       conditionDestroy(state.condition);
       mutexDestroy(state.mutex);
       runtimeFree(handle);
     }
   }
-  return 0i32;
+  return 0;
 }

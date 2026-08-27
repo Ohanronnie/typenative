@@ -1,71 +1,112 @@
-import { ioHandleFromRaw, IoEvent, IoHandle, ReactorError, reactor } from "std/async";
+import { nullPointer } from "std/alloc";
+import { ioHandleFromRaw, IoEvent, IoHandle, ReactorError, sharedReactor } from "std/async";
 import { Bytes, BytesMut } from "std/bytes";
-import { AsyncDisposable, Error } from "std/core";
+import { AsyncDisposable, Disposable, Error } from "std/core";
 import { c_size, c_ssize } from "std/ffi";
 import { Duration } from "std/time";
 
 declare extern "C" {
-  function tn_net_tcp_connect(host: * const u8, port: u16): i32;
-  function tn_net_tcp_listen(host: * const u8, port: u16, backlog: i32): i32;
-  function tn_net_tcp_listen_address(address: * const u8, backlog: i32): i32;
+  function tn_net_tcp_connect(host: *const u8, port: u16): i32;
+  function tn_net_tcp_listen(host: *const u8, port: u16, backlog: i32): i32;
+  function tn_net_tcp_listen_address(address: *const u8, backlog: i32): i32;
   function tn_net_tcp_accept(handle: i32): i32;
   function tn_net_set_nonblocking(handle: i32, enabled: i32): i32;
   function tn_net_shutdown(handle: i32): i32;
-  function tn_net_read(handle: i32, bytes: * mut u8, length: c_size): c_ssize;
-  function tn_net_read_into(handle: i32, bytes: * mut u8, capacity: c_size, length: c_size, received: * mut c_size): i32;
-  function tn_net_write(handle: i32, bytes: * const u8, length: c_size): c_ssize;
-  function tn_net_write_at(handle: i32, bytes: * const u8, offset: c_size, length: c_size, written: * mut c_size): i32;
-  function tn_net_read_exact(handle: i32, bytes: * mut u8, length: c_size): i32;
-  function tn_net_write_all(handle: i32, bytes: * const u8, length: c_size): i32;
+  function tn_net_read(handle: i32, bytes: *mut u8, length: c_size): c_ssize;
+  function tn_net_read_into(handle: i32, bytes: *mut u8, capacity: c_size, length: c_size, received: *mut c_size): i32;
+  function tn_net_write(handle: i32, bytes: *const u8, length: c_size): c_ssize;
+  function tn_net_write_at(handle: i32, bytes: *const u8, offset: c_size, length: c_size, written: *mut c_size): i32;
+  function tn_net_read_exact(handle: i32, bytes: *mut u8, length: c_size): i32;
+  function tn_net_write_all(handle: i32, bytes: *const u8, length: c_size): i32;
   function tn_net_close(handle: i32): i32;
   function tn_net_would_block(code: i32): i32;
-  function tn_net_udp_bind(host: * const u8, port: u16): i32;
-  function tn_net_udp_send(handle: i32, bytes: * const u8, length: c_size, host: * const u8, port: u16): i32;
-  function tn_net_udp_recv(handle: i32, bytes: * mut u8, length: c_size): c_ssize;
-  function tn_net_resolve_ipv4(host: * const u8, address: * mut u32): i32;
+  function tn_net_udp_bind(host: *const u8, port: u16): i32;
+  function tn_net_udp_send(handle: i32, bytes: *const u8, length: c_size, host: *const u8, port: u16): i32;
+  function tn_net_udp_recv(handle: i32, bytes: *mut u8, length: c_size): c_ssize;
+  function tn_net_resolve_ipv4(host: *const u8, address: *mut u32): i32;
+  function tn_thread_yield(): void;
 }
 function wouldBlock(code: i32): bool {
   unsafe {
-    return tn_net_would_block(code) !== 0i32;
+    return tn_net_would_block(code) !== 0;
   }
 }
-function waitFor(handle: i32, event: IoEvent): void throws NetworkError {
-  let poller = reactor();
+function emptyMutPointer(): *mut u8 {
   unsafe {
-    const io = ioHandleFromRaw(handle);
-    try {
-      try poller.watch(io, event);
-      while (true) {
-        const ready = try poller.poll(Duration.fromSeconds((1u64 << 31u64) - 1u64));
-        if (ready !== undefined && ready!.handle.nativeValue() === handle) {
-          break;
-        }
-      }
-    } catch (error: ReactorError) {
-      poller.close();
-      throw networkError(error.rawCode);
-    }
+    return nullPointer<u8>();
   }
-  poller.close();
+}
+function emptyConstPointer(): *const u8 {
+  unsafe {
+    return nullPointer<u8>()as *const u8;
+  }
+}
+async function yieldToExecutor(): Promise<void, never> {
+  unsafe {
+    tn_thread_yield();
+  }
+  return;
+}
+function ioHandle(handle: i32): IoHandle {
+  unsafe {
+    return ioHandleFromRaw(handle);
+  }
+}
+async function waitFor(handle: i32, event: IoEvent): Promise<void, NetworkError> {
+  let poller = sharedReactor();
+  const io = ioHandle(handle);
+  try {
+    try poller.watch(io, event);
+    while (true) {
+      const ready = try poller.pollFor(io, event, Duration.fromMilliseconds(100));
+      if (ready !== undefined) {
+        try poller.unwatch(io);
+        break;
+      }
+      await yieldToExecutor();
+    }
+  } catch (error: ReactorError) {
+    throw networkError(error.rawCode);
+  }
+  return;
+}
+function waitForSync(handle: i32, event: IoEvent): void throws NetworkError {
+  let poller = sharedReactor();
+  const io = ioHandle(handle);
+  try {
+    try poller.watch(io, event);
+    while (true) {
+      const ready = try poller.pollFor(io, event, Duration.fromMilliseconds(100));
+      if (ready !== undefined) {
+        try poller.unwatch(io);
+        break;
+      }
+      unsafe {
+        tn_thread_yield();
+      }
+    }
+  } catch (error: ReactorError) {
+    throw networkError(error.rawCode);
+  }
 }
 export struct Endpoint {
-  public host: & str;
+  public host: &str;
   public port: u16;
 }
-export struct TcpStream {
+export struct TcpStream implements Disposable {
   private handle: i32;
   private closed: bool;
   public isOpen(): bool {
-    return !this.closed && this.handle >= 0i32;
+    return !this.closed && this.handle >= 0;
   }
   public setNonblocking(enabled: bool): void throws NetworkError {
-    let mode: i32 = 0i32;
+    let mode: i32 = 0;
     if (enabled) {
-      mode = 1i32;
+      mode = 1;
     }
     unsafe {
       const status = tn_net_set_nonblocking(this.handle, mode);
-      if (status !== 0i32) {
+      if (status !== 0) {
         throw networkError(status);
       }
     }
@@ -73,27 +114,27 @@ export struct TcpStream {
   public shutdown(): void throws NetworkError {
     unsafe {
       const status = tn_net_shutdown(this.handle);
-      if (status !== 0i32) {
+      if (status !== 0) {
         throw networkError(status);
       }
     }
   }
-  private readRaw(bytes: * mut u8, length: usize): isize {
+  private readRaw(bytes: *mut u8, length: usize): isize {
     unsafe {
       return tn_net_read(this.handle, bytes, length);
     }
   }
-  private writeRaw(bytes: * const u8, length: usize): isize {
+  private writeRaw(bytes: *const u8, length: usize): isize {
     unsafe {
       return tn_net_write(this.handle, bytes, length);
     }
   }
-  private readExactRaw(bytes: * mut u8, length: usize): i32 {
+  private readExactRaw(bytes: *mut u8, length: usize): i32 {
     unsafe {
       return tn_net_read_exact(this.handle, bytes, length);
     }
   }
-  private writeAllRaw(bytes: * const u8, length: usize): i32 {
+  private writeAllRaw(bytes: *const u8, length: usize): i32 {
     unsafe {
       return tn_net_write_all(this.handle, bytes, length);
     }
@@ -101,7 +142,7 @@ export struct TcpStream {
   private acceptRaw(): TcpStream throws NetworkError {
     unsafe {
       const handle = tn_net_tcp_accept(this.handle);
-      if (handle<0i32) {
+      if (handle<0) {
         throw networkError( - handle);
       }
       return {
@@ -109,31 +150,34 @@ export struct TcpStream {
       };
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.closed) {
       unsafe {
         tn_net_close(this.handle);
       }
     }
   }
-  public async readInto(buffer: & mut BytesMut): Promise<usize, NetworkError> {
+  public async readInto(buffer: &mut BytesMut): Promise<usize, NetworkError> {
     if (buffer.length === buffer.capacity) {
-      let next: usize = 4096usize;
-      if (buffer.capacity !== 0usize) {
-        next = buffer.capacity * 2usize;
+      let next: usize = 4096;
+      if (buffer.capacity !== 0) {
+        next = buffer.capacity * 2;
       }
       buffer.reserve(next);
     }
-    const pointer = buffer.pointer;
+    let pointer: *mut u8 = emptyMutPointer();
+    unsafe {
+      pointer = buffer.nativePointer();
+    }
     const capacity = buffer.capacity;
     const length = buffer.length;
     while (true) {
-      let received: usize = 0usize;
-      let status: i32 = 0i32;
-      unsafe {{status = tn_net_read_into(this.handle, pointer, capacity, length,( & mut received)as * mut usize);
-      }}if (status !== 0i32) {
+      let received: usize = 0;
+      let status: i32 = 0;
+      unsafe {{status = tn_net_read_into(this.handle, pointer, capacity, length,( &mut received)as *mut usize);
+      }}if (status !== 0) {
         if (wouldBlock(status)) {
-          try waitFor(this.handle, IoEvent.Readable);
+          try await waitFor(this.handle, IoEvent.Readable);
           continue;
         }
         throw networkError(status);
@@ -141,24 +185,27 @@ export struct TcpStream {
       buffer.length = length + received;
       return received;
     }
-    return 0usize;
+    return 0;
   }
-  public async writeAll(buffer: & BytesMut): Promise<void, NetworkError> {
-    let offset: usize = 0usize;
-    const pointer = buffer.pointer;
+  public async writeAll(buffer: &BytesMut): Promise<void, NetworkError> {
+    let offset: usize = 0;
+    let pointer: *mut u8 = emptyMutPointer();
+    unsafe {
+      pointer = buffer.nativePointer();
+    }
     const length = buffer.length;
     while (offset !== length) {
-      let written: usize = 0usize;
-      let status: i32 = 0i32;
-      unsafe {{status = tn_net_write_at(this.handle, pointer as * const u8, offset, length - offset,( & mut written)as * mut usize);
-      }}if (status === 0i32) {
-        if (written === 0usize) {
-          throw networkError(5i32);
+      let written: usize = 0;
+      let status: i32 = 0;
+      unsafe {{status = tn_net_write_at(this.handle, pointer as *const u8, offset, length - offset,( &mut written)as *mut usize);
+      }}if (status === 0) {
+        if (written === 0) {
+          throw networkError(5);
         }
         offset = offset + written;
       } else {
         if (wouldBlock(status)) {
-          try waitFor(this.handle, IoEvent.Writable);
+          try await waitFor(this.handle, IoEvent.Writable);
           continue;
         }
         throw networkError(status);
@@ -166,23 +213,78 @@ export struct TcpStream {
     }
     return;
   }
-  public tryWriteAll(buffer: & mut BytesMut): bool throws NetworkError {
-    let offset: usize = 0usize;
+  public async writeBytes(buffer: Bytes): Promise<void, NetworkError> {
+    let offset: usize = 0;
+    let pointer: *const u8 = emptyConstPointer();
+    unsafe {
+      pointer = buffer.nativePointer();
+    }
     const length = buffer.length;
     while (offset !== length) {
-      let written: usize = 0usize;
-      let status: i32 = 0i32;
+      let written: usize = 0;
+      let status: i32 = 0;
       unsafe {
-        status = tn_net_write_at(this.handle, buffer.pointer as * const u8, offset, length - offset,( & mut written)as * mut usize);
+        status = tn_net_write_at(this.handle, pointer, offset, length - offset,( &mut written)as *mut usize);
       }
-      if (status === 0i32) {
-        if (written === 0usize) {
-          throw networkError(5i32);
+      if (status === 0) {
+        if (written === 0) {
+          throw networkError(5);
         }
         offset = offset + written;
       } else {
         if (wouldBlock(status)) {
-          if (offset !== 0usize) {
+          try await waitFor(this.handle, IoEvent.Writable);
+          continue;
+        }
+        throw networkError(status);
+      }
+    }
+    return;
+  }
+  public tryWriteBytes(buffer: Bytes): bool throws NetworkError {
+    let offset: usize = 0;
+    let pointer: *const u8 = emptyConstPointer();
+    unsafe {
+      pointer = buffer.nativePointer();
+    }
+    const length = buffer.length;
+    while (offset !== length) {
+      let written: usize = 0;
+      let status: i32 = 0;
+      unsafe {
+        status = tn_net_write_at(this.handle, pointer, offset, length - offset,( &mut written)as *mut usize);
+      }
+      if (status === 0) {
+        if (written === 0) {
+          throw networkError(5);
+        }
+        offset = offset + written;
+      } else {
+        if (wouldBlock(status)) {
+          return false;
+        }
+        throw networkError(status);
+      }
+    }
+    return true;
+  }
+  public tryWriteAll(buffer: &mut BytesMut): bool throws NetworkError {
+    let offset: usize = 0;
+    const length = buffer.length;
+    while (offset !== length) {
+      let written: usize = 0;
+      let status: i32 = 0;
+      unsafe {
+        status = tn_net_write_at(this.handle, buffer.nativePointer()as *const u8, offset, length - offset,( &mut written)as *mut usize);
+      }
+      if (status === 0) {
+        if (written === 0) {
+          throw networkError(5);
+        }
+        offset = offset + written;
+      } else {
+        if (wouldBlock(status)) {
+          if (offset !== 0) {
             buffer.discardPrefix(offset);
           }
           return false;
@@ -190,7 +292,7 @@ export struct TcpStream {
         throw networkError(status);
       }
     }
-    buffer.length = 0usize;
+    buffer.length = 0;
     return true;
   }
   public close(): void {
@@ -211,31 +313,35 @@ export struct UdpSocket {
   private handle: i32;
   private closed: bool;
   public isOpen(): bool {
-    return !this.closed && this.handle >= 0i32;
+    return !this.closed && this.handle >= 0;
   }
   public ioHandle(): IoHandle {
     unsafe {
       return ioHandleFromRaw(this.handle);
     }
   }
-  private sendRaw(bytes: * const u8, length: usize, host: & str, port: u16): i32 {
+  private sendRaw(bytes: *const u8, length: usize, host: &str, port: u16): i32 {
     unsafe {
-      return tn_net_udp_send(this.handle, bytes, length, host as * const u8, port);
+      return tn_net_udp_send(this.handle, bytes, length, host as *const u8, port);
     }
   }
-  private receiveRaw(bytes: * mut u8, length: usize): isize {
+  private receiveRaw(bytes: *mut u8, length: usize): isize {
     unsafe {
       return tn_net_udp_recv(this.handle, bytes, length);
     }
   }
-  public send(bytes: & Bytes, host: & str, port: u16): void throws NetworkError {
+  public send(bytes: &Bytes, host: &str, port: u16): void throws NetworkError {
+    let pointer: *const u8 = emptyConstPointer();
+    unsafe {
+      pointer = bytes.nativePointer();
+    }
     while (true) {
-      const status = this.sendRaw(bytes.pointer, bytes.length, host, port);
-      if (status === 0i32) {
+      const status = this.sendRaw(pointer, bytes.length, host, port);
+      if (status === 0) {
         return;
       }
       if (wouldBlock(status)) {
-        try waitFor(this.handle, IoEvent.Writable);
+        try waitForSync(this.handle, IoEvent.Writable);
         continue;
       }
       throw networkError(status);
@@ -249,7 +355,7 @@ export struct UdpSocket {
       this.closed = true;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     this.close();
   }
 }
@@ -266,8 +372,8 @@ export class TcpListener implements AsyncDisposable {
   private closed: bool;
   public constructor(endpoint: Endpoint)throws NetworkError {
     unsafe {
-      const handle = tn_net_tcp_listen(endpoint.host as * const u8, endpoint.port, 128i32);
-      if (handle<0i32) {
+      const handle = tn_net_tcp_listen(endpoint.host as *const u8, endpoint.port, 128);
+      if (handle<0) {
         throw networkError( - handle);
       }
       this.handle = handle;
@@ -279,27 +385,28 @@ export class TcpListener implements AsyncDisposable {
       return ioHandleFromRaw(this.handle);
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     this.close();
   }
   public async accept(): Promise<TcpStream, NetworkError> {
     while (true) {
+      let handle: i32 = - 1;
       unsafe {
-        const handle = tn_net_tcp_accept(this.handle);
-        if (handle<0i32) {
-          const code = - handle;
-          if (wouldBlock(code)) {
-            try waitFor(this.handle, IoEvent.Readable);
-            continue;
-          }
-          throw networkError(code);
-        }
-        return {
-          handle: handle, closed: false
-        };
+        handle = tn_net_tcp_accept(this.handle);
       }
+      if (handle<0) {
+        const code = - handle;
+        if (wouldBlock(code)) {
+          try await waitFor(this.handle, IoEvent.Readable);
+          continue;
+        }
+        throw networkError(code);
+      }
+      return {
+        handle: handle, closed: false
+      };
     }
-    throw networkError(5i32);
+    throw networkError(5);
   }
   public close(): void {
     if (!this.closed) {
@@ -309,72 +416,54 @@ export class TcpListener implements AsyncDisposable {
       this.closed = true;
     }
   }
-  move async dispose(): Promise<void, never> {
+  public async [Symbol.asyncDispose](): Promise<void, never> {
     this.close();
     return;
   }
 }
 function connectHandle(endpoint: Endpoint): i32 {
   unsafe {
-    return tn_net_tcp_connect(endpoint.host as * const u8, endpoint.port);
+    return tn_net_tcp_connect(endpoint.host as *const u8, endpoint.port);
   }
 }
 function listen(endpoint: Endpoint, backlog: i32): TcpStream {
   unsafe {
     return {
-      handle: tn_net_tcp_listen(endpoint.host as * const u8, endpoint.port, backlog), closed: false
+      handle: tn_net_tcp_listen(endpoint.host as *const u8, endpoint.port, backlog), closed: false
     };
   }
 }
 export function tryConnect(endpoint: Endpoint): TcpStream throws NetworkError {
   const handle = connectHandle(endpoint);
-  if (handle<0i32) {
+  if (handle<0) {
     throw networkError( - handle);
   }
   return {
     handle: handle, closed: false,
   };
 }
-export function setNonblocking(stream: & TcpStream, enabled: bool): void throws NetworkError {
-  try stream.setNonblocking(enabled);
-}
-export function shutdown(stream: & TcpStream): void throws NetworkError {
-  try stream.shutdown();
-}
-export function close(stream: & mut TcpStream): void {
-  stream.close();
-}
-function udpBind(host: & str, port: u16): UdpSocket {
+function udpBind(host: &str, port: u16): UdpSocket {
   unsafe {
     return {
-      handle: tn_net_udp_bind(host as * const u8, port), closed: false
+      handle: tn_net_udp_bind(host as *const u8, port), closed: false
     };
   }
 }
 export function tryListen(endpoint: Endpoint, backlog: i32): TcpListener throws NetworkError {
   return try new TcpListener(endpoint);
 }
-export function tryUdpBind(host: & str, port: u16): UdpSocket throws NetworkError {
+export function tryUdpBind(host: &str, port: u16): UdpSocket throws NetworkError {
   const socket = udpBind(host, port);
   if (!socket.isOpen()) {
-    throw networkError( - 1i32);
+    throw networkError( - 1);
   }
   return socket;
 }
-export function isOpen(stream: & TcpStream): bool {
-  return stream.isOpen();
-}
-export function isUdpOpen(socket: & UdpSocket): bool {
-  return socket.isOpen();
-}
-export function closeUdp(socket: & mut UdpSocket): void {
-  socket.close();
-}
-export function resolveIpv4(host: & static str): u32 throws NetworkError {
-  let address: u32 = 0u32;
+export function resolveIpv4(host: &str): u32 throws NetworkError {
+  let address: u32 = 0;
   unsafe {
-    const status = tn_net_resolve_ipv4(host as * const u8,( & mut address)as * mut u32);
-    if (status !== 0i32) {
+    const status = tn_net_resolve_ipv4(host as *const u8,( &mut address)as *mut u32);
+    if (status !== 0) {
       throw networkError(status);
     }
   }

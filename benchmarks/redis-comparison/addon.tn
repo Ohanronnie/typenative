@@ -3,9 +3,9 @@ import { servePort as serveRedis } from "../../validation/redis/redis-server";
 
 export async function serve(port: u16): Promise<i32, never> {
   try {
-    try await serveRedis(port, 512usize);
+    try await serveRedis(port, 512);
   } catch (error: NetworkError) {
-    return 1i32;
+    return 1;
   }
-  return 0i32;
+  return 0;
 }

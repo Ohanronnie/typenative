@@ -1,33 +1,33 @@
-import { channel, close, destroyChannel, receive, send } from "std/sync";
+import { channel } from "std/sync";
 function main(): i32 {
-  let messages = channel<string>(16usize, 2usize);
-  if (send( & mut messages, String("first")) !== 0i32) {
-    destroyChannel( & mut messages);
-    return 1i32;
+  let messages = channel<string>(16, 2);
+  if (messages.send(String("first")) !== 0) {
+    messages.destroy();
+    return 1;
   }
-  const received = receive<string>( & mut messages);
+  const received = messages.receive();
   if (received === undefined || received! !== "first") {
-    destroyChannel( & mut messages);
-    return 2i32;
+    messages.destroy();
+    return 2;
   }
-  if (send( & mut messages, String("queued")) !== 0i32) {
-    destroyChannel( & mut messages);
-    return 3i32;
+  if (messages.send(String("queued")) !== 0) {
+    messages.destroy();
+    return 3;
   }
-  if (close( & mut messages) !== 0i32) {
-    destroyChannel( & mut messages);
-    return 4i32;
+  if (messages.close() !== 0) {
+    messages.destroy();
+    return 4;
   }
-  if (receive<string>( & mut messages) === undefined) {
-    destroyChannel( & mut messages);
-    return 5i32;
+  if (messages.receive() === undefined) {
+    messages.destroy();
+    return 5;
   }
-  if (receive<string>( & mut messages) !== undefined) {
-    destroyChannel( & mut messages);
-    return 6i32;
+  if (messages.receive() !== undefined) {
+    messages.destroy();
+    return 6;
   }
-  if (destroyChannel( & mut messages) !== 0i32) {
-    return 7i32;
+  if (messages.destroy() !== 0) {
+    return 7;
   }
-  return 42i32;
+  return 42;
 }

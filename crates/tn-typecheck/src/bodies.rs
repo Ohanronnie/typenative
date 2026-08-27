@@ -559,6 +559,28 @@ impl BodyChecker<'_> {
         self.eat(TokenKind::Equal);
         let value = self.expression(0, None);
         let ty = value.as_ref().map_or(Type::Error, |value| value.ty.clone());
+        let protocol_name = if awaited {
+            "AsyncDisposable"
+        } else {
+            "Disposable"
+        };
+        let conforms = standard_interface(self.program, protocol_name).is_some_and(|interface| {
+            nominal_id(&ty).is_some_and(|nominal| {
+                nominal_conforms_to_interface(self.program, nominal, interface)
+            })
+        });
+        if ty != Type::Error && !conforms {
+            self.error(
+                "TYPE_USING_REQUIRES_DISPOSABLE",
+                format!("managed binding requires `{protocol_name}`"),
+                &name_token,
+                if awaited {
+                    "implement `[Symbol.asyncDispose]` and declare `implements AsyncDisposable`"
+                } else {
+                    "implement `[Symbol.dispose]` and declare `implements Disposable`"
+                },
+            );
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.clone(), ty.clone());
         }
@@ -844,6 +866,7 @@ impl BodyChecker<'_> {
         expression
     }
 
+    #[allow(clippy::too_many_lines)]
     fn expression_inner(&mut self, minimum: u8, expected: Option<&Type>) -> Option<ExpressionType> {
         let start = self.index;
         let mut left = self.prefix(expected)?;
@@ -861,6 +884,16 @@ impl BodyChecker<'_> {
             }
             if matches!(self.kind(), Some(TokenKind::Dot | TokenKind::QuestionDot)) {
                 left = self.member_expression(&left);
+                self.record_hir_expression(start, &left);
+                continue;
+            }
+            if self.kind() == Some(TokenKind::LeftBracket)
+                && self.nth(1) == Some(TokenKind::Identifier)
+                && self.nth(2) == Some(TokenKind::Dot)
+                && self.nth(3) == Some(TokenKind::Identifier)
+                && self.nth(4) == Some(TokenKind::RightBracket)
+            {
+                left = self.computed_member_expression(&left);
                 self.record_hir_expression(start, &left);
                 continue;
             }
@@ -1028,7 +1061,11 @@ impl BodyChecker<'_> {
                     );
                 }
                 let value = self.expression(24, None)?;
-                if !value.effects.is_empty()
+                let awaited = promise_like(self.program, &value.ty);
+                let effects = awaited
+                    .as_ref()
+                    .map_or_else(|| value.effects.clone(), |(_, effects)| effects.clone());
+                if !effects.is_empty()
                     && let Some(token) = token.as_ref()
                 {
                     self.error(
@@ -1038,20 +1075,22 @@ impl BodyChecker<'_> {
                         "write `try await` and handle or declare its closed error set",
                     );
                 }
-                Some(value_type(match value.ty {
-                    Type::Promise { result, .. } => *result,
-                    _ => Type::Error,
-                }))
+                Some(value_type(
+                    awaited.map_or(Type::Error, |(result, _)| result),
+                ))
             }
             TokenKind::Try => {
                 let token = self.bump().cloned();
                 if self.eat(TokenKind::Await) {
                     let value = self.expression(24, None)?;
-                    self.record_effects(&value.effects, token.as_ref());
-                    Some(value_type(match value.ty {
-                        Type::Promise { result, .. } => *result,
-                        _ => Type::Error,
-                    }))
+                    let awaited = promise_like(self.program, &value.ty);
+                    let effects = awaited
+                        .as_ref()
+                        .map_or_else(|| value.effects.clone(), |(_, effects)| effects.clone());
+                    self.record_effects(&effects, token.as_ref());
+                    Some(value_type(
+                        awaited.map_or(Type::Error, |(result, _)| result),
+                    ))
                 } else {
                     self.try_prefix_depth += 1;
                     let value = self.expression(24, expected);
@@ -1909,16 +1948,19 @@ impl BodyChecker<'_> {
             };
             self.eat(TokenKind::RightParen);
             if let Some((owner, constructor, _)) = class {
-                if constructor
-                    .as_ref()
-                    .map_or(0, |constructor| constructor.function.parameters.len())
-                    != arguments.len()
-                {
+                let parameters = constructor.as_ref().map_or(&[][..], |constructor| {
+                    constructor.function.parameters.as_slice()
+                });
+                let required = parameters
+                    .iter()
+                    .rposition(|parameter| !matches!(parameter.ty, Type::Optional(_)))
+                    .map_or(0, |index| index + 1);
+                if arguments.len() < required || arguments.len() > parameters.len() {
                     self.error(
                         "TYPE_CONSTRUCTOR_ARGUMENT_MISMATCH",
                         "constructor arguments do not match the class constructor",
                         &token,
-                        "provide one compatible argument for every constructor parameter",
+                        "provide every required constructor argument",
                     );
                 }
                 if let Some(constructor) = constructor {
@@ -2388,7 +2430,31 @@ impl BodyChecker<'_> {
         let Some(name_token) = self.bump().cloned() else {
             return value_type(Type::Error);
         };
-        let name = &self.module.source[name_token.range.clone()];
+        let name = self.module.source[name_token.range.clone()].to_owned();
+        self.resolve_named_member(receiver, optional, &name_token, name)
+    }
+
+    fn computed_member_expression(&mut self, receiver: &ExpressionType) -> ExpressionType {
+        self.eat(TokenKind::LeftBracket);
+        let root = self.text().unwrap_or_default().to_owned();
+        self.bump();
+        self.eat(TokenKind::Dot);
+        let Some(name_token) = self.bump().cloned() else {
+            return value_type(Type::Error);
+        };
+        let member = self.module.source[name_token.range.clone()].to_owned();
+        self.eat(TokenKind::RightBracket);
+        self.resolve_named_member(receiver, false, &name_token, format!("[{root}.{member}]"))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn resolve_named_member(
+        &mut self,
+        receiver: &ExpressionType,
+        optional: bool,
+        name_token: &Token,
+        name: String,
+    ) -> ExpressionType {
         let active_receiver = receiver
             .optional_chain_value
             .as_ref()
@@ -2399,7 +2465,7 @@ impl BodyChecker<'_> {
                 self.error(
                     "TYPE_OPTIONAL_CHAIN_NON_OPTIONAL",
                     "optional chaining requires an optional receiver",
-                    &name_token,
+                    name_token,
                     "remove `?` or use a value whose type includes undefined",
                 );
                 ty
@@ -2415,7 +2481,7 @@ impl BodyChecker<'_> {
             ty => (ty, None),
         };
         if !optional && matches!(base, Type::String | Type::Str) {
-            let resolution = match name {
+            let resolution = match name.as_str() {
                 "length" => Some(ResolvedValue::StringLength),
                 "byteLength" => Some(ResolvedValue::StringByteLength),
                 _ => None,
@@ -2431,16 +2497,16 @@ impl BodyChecker<'_> {
             self.error(
                 "TYPE_UNKNOWN_MEMBER",
                 format!("type {:?} has no member `{name}`", receiver.ty),
-                &name_token,
+                name_token,
                 "use a member declared by this nominal type",
             );
             return value_type(Type::Error);
         };
-        let Some(member) = resolve_member(self.program, id, name) else {
+        let Some(member) = resolve_member(self.program, id, &name) else {
             self.error(
                 "TYPE_UNKNOWN_MEMBER",
                 format!("unknown member `{name}`"),
-                &name_token,
+                name_token,
                 "correct the member name",
             );
             return value_type(Type::Error);
@@ -2450,14 +2516,14 @@ impl BodyChecker<'_> {
                 self.error(
                     "TYPE_STATIC_METHOD_REQUIRES_TYPE",
                     format!("static method `{name}` requires a type qualifier"),
-                    &name_token,
+                    name_token,
                     "call this method through its declaring type",
                 );
             } else if receiver_mode != ReceiverMode::Static && receiver.type_qualifier {
                 self.error(
                     "TYPE_INSTANCE_METHOD_REQUIRES_VALUE",
                     format!("instance method `{name}` requires a value receiver"),
-                    &name_token,
+                    name_token,
                     "call this method through an instance",
                 );
             }
@@ -2466,7 +2532,7 @@ impl BodyChecker<'_> {
             self.error(
                 "TYPE_INACCESSIBLE_MEMBER",
                 format!("member `{name}` is not accessible here"),
-                &name_token,
+                name_token,
                 "use a public member or access it from the declaring type",
             );
         }
@@ -2500,7 +2566,7 @@ impl BodyChecker<'_> {
             value_type(ty)
         };
         expression.callable = callable;
-        expression.call_name = Some(name.to_owned());
+        expression.call_name = Some(name);
         expression.resolution = Some(ResolvedValue::Member(member.id));
         if !chain && !matches!(expression.ty, Type::Function(_)) {
             expression.place.clone_from(&receiver.place);
@@ -2748,6 +2814,7 @@ impl BodyChecker<'_> {
         Some(ty)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_local_primary_type(&mut self) -> Option<Type> {
         Some(match self.kind()? {
             TokenKind::Amp => {
@@ -3319,6 +3386,7 @@ impl BodyChecker<'_> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn callable_index(program: &Program) -> BTreeMap<(ModuleId, String), (DeclarationId, Function)> {
     let mut functions = BTreeMap::new();
     for definition in &program.definitions {
@@ -4058,8 +4126,7 @@ fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
             compatible(program, actual_result, expected_result)
                 && compatible(program, actual_error, expected_error)
         }
-        (Type::String, Type::Str) | (Type::Str, Type::String) => true,
-        (_, Type::Generic(_)) => true,
+        (Type::String, Type::Str) | (Type::Str, Type::String) | (_, Type::Generic(_)) => true,
         _ => false,
     }
 }
@@ -4357,6 +4424,45 @@ fn explicitly_conforms(
         })
 }
 
+fn standard_interface(program: &Program, name: &str) -> Option<DeclarationId> {
+    program.graph.modules.iter().find_map(|module| {
+        program
+            .graph
+            .is_bundled_module(module.id, "core.tn")
+            .then(|| {
+                module.declarations.iter().find_map(|declaration| {
+                    (declaration.kind == tn_hir::DeclarationKind::Interface
+                        && declaration.name.as_deref() == Some(name))
+                    .then_some(declaration.id)
+                })
+            })
+            .flatten()
+    })
+}
+
+fn nominal_conforms_to_interface(
+    program: &Program,
+    mut nominal: DeclarationId,
+    interface: DeclarationId,
+) -> bool {
+    let mut visited = BTreeSet::new();
+    while visited.insert(nominal) {
+        if nominal == interface || explicitly_conforms(program, nominal, interface) {
+            return true;
+        }
+        let Some(DefinitionData::Class {
+            base: Some(base), ..
+        }) = program
+            .definition(nominal)
+            .map(|definition| &definition.data)
+        else {
+            return false;
+        };
+        nominal = *base;
+    }
+    false
+}
+
 fn catch_handles(program: &Program, caught: DeclarationId, effect: DeclarationId) -> bool {
     if caught == effect || class_is_or_extends(program, effect, caught) {
         return true;
@@ -4427,6 +4533,7 @@ fn integer_literal_type(text: &str, expected: Option<&Type>) -> Type {
     }
     match expected {
         Some(ty) if is_integer(ty) => ty.clone(),
+        Some(Type::Optional(inner)) if is_integer(inner) => inner.as_ref().clone(),
         _ => Type::Primitive(PrimitiveType::Isize),
     }
 }
@@ -4439,6 +4546,11 @@ fn float_literal_type(text: &str, expected: Option<&Type>) -> Type {
     } else {
         match expected {
             Some(Type::Primitive(PrimitiveType::F32)) => Type::Primitive(PrimitiveType::F32),
+            Some(Type::Optional(inner))
+                if matches!(inner.as_ref(), Type::Primitive(PrimitiveType::F32)) =>
+            {
+                Type::Primitive(PrimitiveType::F32)
+            }
             _ => Type::Primitive(PrimitiveType::F64),
         }
     }
@@ -4977,6 +5089,29 @@ fn nominal_id(ty: &Type) -> Option<DeclarationId> {
         Type::Nominal(id, _) | Type::DynamicInterface(id, _) => Some(*id),
         _ => None,
     }
+}
+
+fn promise_like(program: &Program, ty: &Type) -> Option<(Type, Vec<DeclarationId>)> {
+    if let Type::Promise {
+        result, effects, ..
+    } = ty
+    {
+        return Some((result.as_ref().clone(), effects.clone()));
+    }
+    let Type::Nominal(declaration, arguments) = ty else {
+        return None;
+    };
+    let item = program.graph.declaration(*declaration)?;
+    let module = program.graph.module(item.module)?;
+    (item.name.as_deref() == Some("Task")
+        && module.path.ends_with("std/async.tn")
+        && arguments.len() == 2)
+        .then(|| {
+            (
+                arguments[0].clone(),
+                tn_hir::promise_effects(&arguments[1], &[]),
+            )
+        })
 }
 
 fn pattern_space(program: &Program, ty: &Type) -> (BTreeMap<String, bool>, bool) {

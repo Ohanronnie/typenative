@@ -1,25 +1,37 @@
-import { Error } from "std/core";
+import { AsyncDisposable, Error } from "std/core";
 import { Duration } from "std/time";
 
 declare extern "C" {
-  function tn_runtime_async_wait(promise: * mut u8): i32;
-  function tn_runtime_async_result(promise: * mut u8): * mut u8;
-  function tn_runtime_async_destroy(promise: * mut u8): i32;
+  function tn_runtime_async_wait(promise: *mut u8): i32;
+  function tn_runtime_async_result(promise: *mut u8): *mut u8;
+  function tn_runtime_async_destroy(promise: *mut u8): i32;
+  function tn_runtime_async_retain(promise: *mut u8): i32;
   function tn_runtime_abort(code: u32): void;
-  function tn_task_group_create(): * mut u8;
-  function tn_task_group_cancel(group: * mut u8): i32;
-  function tn_task_group_is_cancelled(group: * mut u8): i32;
-  function tn_task_group_spawn(group: * mut u8, promise: * mut u8): i32;
-  function tn_task_group_wait(group: * mut u8): i32;
-  function tn_task_group_destroy(group: * mut u8): i32;
-  function tn_reactor_create(): * mut u8;
-  function tn_reactor_watch(reactor: * mut u8, handle: i32, events: i32): i32;
-  function tn_reactor_unwatch(reactor: * mut u8, handle: i32): i32;
-  function tn_reactor_wait(reactor: * mut u8, timeout: u64, ready: * mut i32, events: * mut i32,): i32;
-  function tn_reactor_destroy(reactor: * mut u8): i32;
-  function tn_pointer_is_null(pointer: * const u8): i32;
+  function tn_task_group_create(): *mut u8;
+  function tn_task_group_cancel(group: *mut u8): i32;
+  function tn_task_group_is_cancelled(group: *mut u8): i32;
+  function tn_task_group_spawn(group: *mut u8, promise: *mut u8): i32;
+  function tn_task_group_is_complete(group: *mut u8): i32;
+  function tn_task_group_wait(group: *mut u8): i32;
+  function tn_task_group_destroy(group: *mut u8): i32;
+  function tn_reactor_create(): *mut u8;
+  function tn_reactor_shared(): *mut u8;
+  function tn_reactor_watch(reactor: *mut u8, handle: i32, events: i32): i32;
+  function tn_reactor_unwatch(reactor: *mut u8, handle: i32): i32;
+  function tn_reactor_wait(reactor: *mut u8, timeout: u64, ready: *mut i32, events: *mut i32,): i32;
+  function tn_reactor_wait_for(reactor: *mut u8, handle: i32, events: i32, timeout: u64, readyEvents: *mut i32): i32;
+  function tn_reactor_destroy(reactor: *mut u8): i32;
+  function tn_pointer_is_null(pointer: *const u8): i32;
+  function tn_thread_yield(): void;
 }
-export type Task<T, E > = Promise<T, E>;
+export struct Task<T, E> {
+  private handle: *mut u8;
+  [Symbol.dispose](): void {
+    unsafe {
+      tn_runtime_async_destroy(this.handle);
+    }
+  }
+}
 export enum IoEvent {
   Readable, Writable, Error, Closed,
 }
@@ -43,42 +55,58 @@ function reactorError(rawCode: i32): ReactorError {
 }
 function eventMask(event: IoEvent): i32 {
   return switch(event) {
-    case IoEvent.Readable: 1i32, case IoEvent.Writable: 4i32, case IoEvent.Error: 8i32, case IoEvent.Closed: 16i32,
+    case IoEvent.Readable: 1, case IoEvent.Writable: 4, case IoEvent.Error: 8, case IoEvent.Closed: 16,
   };
 }
 function readyEvent(mask: i32): IoEvent {
-  if ((mask & 1i32) !== 0i32) {
+  if ((mask & 1) !== 0) {
     return IoEvent.Readable;
   }
-  if ((mask & 4i32) !== 0i32) {
+  if ((mask & 4) !== 0) {
     return IoEvent.Writable;
   }
-  if ((mask & 16i32) !== 0i32) {
+  if ((mask & 16) !== 0) {
     return IoEvent.Closed;
   }
   return IoEvent.Error;
 }
 function timeoutMilliseconds(timeout: Duration): u64 {
   const milliseconds = timeout.milliseconds();
-  const maximum =(1u64 << 31u64) - 1u64;
+  const maximum: u64 =(1 << 31) - 1;
   if (milliseconds > maximum) {
     return maximum;
   }
   return milliseconds;
+}
+async function executorYield(): Promise<void, never> {
+  unsafe {
+    tn_thread_yield();
+  }
+  return;
 }
 export unsafe function ioHandleFromRaw(value: i32): IoHandle {
   return {
     value: value,
   };
 }
-export class TaskGroup {
-  private handle: * mut u8;
+function taskFromPromise<T, E>(promise: Promise<T, E >): Task<T, E> {
+  unsafe {
+    if (tn_runtime_async_retain(promise as *mut u8) !== 0) {
+      tn_runtime_abort(12);
+    }
+    return {
+      handle: promise as *mut u8
+    };
+  }
+}
+export class TaskGroup implements AsyncDisposable {
+  private handle: *mut u8;
   private closed: bool;
   public constructor() {
     unsafe {
       this.handle = tn_task_group_create();
-      if (tn_pointer_is_null(this.handle as * const u8) !== 0i32) {
-        tn_runtime_abort(12u32);
+      if (tn_pointer_is_null(this.handle as *const u8) !== 0) {
+        tn_runtime_abort(12);
       }
     }
     this.closed = false;
@@ -89,55 +117,68 @@ export class TaskGroup {
   public cancel(): void {
     unsafe {
       const status = tn_task_group_cancel(this.handle);
-      if (status !== 0i32) {
-        tn_runtime_abort(1u32);
+      if (status !== 0) {
+        tn_runtime_abort(1);
       }
     }
   }
   public isCancelled(): bool {
     unsafe {
-      return tn_task_group_is_cancelled(this.handle) !== 0i32;
+      return tn_task_group_is_cancelled(this.handle) !== 0;
     }
   }
   public spawn<T, E>(promise: Promise<T, E >): Task<T, E> {
     unsafe {
-      const status = tn_task_group_spawn(this.handle, promise as * mut u8);
-      if (status !== 0i32) {
-        tn_runtime_abort(1u32);
+      const status = tn_task_group_spawn(this.handle, promise as *mut u8);
+      if (status !== 0) {
+        tn_runtime_abort(1);
       }
     }
-    return promise;
+    return taskFromPromise(promise);
   }
-  public close(): void {
+  public async close(): Promise<void, never> {
     if (this.closed) {
       return;
     }
+    while (true) {
+      let complete = false;
+      unsafe {
+        complete = tn_task_group_is_complete(this.handle) !== 0;
+      }
+      if (complete) {
+        break;
+      }
+      await executorYield();
+    }
     unsafe {
       const status = tn_task_group_wait(this.handle);
-      if (status !== 0i32) {
-        tn_runtime_abort(1u32);
+      if (status !== 0) {
+        tn_runtime_abort(1);
       }
       const destroyStatus = tn_task_group_destroy(this.handle);
-      if (destroyStatus !== 0i32) {
-        tn_runtime_abort(1u32);
+      if (destroyStatus !== 0) {
+        tn_runtime_abort(1);
       }
     }
     this.closed = true;
+    return;
   }
-  drop(): void {
-    this.close();
+  public async [Symbol.asyncDispose](): Promise<void, never> {
+    await this.close();
+    return;
   }
 }
 export struct Reactor {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private closed: bool;
+  private shared: bool;
   public isClosed(): bool {
     return this.closed;
   }
   public watch(handle: IoHandle, event: IoEvent): void throws ReactorError {
     unsafe {
       const status = tn_reactor_watch(this.handle, handle.nativeValue(), eventMask(event));
-      if (status !== 0i32) {
+      if (status !== 0) {
         throw reactorError(status);
       }
     }
@@ -145,22 +186,22 @@ export struct Reactor {
   public unwatch(handle: IoHandle): void throws ReactorError {
     unsafe {
       const status = tn_reactor_unwatch(this.handle, handle.nativeValue());
-      if (status !== 0i32) {
+      if (status !== 0) {
         throw reactorError(status);
       }
     }
   }
   public poll(timeout: Duration): IoReady | undefined throws ReactorError {
-    let ready: i32 = - 1i32;
-    let events: i32 = 0i32;
-    let status: i32 = 0i32;
-    unsafe {{const readyOutput = & mut ready;
-    const eventsOutput = & mut events;
-    status = tn_reactor_wait(this.handle, timeoutMilliseconds(timeout), readyOutput as * mut i32, eventsOutput as * mut i32,);
-    }}if (status<0i32) {
+    let ready: i32 = - 1;
+    let events: i32 = 0;
+    let status: i32 = 0;
+    unsafe {{const readyOutput = &mut ready;
+    const eventsOutput = &mut events;
+    status = tn_reactor_wait(this.handle, timeoutMilliseconds(timeout), readyOutput as *mut i32, eventsOutput as *mut i32,);
+    }}if (status<0) {
       throw reactorError(status);
     }
-    if (status === 0i32 || ready<0i32) {
+    if (status === 0 || ready<0) {
       return undefined;
     }
     return {
@@ -169,54 +210,81 @@ export struct Reactor {
       }, event: readyEvent(events),
     };
   }
+  public pollFor(handle: IoHandle, event: IoEvent, timeout: Duration): IoEvent | undefined throws ReactorError {
+    let readyEvents: i32 = 0;
+    let status: i32 = 0;
+    unsafe {
+      status = tn_reactor_wait_for(this.handle, handle.nativeValue(), eventMask(event), timeoutMilliseconds(timeout),( &mut readyEvents)as *mut i32,);
+    }
+    if (status<0) {
+      throw reactorError(status);
+    }
+    if (status === 0) {
+      return undefined;
+    }
+    return readyEvent(readyEvents);
+  }
   public close(): void {
     if (this.closed) {
       return;
     }
     unsafe {
-      const status = tn_reactor_destroy(this.handle);
-      if (status !== 0i32) {
-        tn_runtime_abort(1u32);
+      if (!this.shared) {
+        const status = tn_reactor_destroy(this.handle);
+        if (status !== 0) {
+          tn_runtime_abort(1);
+        }
       }
     }
     this.closed = true;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     this.close();
   }
 }
 export function runI32(promise: Promise<i32, never >): i32 {
   unsafe {
-    const handle = promise as * mut u8;
-    if (tn_runtime_async_wait(handle) !== 0i32) {
+    const handle = promise as *mut u8;
+    if (tn_runtime_async_wait(handle) !== 0) {
       tn_runtime_async_destroy(handle);
-      tn_runtime_abort(1u32);
+      tn_runtime_abort(1);
     }
     const result = tn_runtime_async_result(handle);
-    const value = *(result as * const i32);
+    const value = *(result as *const i32);
     return value;
   }
 }
 export function run<T>(promise: Promise<T, never >): T {
   unsafe {
-    const handle = promise as * mut u8;
-    if (tn_runtime_async_wait(handle) !== 0i32) {
+    const handle = promise as *mut u8;
+    if (tn_runtime_async_wait(handle) !== 0) {
       tn_runtime_async_destroy(handle);
-      tn_runtime_abort(1u32);
+      tn_runtime_abort(1);
     }
     const result = tn_runtime_async_result(handle);
-    const value = *(result as * const T);
+    const value = *(result as *const T);
     return value;
   }
 }
 export function reactor(): Reactor {
   unsafe {
     const handle = tn_reactor_create();
-    if (tn_pointer_is_null(handle as * const u8) !== 0i32) {
-      tn_runtime_abort(12u32);
+    if (tn_pointer_is_null(handle as *const u8) !== 0) {
+      tn_runtime_abort(12);
     }
     return {
-      handle: handle, closed: false,
+      handle: handle, closed: false, shared: false,
+    };
+  }
+}
+export function sharedReactor(): Reactor {
+  unsafe {
+    const handle = tn_reactor_shared();
+    if (tn_pointer_is_null(handle as *const u8) !== 0) {
+      tn_runtime_abort(12);
+    }
+    return {
+      handle: handle, closed: false, shared: true,
     };
   }
 }

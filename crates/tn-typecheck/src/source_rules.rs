@@ -84,9 +84,11 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
         }
         let lexed = lex(&module.path.to_string_lossy(), module.source.as_bytes());
         check_attributes(program, module, &lexed.tokens, &mut diagnostics);
+        check_decorator_signatures(program, module, &mut diagnostics);
         check_constant_initializers(program, module.id, &lexed.tokens, &mut diagnostics);
     }
     for definition in &program.definitions {
+        check_public_api(program, definition, &mut diagnostics);
         match &definition.data {
             DefinitionData::Struct {
                 fields, methods, ..
@@ -154,6 +156,217 @@ pub fn check_source_rules(program: &Program) -> CheckResult {
         }
     }
     CheckResult { diagnostics }
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_public_api(
+    program: &Program,
+    definition: &tn_hir::Definition,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(declaration) = program.graph.declaration(definition.declaration) else {
+        return;
+    };
+    // Every module shipped by the standard library or runtime is a trusted implementation
+    // boundary.  Its raw operations are explicitly marked `unsafe` (or are C/OS FFI
+    // declarations); user modules must make the same boundary explicit instead of exporting
+    // pointers or static borrows from safe APIs.
+    let is_bundled = program
+        .graph
+        .module(declaration.module)
+        .is_some_and(|module| {
+            module.path.starts_with(&program.graph.standard_library)
+                || program
+                    .graph
+                    .runtime_root
+                    .as_ref()
+                    .is_some_and(|root| module.path.starts_with(root))
+        });
+    if is_bundled {
+        return;
+    }
+    if declaration.exported
+        && let DefinitionData::Function(function) = &definition.data
+    {
+        check_public_signature(
+            diagnostics,
+            &declaration.span,
+            function.is_unsafe,
+            &function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.ty.clone())
+                .collect::<Vec<_>>(),
+            &function.result,
+        );
+    }
+    let methods = match &definition.data {
+        DefinitionData::Struct {
+            fields, methods, ..
+        } => {
+            if declaration.exported {
+                for field in fields
+                    .iter()
+                    .filter(|field| field.visibility == Visibility::Public)
+                {
+                    if contains_raw_pointer(&field.ty) {
+                        diagnostics.push(diag(
+                            "TYPE_PUBLIC_RAW_POINTER",
+                            "safe public fields cannot expose raw pointers",
+                            &field.span,
+                            "store the pointer behind a typed abstraction",
+                        ));
+                    }
+                    if contains_static_borrow(&field.ty) {
+                        diagnostics.push(diag(
+                            "TYPE_PUBLIC_STATIC_BORROW",
+                            "safe public fields cannot expose static borrows",
+                            &field.span,
+                            "store an owned value instead",
+                        ));
+                    }
+                }
+            }
+            methods.as_slice()
+        }
+        DefinitionData::Class {
+            fields, methods, ..
+        } => {
+            if declaration.exported {
+                for field in fields
+                    .iter()
+                    .filter(|field| field.visibility == Visibility::Public)
+                {
+                    if contains_raw_pointer(&field.ty) {
+                        diagnostics.push(diag(
+                            "TYPE_PUBLIC_RAW_POINTER",
+                            "safe public fields cannot expose raw pointers",
+                            &field.span,
+                            "store the pointer behind a typed abstraction",
+                        ));
+                    }
+                    if contains_static_borrow(&field.ty) {
+                        diagnostics.push(diag(
+                            "TYPE_PUBLIC_STATIC_BORROW",
+                            "safe public fields cannot expose static borrows",
+                            &field.span,
+                            "store an owned value instead",
+                        ));
+                    }
+                }
+            }
+            methods.as_slice()
+        }
+        DefinitionData::Enum { methods, .. }
+        | DefinitionData::Interface { methods }
+        | DefinitionData::Implementation { methods, .. }
+        | DefinitionData::Extern { functions: methods } => methods.as_slice(),
+        _ => &[],
+    };
+    for method in methods
+        .iter()
+        .filter(|method| method.visibility == Visibility::Public)
+    {
+        if declaration.exported {
+            check_public_signature(
+                diagnostics,
+                &method.span,
+                method.function.is_unsafe,
+                &method
+                    .function
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect::<Vec<_>>(),
+                &method.function.result,
+            );
+        }
+    }
+}
+
+fn check_public_signature(
+    diagnostics: &mut Vec<Diagnostic>,
+    span: &SourceSpan,
+    unsafe_api: bool,
+    parameters: &[Type],
+    result: &Type,
+) {
+    if !unsafe_api && (parameters.iter().any(contains_raw_pointer) || contains_raw_pointer(result))
+    {
+        diagnostics.push(diag(
+            "TYPE_PUBLIC_RAW_POINTER",
+            "safe public APIs cannot expose raw pointers",
+            span,
+            "mark the declaration unsafe or wrap the pointer in a typed value",
+        ));
+    }
+    if !unsafe_api
+        && (parameters.iter().any(contains_static_borrow) || contains_static_borrow(result))
+    {
+        diagnostics.push(diag(
+            "TYPE_PUBLIC_STATIC_BORROW",
+            "safe public APIs cannot expose static borrows",
+            span,
+            "return an owned value or mark the declaration unsafe",
+        ));
+    }
+}
+
+fn contains_raw_pointer(ty: &Type) -> bool {
+    match ty {
+        Type::RawPointer { .. } => true,
+        Type::Reference { referent, .. }
+        | Type::Optional(referent)
+        | Type::Array(referent, _)
+        | Type::Slice(referent) => contains_raw_pointer(referent),
+        Type::Function(function) => {
+            function.parameters.iter().any(contains_raw_pointer)
+                || contains_raw_pointer(&function.result)
+        }
+        Type::Tuple(elements) | Type::Template(elements) => {
+            elements.iter().any(contains_raw_pointer)
+        }
+        Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
+            arguments.iter().any(contains_raw_pointer)
+        }
+        Type::Promise { result, error, .. } => {
+            contains_raw_pointer(result) || contains_raw_pointer(error)
+        }
+        Type::ErrorUnion(_)
+        | Type::Primitive(_)
+        | Type::Str
+        | Type::String
+        | Type::Generic(_)
+        | Type::Lifetime(_)
+        | Type::Error
+        | Type::Unknown => false,
+    }
+}
+
+fn contains_static_borrow(ty: &Type) -> bool {
+    match ty {
+        Type::Reference {
+            lifetime, referent, ..
+        } => lifetime == "static" || contains_static_borrow(referent),
+        Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+            contains_static_borrow(inner)
+        }
+        Type::Function(function) => {
+            function.parameters.iter().any(contains_static_borrow)
+                || contains_static_borrow(&function.result)
+        }
+        Type::Tuple(elements) | Type::Template(elements) => {
+            elements.iter().any(contains_static_borrow)
+        }
+        Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
+            arguments.iter().any(contains_static_borrow)
+        }
+        Type::Promise { result, error, .. } => {
+            contains_static_borrow(result) || contains_static_borrow(error)
+        }
+        Type::RawPointer { pointee, .. } => contains_static_borrow(pointee),
+        _ => false,
+    }
 }
 
 pub fn is_c_abi_type(program: &Program, ty: &Type) -> bool {
@@ -301,26 +514,187 @@ fn check_attributes(
 }
 
 fn user_decorator_exists(program: &Program, module: &tn_hir::Module, name: &str) -> bool {
+    resolve_user_decorator(program, module, name).is_some()
+}
+
+fn resolve_user_decorator<'program>(
+    program: &'program Program,
+    module: &tn_hir::Module,
+    name: &str,
+) -> Option<&'program tn_hir::Function> {
     if module.declarations.iter().any(|declaration| {
         declaration.kind == DeclarationKind::Function && declaration.name.as_deref() == Some(name)
     }) {
-        return true;
+        let declaration = module.declarations.iter().find(|declaration| {
+            declaration.kind == DeclarationKind::Function
+                && declaration.name.as_deref() == Some(name)
+        })?;
+        return program
+            .definition(declaration.id)
+            .and_then(|definition| match &definition.data {
+                DefinitionData::Function(function) => Some(function),
+                _ => None,
+            });
     }
-    module.imports.iter().any(|import| {
+    module.imports.iter().find_map(|import| {
         let tn_hir::ImportClause::Named(names) = &import.clause else {
-            return false;
+            return None;
         };
-        let Some(imported) = names.iter().find(|item| item.local == name) else {
-            return false;
-        };
-        program.graph.module(import.target).is_some_and(|target| {
-            target.declarations.iter().any(|declaration| {
-                declaration.kind == DeclarationKind::Function
-                    && declaration.exported
-                    && declaration.name.as_deref() == Some(imported.imported.as_str())
-            })
+        let imported = names.iter().find(|item| item.local == name)?;
+        program.graph.module(import.target).and_then(|target| {
+            target
+                .declarations
+                .iter()
+                .find(|declaration| {
+                    declaration.kind == DeclarationKind::Function
+                        && declaration.exported
+                        && declaration.name.as_deref() == Some(imported.imported.as_str())
+                })
+                .and_then(|declaration| program.definition(declaration.id))
+                .and_then(|definition| match &definition.data {
+                    DefinitionData::Function(function) => Some(function),
+                    _ => None,
+                })
         })
     })
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_decorator_signatures(
+    program: &Program,
+    module: &tn_hir::Module,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        // Decorators are deliberately limited to class/struct elements.  A declaration-level
+        // attribute cannot safely manufacture a new nominal type or alter a top-level function's
+        // ABI, so report it instead of silently carrying metadata that no backend consumes.
+        for attribute in &declaration.attributes {
+            diagnostics.push(diag(
+                "TYPE_UNSUPPORTED_DECORATOR_TARGET",
+                format!(
+                    "decorator `@{}` may only be applied to a class or struct member",
+                    attribute.name
+                ),
+                &attribute.span,
+                "move the decorator to a supported method or constructor",
+            ));
+            let Some(function) = resolve_user_decorator(program, module, &attribute.name) else {
+                continue;
+            };
+            let valid_arity = matches!(function.parameters.len(), 1 | 2);
+            let accepts_target = function
+                .parameters
+                .first()
+                .is_some_and(|parameter| parameter.ty == Type::Unknown);
+            let returns_target = function.result == Type::Unknown;
+            if valid_arity
+                && accepts_target
+                && returns_target
+                && function.effects.is_empty()
+                && !function.is_async
+                && !function.is_unsafe
+            {
+                continue;
+            }
+            diagnostics.push(diag(
+                "TYPE_INVALID_DECORATOR_SIGNATURE",
+                format!(
+                    "decorator `@{}` is not callable for this declaration",
+                    attribute.name
+                ),
+                &attribute.span,
+                "use a synchronous safe `(unknown) => unknown` decorator, with an optional context parameter",
+            ));
+        }
+        let Some(definition) = program.definition(declaration.id) else {
+            continue;
+        };
+        let methods = match &definition.data {
+            DefinitionData::Struct { methods, .. }
+            | DefinitionData::Enum { methods, .. }
+            | DefinitionData::Interface { methods }
+            | DefinitionData::Class { methods, .. }
+            | DefinitionData::Implementation { methods, .. }
+            | DefinitionData::Extern { functions: methods } => methods.as_slice(),
+            _ => &[],
+        };
+        for method in methods {
+            if method.name == "drop" {
+                diagnostics.push(diag(
+                    "TYPE_OBSOLETE_DROP_METHOD",
+                    "source-visible `drop()` methods are not part of canonical TypeNative",
+                    &method.span,
+                    "use automatic destruction or implement [Symbol.dispose] for an external resource",
+                ));
+            }
+            for attribute in &method.attributes {
+                let Some(decorator) = resolve_user_decorator(program, module, &attribute.name)
+                else {
+                    continue;
+                };
+                let target = Type::Function(FunctionType {
+                    parameters: method
+                        .function
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.ty.clone())
+                        .collect(),
+                    result: Box::new(method.function.result.clone()),
+                    effects: method.function.effects.clone(),
+                    generics: method
+                        .function
+                        .generics
+                        .iter()
+                        .map(|parameter| tn_hir::GenericConstraint {
+                            name: parameter.name.clone(),
+                            namespace: parameter.namespace,
+                            bounds: parameter.bounds.clone(),
+                        })
+                        .collect(),
+                    is_async: method.function.is_async,
+                    is_unsafe: method.function.is_unsafe,
+                });
+                let valid_context = decorator.parameters.get(1).is_none_or(|parameter| {
+                    nominal_name(program, &parameter.ty) == Some("ClassMethodDecoratorContext")
+                });
+                let valid = matches!(decorator.parameters.len(), 1 | 2)
+                    && decorator
+                        .parameters
+                        .first()
+                        .is_some_and(|parameter| parameter.ty == target)
+                    && decorator.result == target
+                    && valid_context
+                    && decorator.effects.is_empty()
+                    && !decorator.is_async
+                    && !decorator.is_unsafe
+                    && method.function.effects.is_empty()
+                    && !method.function.is_async
+                    && !method.function.is_generator;
+                if !valid {
+                    diagnostics.push(diag(
+                        "TYPE_INVALID_DECORATOR_SIGNATURE",
+                        format!(
+                            "decorator `@{}` cannot wrap method `{}`",
+                            attribute.name, method.name
+                        ),
+                        &attribute.span,
+                        "accept and return the exact method function type, with an optional ClassMethodDecoratorContext parameter",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn nominal_name<'a>(program: &'a Program, ty: &Type) -> Option<&'a str> {
+    let Type::Nominal(declaration, _) = ty else {
+        return None;
+    };
+    program
+        .graph
+        .declaration(*declaration)
+        .and_then(|declaration| declaration.name.as_deref())
 }
 
 fn check_constant_initializers(

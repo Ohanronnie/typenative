@@ -6,7 +6,7 @@ struct Counter {
 }
 function main(): i32 {
   const counter: Counter = {
-    value: 35i32
+    value: 35
   };
-  return counter.getValue() + 7i32;
+  return counter.getValue() + 7;
 }

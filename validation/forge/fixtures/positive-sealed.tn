@@ -1,4 +1,3 @@
-
 interface LocalOnly {
 }
 struct LocalConformer implements LocalOnly {

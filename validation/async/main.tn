@@ -4,16 +4,16 @@ declare extern "C" {
 }
 async function coldProbe(): Promise<i32, never> {
   unsafe {
-    tn_runtime_abort(77u32);
+    tn_runtime_abort(77);
   }
-  return 0i32;
+  return 0;
 }
 async function immediate(value: i32): Promise<i32, never> {
-  return value + 1i32;
+  return value + 1;
 }
 async function caller(): Promise<i32, never> {
-  const value = await immediate(41i32);
-  return value + 1i32;
+  const value = await immediate(41);
+  return value + 1;
 }
 function main(): i32 {
   const cold = coldProbe();

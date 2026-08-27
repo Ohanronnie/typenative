@@ -32,29 +32,29 @@ export struct ParsedCommand {
     if (index >= this.count) {
       return undefined;
     }
-    if (index === 0usize) {
+    if (index === 0) {
       return this.frame.trySlice(this.firstStart, this.firstEnd);
     }
-    if (index === 1usize) {
+    if (index === 1) {
       return this.frame.trySlice(this.secondStart, this.secondEnd);
     }
-    if (index === 2usize) {
+    if (index === 2) {
       return this.frame.trySlice(this.thirdStart, this.thirdEnd);
     }
-    const countEnd = lineEnd( & this.frame, this.start + 1usize)!;
-    let offset = countEnd + 2usize;
-    let current: usize = 0usize;
+    const countEnd = lineEnd( &this.frame, this.start + 1)!;
+    let offset = countEnd + 2;
+    let current: usize = 0;
     while (current <= index) {
-      const lengthEnd = lineEnd( & this.frame, offset + 1usize)!;
-      const lengthView = this.frame.trySlice(offset + 1usize, lengthEnd)!;
-      const length = parseUnsigned( & lengthView)!;
-      const payloadStart = lengthEnd + 2usize;
+      const lengthEnd = lineEnd( &this.frame, offset + 1)!;
+      const lengthView = this.frame.trySlice(offset + 1, lengthEnd)!;
+      const length = parseUnsigned( &lengthView)!;
+      const payloadStart = lengthEnd + 2;
       const payloadEnd = payloadStart + length;
       if (current === index) {
         return this.frame.trySlice(payloadStart, payloadEnd);
       }
-      offset = payloadEnd + 2usize;
-      current += 1usize;
+      offset = payloadEnd + 2;
+      current += 1;
     }
     return undefined;
   }
@@ -66,14 +66,14 @@ export struct ParsedCommand {
     return value;
   }
 }
-function lineEnd(input: & Bytes, start: usize): usize | undefined {
+function lineEnd(input: &Bytes, start: usize): usize | undefined {
   const bytes = input.asSlice();
   let index = start;
-  while (index + 1usize < input.length) {
-    if (bytes[index] === 13u8 && bytes[index + 1usize] === 10u8) {
+  while (index + 1 < input.length) {
+    if (bytes[index] === 13 && bytes[index + 1] === 10) {
       return index;
     }
-    index += 1usize;
+    index += 1;
   }
   return undefined;
 }
@@ -93,39 +93,39 @@ function lineHasInvalidNumber(status: LineStatus): bool {
   };
 }
 function decimalDigit(byte: u8): usize | undefined {
-  if (byte === 48u8) {
-    return 0usize;
+  if (byte === 48) {
+    return 0;
   }
-  if (byte === 49u8) {
-    return 1usize;
+  if (byte === 49) {
+    return 1;
   }
-  if (byte === 50u8) {
-    return 2usize;
+  if (byte === 50) {
+    return 2;
   }
-  if (byte === 51u8) {
-    return 3usize;
+  if (byte === 51) {
+    return 3;
   }
-  if (byte === 52u8) {
-    return 4usize;
+  if (byte === 52) {
+    return 4;
   }
-  if (byte === 53u8) {
-    return 5usize;
+  if (byte === 53) {
+    return 5;
   }
-  if (byte === 54u8) {
-    return 6usize;
+  if (byte === 54) {
+    return 6;
   }
-  if (byte === 55u8) {
-    return 7usize;
+  if (byte === 55) {
+    return 7;
   }
-  if (byte === 56u8) {
-    return 8usize;
+  if (byte === 56) {
+    return 8;
   }
-  if (byte === 57u8) {
-    return 9usize;
+  if (byte === 57) {
+    return 9;
   }
   return undefined;
 }
-function readLength(input: & Bytes, start: usize, marker: u8): ParsedLength | undefined throws RedisError {
+function readLength(input: &Bytes, start: usize, marker: u8): ParsedLength | undefined throws RedisError {
   const parsed = parseLine(input, start, marker);
   if (lineIsIncomplete(parsed.status)) {
     return undefined;
@@ -140,97 +140,97 @@ function readLength(input: & Bytes, start: usize, marker: u8): ParsedLength | un
     value: parsed.value, next: parsed.next,
   };
 }
-function parseUnsigned(input: & Bytes): usize | undefined {
+function parseUnsigned(input: &Bytes): usize | undefined {
   const bytes = input.asSlice();
-  let value: usize = 0usize;
-  let index: usize = 0usize;
+  let value: usize = 0;
+  let index: usize = 0;
   while (index<input.length) {
     const digit = decimalDigit(bytes[index]);
     if (digit === undefined) {
       return undefined;
     }
-    value = value * 10usize + digit!;
-    index += 1usize;
+    value = value * 10 + digit!;
+    index += 1;
   }
   return value;
 }
-function parseLine(input: & Bytes, start: usize, marker: u8): ParsedLine {
+function parseLine(input: &Bytes, start: usize, marker: u8): ParsedLine {
   const bytes = input.asSlice();
   if (start >= input.length) {
     return {
-      status: LineStatus.Incomplete, value: 0usize, next: 0usize
+      status: LineStatus.Incomplete, value: 0, next: 0
     };
   }
   if (bytes[start] !== marker) {
     return {
-      status: LineStatus.InvalidMarker, value: 0usize, next: 0usize
+      status: LineStatus.InvalidMarker, value: 0, next: 0
     };
   }
-  let index = start + 1usize;
-  let value: usize = 0usize;
-  let digits = 0usize;
+  let index = start + 1;
+  let value: usize = 0;
+  let digits = 0;
   while (index<input.length) {
     const byte = bytes[index];
-    if (byte === 13u8) {
-      if (index + 1usize >= input.length) {
+    if (byte === 13) {
+      if (index + 1 >= input.length) {
         return {
-          status: LineStatus.Incomplete, value: 0usize, next: 0usize
+          status: LineStatus.Incomplete, value: 0, next: 0
         };
       }
-      if (bytes[index + 1usize] !== 10u8 || digits === 0usize) {
+      if (bytes[index + 1] !== 10 || digits === 0) {
         return {
-          status: LineStatus.InvalidNumber, value: 0usize, next: 0usize
+          status: LineStatus.InvalidNumber, value: 0, next: 0
         };
       }
       return {
-        status: LineStatus.Complete, value, next: index + 2usize
+        status: LineStatus.Complete, value, next: index + 2
       };
     }
-    if (byte<48u8 || byte > 57u8) {
+    if (byte<48 || byte > 57) {
       return {
-        status: LineStatus.InvalidNumber, value: 0usize, next: 0usize
+        status: LineStatus.InvalidNumber, value: 0, next: 0
       };
     }
     const digit = decimalDigit(byte);
     if (digit === undefined) {
       return {
-        status: LineStatus.InvalidNumber, value: 0usize, next: 0usize
+        status: LineStatus.InvalidNumber, value: 0, next: 0
       };
     }
-    value = value * 10usize + digit!;
-    digits += 1usize;
-    index += 1usize;
+    value = value * 10 + digit!;
+    digits += 1;
+    index += 1;
   }
   return {
-    status: LineStatus.Incomplete, value: 0usize, next: 0usize
+    status: LineStatus.Incomplete, value: 0, next: 0
   };
 }
-export function parseCommand(input: & BytesMut, start: usize): ParsedCommand | undefined throws RedisError {
+export function parseCommand(input: &BytesMut, start: usize): ParsedCommand | undefined throws RedisError {
   const frame = input.asBytes();
   const frameBytes = frame.asSlice();
-  const countLength = try readLength( & frame, start, 42u8);
+  const countLength = try readLength( &frame, start, 42);
   if (countLength === undefined) {
     return undefined;
   }
   const count = countLength!.value;
-  if (count === 0usize || count > 1024usize) {
+  if (count === 0 || count > 1024) {
     throw RedisError.InvalidFrame;
   }
   let offset = countLength!.next;
-  let index: usize = 0usize;
-  let firstStart: usize = 0usize;
-  let firstEnd: usize = 0usize;
-  let secondStart: usize = 0usize;
-  let secondEnd: usize = 0usize;
-  let thirdStart: usize = 0usize;
-  let thirdEnd: usize = 0usize;
+  let index: usize = 0;
+  let firstStart: usize = 0;
+  let firstEnd: usize = 0;
+  let secondStart: usize = 0;
+  let secondEnd: usize = 0;
+  let thirdStart: usize = 0;
+  let thirdEnd: usize = 0;
   while (index<count) {
-    const partLength = try readLength( & frame, offset, 36u8);
+    const partLength = try readLength( &frame, offset, 36);
     if (partLength === undefined) {
       return undefined;
     }
     const length = partLength!.value;
-    if (length > 536870912usize) {
+    if (length > 536870912) {
       throw RedisError.FrameTooLarge;
     }
     const payloadStart = partLength!.next;
@@ -238,39 +238,28 @@ export function parseCommand(input: & BytesMut, start: usize): ParsedCommand | u
       return undefined;
     }
     const payloadEnd = payloadStart + length;
-    if (frame.length - payloadEnd<2usize) {
+    if (frame.length - payloadEnd<2) {
       return undefined;
     }
-    if (!(frameBytes[payloadEnd] === 13u8 && frameBytes[payloadEnd + 1usize] === 10u8)) {
+    if (!(frameBytes[payloadEnd] === 13 && frameBytes[payloadEnd + 1] === 10)) {
       throw RedisError.InvalidFrame;
     }
-    if (index === 0usize) {
+    if (index === 0) {
       firstStart = payloadStart;
       firstEnd = payloadEnd;
-    } else if (index === 1usize) {
+    } else if (index === 1) {
       secondStart = payloadStart;
       secondEnd = payloadEnd;
-    } else if (index === 2usize) {
+    } else if (index === 2) {
       thirdStart = payloadStart;
       thirdEnd = payloadEnd;
     }
-    offset = payloadEnd + 2usize;
-    index += 1usize;
+    offset = payloadEnd + 2;
+    index += 1;
   }
   return {
     frame: frame, start: start, count: count, consumed: offset, firstStart: firstStart, firstEnd: firstEnd, secondStart: secondStart, secondEnd: secondEnd, thirdStart: thirdStart, thirdEnd: thirdEnd,
   };
-}
-async function readMore(stream: & TcpStream, buffer: & mut BytesMut): Promise<usize, NetworkError> {
-  return try await stream.readInto(buffer);
-}
-async function writeAll(stream: & TcpStream, buffer: & BytesMut): Promise<void, RedisError> {
-  try {
-    try await stream.writeAll(buffer);
-  } catch (error: NetworkError) {
-    throw RedisError.ConnectionFailed;
-  }
-  return;
 }
 export class RespConnection implements AsyncDisposable {
   private stream: TcpStream;
@@ -278,33 +267,33 @@ export class RespConnection implements AsyncDisposable {
   public constructor(stream: TcpStream) {
     this.stream = move stream;
     this.input = new BytesMut({
-      capacity: 4096usize
+      capacity: 4096
     });
   }
   public readBufferedCommand(offset: usize): ParsedCommand | undefined throws RedisError {
-    return try parseCommand( & this.input, offset);
+    return try parseCommand( &this.input, offset);
   }
   public async readCommandAvailable(): Promise<bool, RedisError> {
     while (true) {
       let available = false;
       {
-        const parsed = try parseCommand( & this.input, 0usize);
+        const parsed = try parseCommand( &this.input, 0);
         available = parsed !== undefined;
       }
       if (available) {
         return true;
       }
-      if (this.input.length > 536870912usize) {
+      if (this.input.length > 536870912) {
         throw RedisError.FrameTooLarge;
       }
-      let received: usize = 0usize;
+      let received: usize = 0;
       try {
-        received = try await readMore( & this.stream, & mut this.input);
+        received = try await this.stream.readInto( &mut this.input);
       } catch (error: NetworkError) {
         throw RedisError.ConnectionFailed;
       }
-      if (received === 0usize) {
-        if (this.input.length === 0usize) {
+      if (received === 0) {
+        if (this.input.length === 0) {
           return false;
         }
         throw RedisError.UnexpectedEnd;
@@ -315,16 +304,19 @@ export class RespConnection implements AsyncDisposable {
   public consume(count: usize): void {
     this.input.discardPrefix(count);
   }
-  public async flush(output: & mut BytesMut): Promise<void, RedisError> {
-    if (output.length === 0usize) {
+  public async flush(output: Bytes): Promise<void, RedisError> {
+    if (output.length === 0) {
       return;
     }
-    try await writeAll( & this.stream, output);
-    output.length = 0usize;
-  }
-  public flushNow(output: & mut BytesMut): bool throws RedisError {
     try {
-      return try this.stream.tryWriteAll(output);
+      try await this.stream.writeBytes(output);
+    } catch (error: NetworkError) {
+      throw RedisError.ConnectionFailed;
+    }
+  }
+  public flushNow(output: Bytes): bool throws RedisError {
+    try {
+      return try this.stream.tryWriteBytes(output);
     } catch (error: NetworkError) {
       throw RedisError.ConnectionFailed;
     }
@@ -332,7 +324,7 @@ export class RespConnection implements AsyncDisposable {
   public close(): void {
     this.stream.close();
   }
-  public move async dispose(): Promise<void, never> {
+  public async [Symbol.asyncDispose](): Promise<void, never> {
     this.stream.close();
   }
 }

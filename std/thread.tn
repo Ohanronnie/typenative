@@ -1,61 +1,101 @@
+import { nullPointer } from "std/alloc";
+import { Error } from "std/core";
 import { c_size } from "std/ffi";
 import { Duration } from "std/time";
 
 declare extern "C" {
   function tn_thread_sleep_ns(nanoseconds: u64): void;
   function tn_thread_yield(): void;
-  function tn_thread_spawn_raw_pointer(entry: * mut u8, argument: * mut u8): * mut u8;
-  function tn_thread_join(handle: * mut u8, result: * mut u8): i32;
-  function tn_thread_detach(handle: * mut u8): i32;
+  function tn_thread_spawn_task(invoke: *mut u8, code: *mut u8, environment: *mut u8, drop: *mut u8, resultSize: c_size): *mut u8;
+  function tn_thread_join(handle: *mut u8, result: *mut u8): i32;
+  function tn_thread_detach(handle: *mut u8): i32;
+  function tn_runtime_free(pointer: *mut u8): void;
   function tn_thread_id(): u64;
+  function tn_pointer_is_null(pointer: *const u8): i32;
 }
-export struct Thread {
-  private handle: * mut u8;
-  private joined: bool;
-  drop(): void {
-    if (!this.joined) {
-      unsafe {
-        tn_thread_detach(this.handle);
-      }
-    }
-  }
+export struct ThreadError implements Error {
+  public rawCode: i32;
+}
+function threadError(code: i32): ThreadError {
+  return {
+    rawCode: code,
+  };
 }
 export struct JoinHandle<T> {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private joined: bool;
   public isJoined(): bool {
     return this.joined;
   }
-  public joinRaw(result: * mut u8): i32 {
+  public join(): T throws ThreadError {
     if (this.joined) {
-      return 114i32;
+      throw threadError(114);
     }
     unsafe {
-      const status = tn_thread_join(this.handle, result);
-      if (status === 0i32) {
+      if (tn_pointer_is_null(this.handle as *const u8) !== 0) {
         this.joined = true;
+        throw threadError(12);
       }
-      return status;
+      let result: *mut u8 = nullPointer<u8>();
+      const status = tn_thread_join(this.handle,( &mut result)as *mut u8);
+      if (status !== 0) {
+        throw threadError(status);
+      }
+      this.joined = true;
+      const value = *(result as *const T);
+      tn_runtime_free(result);
+      return move value;
     }
   }
-  public detachRaw(): i32 {
+  public detach(): void throws ThreadError {
     if (this.joined) {
-      return 0i32;
+      return;
     }
     unsafe {
+      if (tn_pointer_is_null(this.handle as *const u8) !== 0) {
+        this.joined = true;
+        throw threadError(12);
+      }
       const status = tn_thread_detach(this.handle);
-      if (status === 0i32) {
-        this.joined = true;
+      if (status !== 0) {
+        throw threadError(status);
       }
-      return status;
+      this.joined = true;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
+    if (!this.joined) {
+      unsafe {
+        if (tn_pointer_is_null(this.handle as *const u8) === 0) {
+          tn_thread_detach(this.handle);
+        }
+      }
+      this.joined = true;
+    }
+  }
+}
+export struct Thread {
+  private handle: *mut u8;
+  private joined: bool;
+  public static spawn<T>(task:() => T): JoinHandle<T> {
+    return spawnTask<T>(task);
+  }
+  [Symbol.dispose](): void {
     if (!this.joined) {
       unsafe {
         tn_thread_detach(this.handle);
       }
+      this.joined = true;
     }
+  }
+}
+// The compiler lowers this trusted operation to the native callable ABI.  It
+// remains private so public code cannot pass raw callbacks or output pointers.
+function spawnTask<T>(task:() => T): JoinHandle<T> {
+  unsafe {
+    return {
+      handle: nullPointer<u8>(), joined: false,
+    };
   }
 }
 export function sleep(duration: Duration): void {
@@ -72,17 +112,4 @@ export function threadId(): u64 {
   unsafe {
     return tn_thread_id();
   }
-}
-export unsafe function spawnRaw(entry: * mut u8, argument: * mut u8): JoinHandle<u8> {
-  unsafe {
-    return {
-      handle: tn_thread_spawn_raw_pointer(entry, argument), joined: false
-    };
-  }
-}
-export function join<T>(handle: & mut JoinHandle<T>, result: * mut u8): i32 {
-  return handle.joinRaw(result);
-}
-export function detach<T>(handle: & mut JoinHandle<T >): i32 {
-  return handle.detachRaw();
 }

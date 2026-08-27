@@ -1,7 +1,7 @@
 import { run } from "std/async";
 async function value(): Promise<i32, never> {
-  return 41i32;
+  return 41;
 }
 function main(): i32 {
-  return run(value()) + 1i32;
+  return run(value()) + 1;
 }

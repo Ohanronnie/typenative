@@ -89,6 +89,7 @@ fn check_copy_implementations(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_definition_types(
     program: &Program,
     definition: &Definition,
@@ -1425,7 +1426,7 @@ fn check_public_reference_lifetimes(
     if output_lifetimes.is_empty() {
         return;
     }
-    if output_lifetimes.iter().any(|lifetime| *lifetime == "scope") {
+    if output_lifetimes.contains(&"scope") {
         if has_receiver || input_lifetimes.len() == 1 {
             // The internal elision placeholder is related to the sole input or
             // to the receiver. It is never printed in a user-facing diagnostic.
@@ -1478,8 +1479,9 @@ fn collect_reference_lifetimes<'a>(ty: &'a Type, lifetimes: &mut Vec<&'a str>) {
             }
         }
         Type::Lifetime(lifetime) => lifetimes.push(lifetime),
-        Type::Optional(inner) | Type::Slice(inner) => collect_reference_lifetimes(inner, lifetimes),
-        Type::Array(inner, _) => collect_reference_lifetimes(inner, lifetimes),
+        Type::Optional(inner) | Type::Slice(inner) | Type::Array(inner, _) => {
+            collect_reference_lifetimes(inner, lifetimes);
+        }
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {
                 collect_reference_lifetimes(element, lifetimes);

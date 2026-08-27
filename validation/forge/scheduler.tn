@@ -1,43 +1,46 @@
-import { runI32, TaskGroup } from "std/async";
+import { run, runI32, TaskGroup } from "std/async";
 import { AtomicI32, MemoryOrder } from "std/core";
-import { Mutex, channel, close, destroyChannel, receive, send } from "std/sync";
+import { Mutex, channel } from "std/sync";
 
 async function compute(value: i32): Promise<i32, never> {
-  return value * 2i32;
+  return value * 2;
 }
 export function schedulerProbe(): i32 {
-  let counter = new AtomicI32(0i32);
-  counter.fetchAdd(4i32, MemoryOrder.Relaxed);
-  if (counter.load(MemoryOrder.Acquire) !== 4i32) {
-    return 1i32;
+  const initial: i32 = 0;
+  let counter = new AtomicI32(initial);
+  counter.fetchAdd(4, MemoryOrder.Relaxed);
+  if (counter.load(MemoryOrder.Acquire) !== 4) {
+    return 1;
   }
-  let mutex = new Mutex<i32>(8i32);
+  let mutex = new Mutex<i32>(8);
   {
     using locked = mutex.lock();
-    let value: i32 = 0i32;
+    let value: i32 = 0;
     unsafe {
       value = * locked.getMut();
     }
-    if (value !== 8i32) {
-      return 2i32;
+    if (value !== 8) {
+      return 2;
     }
   }
-  let messages = channel<i32>(4usize, 2usize);
-  if (send( & mut messages, 17i32) !== 0i32) {
-    destroyChannel( & mut messages);
-    return 4i32;
+  let messages = channel<i32>(4, 2);
+  const sent: i32 = 17;
+  if (messages.send(sent) !== 0) {
+    messages.destroy();
+    return 4;
   }
-  const received = receive<i32>( & mut messages);
-  if (received === undefined || received! !== 17i32) {
-    destroyChannel( & mut messages);
-    return 5i32;
+  const received = messages.receive();
+  if (received === undefined || received! !== 17) {
+    messages.destroy();
+    return 5;
   }
-  close( & mut messages);
-  destroyChannel( & mut messages);
+  messages.close();
+  messages.destroy();
   let group = new TaskGroup();
-  group.spawn(compute(21i32));
-  if (runI32(compute(21i32)) !== 42i32) {
-    return 7i32;
+  group.spawn(compute(21));
+  run(group.close());
+  if (runI32(compute(21)) !== 42) {
+    return 7;
   }
-  return 0i32;
+  return 0;
 }

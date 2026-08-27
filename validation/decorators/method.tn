@@ -1,0 +1,13 @@
+import { ClassMethodDecoratorContext } from "std/core";
+function logged(method:() => i32, context: ClassMethodDecoratorContext,):() => i32 {
+  return move() => method() + 1;
+}
+class Worker {
+  @logged public run(): i32 {
+    return 41;
+  }
+}
+function main(): i32 {
+  const worker = new Worker();
+  return worker.run();
+}

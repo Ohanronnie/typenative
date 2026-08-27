@@ -9,20 +9,20 @@ function main(): i32 {
   }
   {
     let map = new Map<i32, i32>({
-      capacity: 32usize,
+      capacity: 32,
     });
-    let index: i32 = 0i32;
-    while (index<24i32) {
-      map.set(index, index * 3i32);
-      index += 1i32;
+    let index: i32 = 0;
+    while (index<24) {
+      map.set(index, index * 3);
+      index += 1;
     }
     let values = new Array<i32>({
-      capacity: 24usize,
+      capacity: 24,
     });
-    index = 0i32;
-    while (index<24i32) {
-      values.push(index * 7i32);
-      index += 1i32;
+    index = 0;
+    while (index<24) {
+      values.push(index * 7);
+      index += 1;
     }
   }
   unsafe {

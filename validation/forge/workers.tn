@@ -2,14 +2,14 @@ import { Command, ProcessError, processId } from "std/process";
 import { threadId, yieldNow } from "std/thread";
 
 export function workerProbe(): i32 throws ProcessError {
-  if (processId() <= 0i32 || threadId() === 0u64) {
-    return 1i32;
+  if (processId() <= 0 || threadId() === 0) {
+    return 1;
   }
   yieldNow();
   let command = new Command("/usr/bin/true");
   const exitCode = try command.status();
-  if (exitCode !== 0i32) {
-    return 2i32;
+  if (exitCode !== 0) {
+    return 2;
   }
-  return 0i32;
+  return 0;
 }

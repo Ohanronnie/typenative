@@ -5,6 +5,7 @@ import { ParseIntegerError } from "std/core";
 import { lookup } from "std/env";
 import { health, metrics, model, plugin, probe, protocol, scheduler } from "./probe";
 import { serverMain } from "./server";
+
 export function forgeHealth(): i32 {
   return health();
 }
@@ -25,7 +26,7 @@ export function forgePluginProbe(): i32 {
 }
 export function forgeFeatureProbe(): i32 {
   const result = probe();
-  return result === 42i32?0i32: result;
+  return result === 42?0: result;
 }
 export function forgeNodeOptional(value: i32 | undefined): i32 | undefined {
   return value;
@@ -36,7 +37,7 @@ export function forgeNodeString(value: string): string {
 export function forgeNodeBytesLength(value: Bytes): usize {
   return value.length;
 }
-export function forgeNodeArrayLength(value: & Array<i32 >): usize {
+export function forgeNodeArrayLength(value: &Array<i32 >): usize {
   return value.length;
 }
 export function forgeNodeFixedMiddle(value:[i32;
@@ -44,7 +45,7 @@ export function forgeNodeFixedMiddle(value:[i32;
   return value[1];
 }
 export async function forgeNodeAsync(value: i32): Promise<i32, never> {
-  return value + 1i32;
+  return value + 1;
 }
 struct ForgeNodeError {
 }
@@ -64,7 +65,7 @@ export class ForgeJob {
     this.value = this.value + delta;
     return this.value;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 export function forgeProbe(): i32 {
@@ -82,9 +83,9 @@ function main(): i32 {
     try {
       return try serverMain();
     } catch (error: ParseIntegerError) {
-      return 80i32;
+      return 80;
     }
   }
   const probe = forgeProbe();
-  return probe === 42i32?0i32: probe;
+  return probe === 42?0: probe;
 }

@@ -5,51 +5,51 @@ import { Utf8Error } from "std/string";
 function main(): i32 {
   const embedded = String("a\0b");
   const bytes: &[u8] = embedded.bytes();
-  if (bytes[0usize] !== 97u8 || bytes[1usize] !== 0u8 || bytes[2usize] !== 98u8) {
-    return 1i32;
+  if (bytes[0] !== 97 || bytes[1] !== 0 || bytes[2] !== 98) {
+    return 1;
   }
   const copy = embedded.clone();
   if (copy !== embedded || copy.toAsciiUppercase() !== "A\0B") {
-    return 2i32;
+    return 2;
   }
   let map = new Map<string, i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
-  map.set(embedded.clone(), 42i32);
+  map.set(embedded.clone(), 42);
   const lookup = String("a\0b");
-  const found = map.get( & lookup);
+  const found = map.get( &lookup);
   if (found === undefined) {
-    return 3i32;
+    return 3;
   }
   unsafe {
     const foundValue = * found!;
-    if (foundValue !== 42i32) {
-      return 3i32;
+    if (foundValue !== 42) {
+      return 3;
     }
   }
   let output = new BytesMut({
-    capacity: 4usize,
+    capacity: 4,
   });
   output.appendString(embedded.clone());
-  if (output.length !== 3usize) {
-    return 4i32;
+  if (output.length !== 3) {
+    return 4;
   }
   const outputBytes = output.asBytes();
-  if (outputBytes.get(0usize)! !== 97u8 || outputBytes.get(1usize)! !== 0u8 || outputBytes.get(2usize)! !== 98u8) {
-    return 5i32;
+  if (outputBytes.get(0)! !== 97 || outputBytes.get(1)! !== 0 || outputBytes.get(2)! !== 98) {
+    return 5;
   }
   let invalid = new BytesMut({
-    capacity: 2usize,
+    capacity: 2,
   });
-  invalid.push(226u8);
-  invalid.push(40u8);
+  invalid.push(226);
+  invalid.push(40);
   try {
     const ignored = try String.fromUtf8(invalid.asBytes());
-    return 6i32;
+    return 6;
   } catch (error: Utf8Error) {
-    if (error.offset !== 0usize) {
-      return 7i32;
+    if (error.offset !== 0) {
+      return 7;
     }
   }
-  return 42i32;
+  return 42;
 }

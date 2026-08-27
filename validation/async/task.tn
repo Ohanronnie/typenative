@@ -1,18 +1,19 @@
-import { Task, TaskGroup } from "std/async";
-
+import { runI32, Task, TaskGroup } from "std/async";
 struct TaskFailure {
   public rawCode: i32;
 }
-
-async function typedTask(): Task<i32, TaskFailure> {
-  return 42i32;
+async function typedTask(): Promise<i32, TaskFailure> {
+  return 42;
 }
-function typedTaskValue(): Task<i32, TaskFailure> {
-  return typedTask();
+async function inspectTask(): Promise<i32, never> {
+  await using group = new TaskGroup();
+  const task: Task<i32, TaskFailure > = group.spawn(typedTask());
+  try {
+    return try await task;
+  } catch (error: TaskFailure) {
+    return error.rawCode;
+  }
 }
 function main(): i32 {
-  let group = new TaskGroup();
-  group.spawn(typedTaskValue());
-  group.close();
-  return 0i32;
+  return runI32(inspectTask());
 }

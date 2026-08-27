@@ -1,0 +1,32 @@
+import { log } from "std/console";
+function checksum(): u64 {
+  const prime: u64 = 1000000007;
+  let numeric: u64 = 17;
+  let graph: u64 = 29;
+  let text: u64 = 7;
+  let index: u64 = 0;
+  while (index<500000u64) {
+    numeric =(numeric * 1664525u64 + index * 1013904223u64 + 12345u64) % prime;
+    graph =(graph +((index * 31u64 + 17u64) % 9973u64) *((index % 13u64) + 1u64)) % prime;
+    const lane = index % 4u64;
+    if (lane === 0u64) {
+      text =(text + 84u64) % prime;
+    } else if (lane === 1u64) {
+      text =(text + 78u64) % prime;
+    } else if (lane === 2u64) {
+      text =(text + 67u64) % prime;
+    } else {
+      text =(text + 72u64) % prime;
+    }
+    index = index + 1u64;
+  }
+  return(numeric + graph * 31u64 + text * 131u64) % prime;
+}
+function main(): i32 {
+  if (checksum() === 899120682u64) {
+    log("checksum=899120682");
+    return 0;
+  }
+  log("checksum=invalid");
+  return 1;
+}

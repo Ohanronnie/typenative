@@ -3,6 +3,7 @@ import { ParseIntegerError } from "std/core";
 import { lookup } from "std/env";
 import { health, metrics, model, plugin, probe, protocol, scheduler } from "./probe";
 import { serverMain } from "./server";
+
 export function forgeHealth(): i32 {
   return health();
 }
@@ -23,7 +24,7 @@ export function forgePluginProbe(): i32 {
 }
 export function forgeFeatureProbe(): i32 {
   const result = probe();
-  return result === 42i32?0i32: result;
+  return result === 42?0: result;
 }
 export function forgeProbe(): i32 {
   return probe();
@@ -40,9 +41,9 @@ function main(): i32 {
     try {
       return try serverMain();
     } catch (error: ParseIntegerError) {
-      return 80i32;
+      return 80;
     }
   }
   const result = probe();
-  return result === 42i32?0i32: result;
+  return result === 42?0: result;
 }

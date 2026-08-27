@@ -283,12 +283,11 @@ impl Parser<'_, '_> {
                 | TokenKind::Pub
                 | TokenKind::Crate
                 | TokenKind::Record
-                | TokenKind::Extension,
+                | TokenKind::Extension
+                | TokenKind::Derives
+                | TokenKind::Final
+                | TokenKind::Macro,
             ) => {
-                let name = self.current_text().unwrap_or("excluded").to_owned();
-                self.excluded_construct(&name);
-            }
-            Some(TokenKind::Derives | TokenKind::Final | TokenKind::Macro) => {
                 let name = self.current_text().unwrap_or("excluded").to_owned();
                 self.excluded_construct(&name);
             }
@@ -500,12 +499,12 @@ impl Parser<'_, '_> {
         ) {
             offset += 1;
         }
-        if self.nth(offset) == Some(TokenKind::Identifier)
-            && matches!(
-                self.nth(offset + 1),
+        if self.method_name_width(offset).is_some_and(|width| {
+            matches!(
+                self.nth(offset + width),
                 Some(TokenKind::LeftParen | TokenKind::Less)
             )
-        {
+        }) {
             self.method(false);
         } else {
             self.field_declaration(false);
@@ -653,13 +652,12 @@ impl Parser<'_, '_> {
         }
         if self.nth(offset) == Some(TokenKind::Constructor) {
             self.excluded_construct("constructor");
-        } else if matches!(
-            self.nth(offset),
-            Some(TokenKind::Identifier | TokenKind::From)
-        ) && matches!(
-            self.nth(offset + 1),
-            Some(TokenKind::LeftParen | TokenKind::Less)
-        ) {
+        } else if self.method_name_width(offset).is_some_and(|width| {
+            matches!(
+                self.nth(offset + width),
+                Some(TokenKind::LeftParen | TokenKind::Less)
+            )
+        }) {
             self.method(false);
         } else {
             self.field_declaration(false);
@@ -750,9 +748,7 @@ impl Parser<'_, '_> {
         self.eat(TokenKind::Move);
         self.eat(TokenKind::Unsafe);
         self.eat(TokenKind::Async);
-        if !self.eat(TokenKind::Identifier) {
-            self.expect(TokenKind::From);
-        }
+        self.method_name();
         self.generic_parameters();
         self.parameter_list();
         self.expect(TokenKind::Colon);
@@ -767,6 +763,32 @@ impl Parser<'_, '_> {
             self.block();
         }
         self.finish();
+    }
+
+    fn method_name_width(&self, offset: usize) -> Option<usize> {
+        match self.nth(offset) {
+            Some(TokenKind::Identifier | TokenKind::From) => Some(1),
+            Some(TokenKind::LeftBracket)
+                if self.nth(offset + 1) == Some(TokenKind::Identifier)
+                    && self.nth(offset + 2) == Some(TokenKind::Dot)
+                    && self.nth(offset + 3) == Some(TokenKind::Identifier)
+                    && self.nth(offset + 4) == Some(TokenKind::RightBracket) =>
+            {
+                Some(5)
+            }
+            _ => None,
+        }
+    }
+
+    fn method_name(&mut self) {
+        if self.eat(TokenKind::LeftBracket) {
+            self.expect(TokenKind::Identifier);
+            self.expect(TokenKind::Dot);
+            self.expect(TokenKind::Identifier);
+            self.expect(TokenKind::RightBracket);
+        } else if !self.eat(TokenKind::Identifier) {
+            self.expect(TokenKind::From);
+        }
     }
 
     fn visibility(&mut self) {
@@ -1758,6 +1780,15 @@ function main(): void {
         assert_parses(
             "struct View<lifetime a> { public bytes: &a [u8]; }\n\
              function retain<lifetime a>(bytes: &a [u8]): View<a> { return { bytes: bytes }; }\n",
+        );
+    }
+
+    #[test]
+    fn parses_symbol_named_disposal_methods_losslessly() {
+        assert_parses(
+            "interface Disposable { [Symbol.dispose](): void; }\n\
+             interface AsyncDisposable { async [Symbol.asyncDispose](): Promise<void, never>; }\n\
+             class Resource implements Disposable { public [Symbol.dispose](): void {} }\n",
         );
     }
 

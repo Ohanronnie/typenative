@@ -1,20 +1,21 @@
 import { Task, TaskGroup, runI32 } from "std/async";
-async function value(): Task<i32, never> {
-  return 42i32;
+async function value(): Promise<i32, never> {
+  return 42;
 }
-function valueTask(): Task<i32, never> {
-  return value();
+async function returnedHandles(): Promise<i32, never> {
+  await using group = new TaskGroup();
+  const first: Task<i32, never > = group.spawn(value());
+  const second: Task<i32, never > = group.spawn(value());
+  const firstValue: i32 = await first;
+  if (firstValue !== 42) {
+    return 1;
+  }
+  const secondValue: i32 = await second;
+  if (secondValue !== 42) {
+    return 2;
+  }
+  return 0;
 }
 function main(): i32 {
-  let group = new TaskGroup();
-  const first: Promise<i32, never > = group.spawn(valueTask());
-  const second: Promise<i32, never > = group.spawn(valueTask());
-  group.close();
-  if (runI32(first) !== 42i32) {
-    return 1i32;
-  }
-  if (runI32(second) !== 42i32) {
-    return 2i32;
-  }
-  return 0i32;
+  return runI32(returnedHandles());
 }

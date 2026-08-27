@@ -26,5 +26,5 @@ function InvalidExport(): void {
 }
 @Intrinsic("size_of")
 function ForgedIntrinsic<T>(): usize {
-  return 0usize;
+  return 0;
 }

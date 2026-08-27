@@ -1,9 +1,12 @@
-import { TaskGroup } from "std/async";
+import { runI32, TaskGroup } from "std/async";
 async function worker(): Promise<i32, never> {
-  return 42i32;
+  return 42;
+}
+async function lifecycle(): Promise<i32, never> {
+  await using group = new TaskGroup();
+  group.spawn(worker());
+  return 0;
 }
 function main(): i32 {
-  using group = new TaskGroup();
-  group.spawn(worker());
-  return 0i32;
+  return runI32(lifecycle());
 }

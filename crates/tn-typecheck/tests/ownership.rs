@@ -238,30 +238,27 @@ fn preserves_copy_queries_until_generic_specialization() {
 
 #[test]
 fn rejects_user_defined_intrinsic_type_bindings() {
-    assert_eq!(
-        source_conditions("@Intrinsic(\"string\") struct FakeString {}"),
-        ["TYPE_UNKNOWN_ATTRIBUTE"]
-    );
+    let conditions = source_conditions("@Intrinsic(\"string\") struct FakeString {}");
+    assert!(conditions.contains(&"TYPE_UNKNOWN_ATTRIBUTE".into()));
+    assert!(conditions.contains(&"TYPE_UNSUPPORTED_DECORATOR_TARGET".into()));
 }
 
 #[test]
 fn rejects_user_defined_primitive_intrinsic_bindings() {
-    assert_eq!(
-        source_conditions("@Intrinsic(\"usize\") struct FakeUsize {}"),
-        ["TYPE_UNKNOWN_ATTRIBUTE"]
-    );
+    let conditions = source_conditions("@Intrinsic(\"usize\") struct FakeUsize {}");
+    assert!(conditions.contains(&"TYPE_UNKNOWN_ATTRIBUTE".into()));
+    assert!(conditions.contains(&"TYPE_UNSUPPORTED_DECORATOR_TARGET".into()));
 }
 
 #[test]
 fn rejects_user_defined_intrinsic_operations() {
-    assert_eq!(
-        source_conditions("@Intrinsic(\"size_of\") function forged<T>(): usize { return 0usize; }"),
-        ["TYPE_UNKNOWN_ATTRIBUTE"]
-    );
-    assert_eq!(
-        source_conditions("@Intrinsic function unnamed<T>(): usize { return 0usize; }"),
-        ["TYPE_UNKNOWN_ATTRIBUTE"]
-    );
+    let parameterized =
+        source_conditions("@Intrinsic(\"size_of\") function forged<T>(): usize { return 0usize; }");
+    assert!(parameterized.contains(&"TYPE_UNKNOWN_ATTRIBUTE".into()));
+    assert!(parameterized.contains(&"TYPE_UNSUPPORTED_DECORATOR_TARGET".into()));
+    let bare = source_conditions("@Intrinsic function unnamed<T>(): usize { return 0usize; }");
+    assert!(bare.contains(&"TYPE_UNKNOWN_ATTRIBUTE".into()));
+    assert!(bare.contains(&"TYPE_UNSUPPORTED_DECORATOR_TARGET".into()));
 }
 
 fn lower_mir(program: &tn_hir::Program) -> Vec<Body> {
@@ -963,7 +960,7 @@ fn implicitly_moves_noncopy_bindings_arguments_and_fields() {
 struct Pair {
   public first: string;
   public second: string;
-  drop(): void {}
+  [Symbol.dispose](): void {}
 }
 function consume(value: string): void {}
 function assignment(value: string): void {

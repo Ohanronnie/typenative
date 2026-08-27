@@ -163,7 +163,7 @@ pub fn build_bridge_plan(program: &Program) -> Result<BridgePlan, NodeApiError> 
                     .transpose()?;
                 let drop = methods
                     .iter()
-                    .find(|method| method.name == "drop")
+                    .find(|method| method.name == "[Symbol.dispose]")
                     .filter(|method| method.function.effects.is_empty())
                     .map(|method| Callable {
                         declaration: declaration.id,

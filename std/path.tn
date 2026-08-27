@@ -3,16 +3,22 @@ import { c_size } from "std/ffi";
 import { fromRaw } from "std/string";
 
 export struct Path {
-  private text: & static str;
-  public asStr(): & static str {
+  private text: &static str;
+  public asStr(): &str {
     return this.text;
   }
 }
 export struct OwnedPath {
-  private pointer: * mut u8;
+  private pointer: *mut u8;
   private length: usize;
   private capacity: usize;
-  drop(): void {
+  public unsafe nativePointer(): *const u8 {
+    return this.pointer as *const u8;
+  }
+  public byteLength(): usize {
+    return this.length;
+  }
+  [Symbol.dispose](): void {
     unsafe {
       rawFree(this.pointer);
     }
@@ -22,19 +28,19 @@ export struct PathError {
   public rawCode: i32;
 }
 declare extern "C" {
-  function tn_path_join(left: * const u8, right: * const u8, output: * mut u8, capacity: c_size): i32;
-  function tn_path_basename(path: * const u8, output: * mut u8, capacity: c_size): i32;
-  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
-  function tn_string_length(bytes: * const u8): c_size;
+  function tn_path_join(left: *const u8, right: *const u8, output: *mut u8, capacity: c_size): i32;
+  function tn_path_basename(path: *const u8, output: *mut u8, capacity: c_size): i32;
+  function tn_string_from_bytes(bytes: *const u8, length: c_size): *mut u8;
+  function tn_string_length(bytes: *const u8): c_size;
 }
-export function join(left: & static str, right: & static str, output: * mut u8, capacity: usize): i32 {
+export unsafe function join(left: &str, right: &str, output: *mut u8, capacity: usize): i32 {
   unsafe {
-    return tn_path_join(left as * const u8, right as * const u8, output, capacity);
+    return tn_path_join(left as *const u8, right as *const u8, output, capacity);
   }
 }
-export function basename(path: & static str, output: * mut u8, capacity: usize): i32 {
+export unsafe function basename(path: &str, output: *mut u8, capacity: usize): i32 {
   unsafe {
-    return tn_path_basename(path as * const u8, output, capacity);
+    return tn_path_basename(path as *const u8, output, capacity);
   }
 }
 function pathError(code: i32): PathError {
@@ -42,31 +48,31 @@ function pathError(code: i32): PathError {
     rawCode: code
   };
 }
-export function joinOwned(left: & static str, right: & static str): OwnedPath throws PathError {
+export function joinOwned(left: &str, right: &str): OwnedPath throws PathError {
   unsafe {
-    const capacity = tn_string_length(left as * const u8) + tn_string_length(right as * const u8) + 2usize;
+    const capacity = tn_string_length(left as *const u8) + tn_string_length(right as *const u8) + 2;
     const pointer = rawAlloc(capacity);
-    const status = tn_path_join(left as * const u8, right as * const u8, pointer, capacity);
-    if (status !== 0i32) {
+    const status = tn_path_join(left as *const u8, right as *const u8, pointer, capacity);
+    if (status !== 0) {
       rawFree(pointer);
       throw pathError(status);
     }
     return {
-      pointer: pointer, length: tn_string_length(pointer as * const u8), capacity: capacity
+      pointer: pointer, length: tn_string_length(pointer as *const u8), capacity: capacity
     };
   }
 }
-export function basenameOwned(path: & static str): string throws PathError {
+export function basenameOwned(path: &str): string throws PathError {
   unsafe {
-    const capacity = tn_string_length(path as * const u8) + 1usize;
+    const capacity = tn_string_length(path as *const u8) + 1;
     const pointer = rawAlloc(capacity);
-    const status = tn_path_basename(path as * const u8, pointer, capacity);
-    if (status !== 0i32) {
+    const status = tn_path_basename(path as *const u8, pointer, capacity);
+    if (status !== 0) {
       rawFree(pointer);
       throw pathError(status);
     }
-    const length = tn_string_length(pointer as * const u8);
-    const result = fromRaw(tn_string_from_bytes(pointer as * const u8, length), length);
+    const length = tn_string_length(pointer as *const u8);
+    const result = fromRaw(tn_string_from_bytes(pointer as *const u8, length), length);
     rawFree(pointer);
     return result;
   }

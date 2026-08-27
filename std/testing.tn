@@ -7,7 +7,7 @@ export struct TestResult {
 export function assert(condition: bool): void {
   if (!condition) {
     unsafe {
-      tn_runtime_abort(1u32);
+      tn_runtime_abort(1);
     }
   }
 }

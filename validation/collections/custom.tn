@@ -4,12 +4,12 @@ import { Equal, Hash, Ord, Ordering } from "std/core";
 struct CollisionKey implements Hash, Equal, Ord {
   public id: i32;
   public hash(): u64 {
-    return 1u64;
+    return 1;
   }
-  public equals(other: & CollisionKey): bool {
+  public equals(other: &CollisionKey): bool {
     return this.id === other.id;
   }
-  public compare(other: & CollisionKey): Ordering {
+  public compare(other: &CollisionKey): Ordering {
     if (this.id<other.id) {
       return Ordering.Less;
     }
@@ -25,71 +25,71 @@ function makeKey(id: i32): CollisionKey {
   };
 }
 function main(): i32 {
-  let first: CollisionKey = makeKey(1i32);
-  let second: CollisionKey = makeKey(2i32);
-  let third: CollisionKey = makeKey(3i32);
+  let first: CollisionKey = makeKey(1);
+  let second: CollisionKey = makeKey(2);
+  let third: CollisionKey = makeKey(3);
   let map = new Map<CollisionKey, i32>({
-    capacity: 8usize,
+    capacity: 8,
   });
-  map.set(move first, 10i32);
-  map.set(move second, 20i32);
-  map.set(move third, 30i32);
-  let lookup: CollisionKey = makeKey(2i32);
-  const stored = map.get( & lookup);
+  map.set(move first, 10);
+  map.set(move second, 20);
+  map.set(move third, 30);
+  let lookup: CollisionKey = makeKey(2);
+  const stored = map.get( &lookup);
   if (stored === undefined) {
-    return 1i32;
+    return 1;
   }
   unsafe {
     const storedValue = * stored!;
-    if (storedValue !== 20i32) {
-      return 1i32;
+    if (storedValue !== 20) {
+      return 1;
     }
   }
-  const removed = map.delete( & lookup);
+  const removed = map.delete( &lookup);
   if (removed === undefined) {
-    return 2i32;
+    return 2;
   }
   const removedValue = removed!;
-  if (removedValue !== 20i32 || map.length !== 2usize) {
-    return 2i32;
+  if (removedValue !== 20 || map.length !== 2) {
+    return 2;
   }
-  if (map.has( & lookup)) {
-    return 3i32;
+  if (map.has( &lookup)) {
+    return 3;
   }
   let set = new Set<CollisionKey>({
-    capacity: 8usize,
+    capacity: 8,
   });
-  let setValue: CollisionKey = makeKey(3i32);
+  let setValue: CollisionKey = makeKey(3);
   set.add(move setValue);
-  let setLookup: CollisionKey = makeKey(3i32);
-  if (!set.has( & setLookup)) {
-    return 4i32;
+  let setLookup: CollisionKey = makeKey(3);
+  if (!set.has( &setLookup)) {
+    return 4;
   }
   let ordered = new OrderedMap<CollisionKey, i32>({
-    capacity: 8usize,
+    capacity: 8,
   });
-  ordered.set(makeKey(3i32), 3i32);
-  ordered.set(makeKey(1i32), 1i32);
-  let order: i32 = 0i32;
+  ordered.set(makeKey(3), 3);
+  ordered.set(makeKey(1), 1);
+  let order: i32 = 0;
   for (const entry of move ordered) {
-    order = order * 10i32 + entry.key.id;
+    order = order * 10 + entry.key.id;
   }
-  if (order !== 31i32) {
-    return 5i32;
+  if (order !== 31) {
+    return 5;
   }
   let heap = new Heap<CollisionKey>({
-    capacity: 4usize,
+    capacity: 4,
   });
-  heap.push(makeKey(3i32));
-  heap.push(makeKey(1i32));
-  heap.push(makeKey(2i32));
+  heap.push(makeKey(3));
+  heap.push(makeKey(1));
+  heap.push(makeKey(2));
   const smallest = heap.pop();
   if (smallest === undefined) {
-    return 6i32;
+    return 6;
   }
   const smallestValue = smallest!;
-  if (smallestValue.id !== 1i32) {
-    return 6i32;
+  if (smallestValue.id !== 1) {
+    return 6;
   }
-  return 42i32;
+  return 42;
 }

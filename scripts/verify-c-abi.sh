@@ -53,15 +53,15 @@ check_symbol() {
     nm -gU "$library"
   else
     nm -g "$library"
-  fi | grep -q "$symbol"
+  fi | awk '{print $3}' | grep -Eq "^_?${symbol}$"
 }
 
 for profile in debug optimized; do
   profile_library="$work/libtn_c_exports-$profile$library_suffix"
   "$tn_bin" build "$root/validation/c/exports.tn" --profile "$profile" --emit shared-library --out "$profile_library"
-  check_symbol tn_add "$profile_library"
-  check_symbol tn_pair_value "$profile_library"
-  check_symbol tn_kind_value "$profile_library"
+  check_symbol add "$profile_library"
+  check_symbol pairValue "$profile_library"
+  check_symbol kindValue "$profile_library"
 done
 library="$work/libtn_c_exports-debug$library_suffix"
 "$tn_bin" build "$root/validation/c/extern.tn" --profile optimized --link-argument "$library" --out "$work/extern"

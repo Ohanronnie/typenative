@@ -1,4 +1,4 @@
-use crate::{TokenKind, lex, parse};
+use crate::{Token, TokenKind, lex, parse};
 use tn_diagnostics::Diagnostic;
 
 #[derive(Clone, Debug)]
@@ -40,7 +40,8 @@ pub fn format(file: &str, bytes: &[u8]) -> FormatResult {
             .and_then(|previous| significant.get(previous))
             .map(|token| token.kind);
         let next = significant.get(index + 1).map(|token| token.kind);
-        let text = &lexed.source[token.range.clone()];
+        let source_text = &lexed.source[token.range.clone()];
+        let text = contextual_numeric_text(&significant, index, lexed.source, source_text);
         writer.token(token.kind, text, previous, next);
     }
     writer.finish_file();
@@ -49,6 +50,160 @@ pub fn format(file: &str, bytes: &[u8]) -> FormatResult {
         output,
         diagnostics: Vec::new(),
     }
+}
+
+/// Removes an integer/float suffix only when the surrounding syntax already supplies the
+/// exact same type.  Explicit suffixes remain lossless in inferred expressions and in all
+/// contexts where the formatter cannot prove that they are redundant.
+fn contextual_numeric_text<'a>(
+    tokens: &[&Token],
+    index: usize,
+    source: &'a str,
+    text: &'a str,
+) -> &'a str {
+    let token = tokens[index];
+    if !matches!(
+        token.kind,
+        TokenKind::IntegerLiteral | TokenKind::FloatLiteral
+    ) {
+        return text;
+    }
+    let Some((suffix_start, suffix)) = numeric_suffix(text, token.kind) else {
+        return text;
+    };
+    if contextual_numeric_suffix(tokens, index, source).is_some_and(|expected| expected == suffix) {
+        &text[..suffix_start]
+    } else {
+        text
+    }
+}
+
+fn numeric_suffix(text: &str, kind: TokenKind) -> Option<(usize, &str)> {
+    const INTEGER_SUFFIXES: [&str; 13] = [
+        "i128", "u128", "isize", "usize", "number", "i64", "u64", "i32", "u32", "i16", "u16", "i8",
+        "u8",
+    ];
+    const FLOAT_SUFFIXES: [&str; 2] = ["f64", "f32"];
+    let suffixes: &[&str] = match kind {
+        TokenKind::IntegerLiteral => &INTEGER_SUFFIXES,
+        TokenKind::FloatLiteral => &FLOAT_SUFFIXES,
+        _ => return None,
+    };
+    suffixes.iter().find_map(|suffix| {
+        text.strip_suffix(suffix)
+            .filter(|digits| !digits.is_empty())
+            .map(|digits| (digits.len(), *suffix))
+    })
+}
+
+fn contextual_numeric_suffix<'a>(
+    tokens: &[&Token],
+    index: usize,
+    source: &'a str,
+) -> Option<&'a str> {
+    let previous = index
+        .checked_sub(1)
+        .and_then(|position| tokens.get(position));
+    if previous.is_some_and(|token| token.kind == TokenKind::Equal) {
+        return declaration_numeric_type(tokens, index - 1, source);
+    }
+    if previous.is_some_and(|token| token.kind == TokenKind::Return) {
+        return enclosing_return_type(tokens, index, source);
+    }
+    // Fixed-array lengths have an implicit `usize` type.  Keep this special case deliberately
+    // narrow so a semicolon in an unrelated expression never erases an explicit suffix.
+    if previous.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+        let mut cursor = index.saturating_sub(2);
+        while cursor > 0 {
+            match tokens[cursor].kind {
+                TokenKind::LeftBracket => return Some("usize"),
+                TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace => break,
+                _ => cursor -= 1,
+            }
+        }
+    }
+    None
+}
+
+fn enclosing_return_type<'a>(tokens: &[&Token], index: usize, source: &'a str) -> Option<&'a str> {
+    let mut openings = Vec::new();
+    let mut stack = Vec::new();
+    for (position, token) in tokens.iter().enumerate().take(index) {
+        match token.kind {
+            TokenKind::LeftBrace => stack.push(position),
+            TokenKind::RightBrace => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    openings.extend(stack.into_iter().rev());
+    for open in openings {
+        let mut end = open;
+        if let Some(throws) = (0..open).rev().find(|position| {
+            tokens[*position].kind == TokenKind::Throws
+                && tokens[*position + 1..open]
+                    .iter()
+                    .find(|token| {
+                        matches!(token.kind, TokenKind::LeftBrace | TokenKind::RightBrace)
+                    })
+                    .is_none()
+        }) {
+            end = throws;
+        }
+        let Some(type_end) = end.checked_sub(1) else {
+            continue;
+        };
+        let Some(colon) = type_end.checked_sub(1) else {
+            continue;
+        };
+        if tokens[type_end].kind == TokenKind::Identifier
+            && tokens[colon].kind == TokenKind::Colon
+            && colon > 0
+            && tokens[colon - 1].kind == TokenKind::RightParen
+        {
+            return Some(&source[tokens[type_end].range.clone()]);
+        }
+    }
+    None
+}
+
+fn declaration_numeric_type<'a>(
+    tokens: &[&Token],
+    equal_index: usize,
+    source: &'a str,
+) -> Option<&'a str> {
+    let mut cursor = equal_index;
+    while cursor > 0 {
+        cursor -= 1;
+        match tokens[cursor].kind {
+            TokenKind::Colon => {
+                let type_index = cursor + 1;
+                if type_index + 1 != equal_index || tokens[type_index].kind != TokenKind::Identifier
+                {
+                    return None;
+                }
+                // A declaration annotation has an identifier immediately before the colon and
+                // a const/let/static keyword before that identifier.  This avoids treating an
+                // object-literal property (`{ value: 1i32 }`) as a typed declaration.
+                if cursor < 2
+                    || tokens[cursor - 1].kind != TokenKind::Identifier
+                    || !tokens[..cursor - 1].iter().rev().any(|token| {
+                        matches!(
+                            token.kind,
+                            TokenKind::Const | TokenKind::Let | TokenKind::Static
+                        )
+                    })
+                {
+                    return None;
+                }
+                return Some(&source[tokens[type_index].range.clone()]);
+            }
+            TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn sort_leading_imports(output: String) -> String {
@@ -267,7 +422,24 @@ impl Writer {
                 self.write("(");
             }
             TokenKind::LeftBracket => {
-                self.trim_space();
+                if matches!(
+                    previous,
+                    Some(
+                        TokenKind::Public
+                            | TokenKind::Protected
+                            | TokenKind::Private
+                            | TokenKind::Static
+                            | TokenKind::Abstract
+                            | TokenKind::Override
+                            | TokenKind::Move
+                            | TokenKind::Unsafe
+                            | TokenKind::Async
+                    )
+                ) {
+                    self.space();
+                } else {
+                    self.trim_space();
+                }
                 self.write("[");
             }
             TokenKind::Less | TokenKind::Greater if is_generic_delimiter(kind, previous, next) => {
@@ -282,6 +454,14 @@ impl Writer {
                 self.trim_space();
                 self.write("*");
                 self.pending_space = true;
+            }
+            TokenKind::Amp if next == Some(TokenKind::Mut) || is_prefix_reference(previous) => {
+                self.space();
+                self.write("&");
+            }
+            TokenKind::Star if matches!(next, Some(TokenKind::Mut | TokenKind::Const)) => {
+                self.space();
+                self.write("*");
             }
             kind if is_operator(kind) => {
                 self.space();
@@ -523,6 +703,27 @@ fn is_operator(kind: TokenKind) -> bool {
     )
 }
 
+fn is_prefix_reference(previous: Option<TokenKind>) -> bool {
+    previous.is_none_or(|kind| {
+        matches!(
+            kind,
+            TokenKind::Colon
+                | TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::Comma
+                | TokenKind::Equal
+                | TokenKind::Return
+                | TokenKind::Throw
+                | TokenKind::As
+                | TokenKind::FatArrow
+                | TokenKind::Question
+                | TokenKind::QuestionQuestion
+                | TokenKind::Semicolon
+                | TokenKind::LeftBrace
+        )
+    })
+}
+
 fn is_generic_delimiter(
     kind: TokenKind,
     previous: Option<TokenKind>,
@@ -556,7 +757,7 @@ mod tests {
 
     #[test]
     fn formatting_is_idempotent_and_preserves_non_trivia_tokens() {
-        let source = b"function  main( ) : void{/* keep */const x:i32=1i32+2i32;console.log(x);}";
+        let source = b"function  main( ) : void{/* keep */const x:i32=1+2;const inferred=3i32+4i32;console.log(x);}";
         let first = format("test.tn", source);
         assert!(first.is_success());
         let second = format("test.tn", first.output.as_bytes());
@@ -573,6 +774,25 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(token_text(&original), token_text(&formatted));
+    }
+
+    #[test]
+    fn elides_only_redundant_contextual_numeric_suffixes() {
+        let formatted = format(
+            "numeric-context.tn",
+            b"function answer(): i32 { return 1i32; } function main(): void { const typed: i32 = 42i32; const inferred = 7i32; const wrong: i64 = 9i32; const values: [i32; 2usize] = [1, 2]; }",
+        );
+        assert!(formatted.is_success(), "{:?}", formatted.diagnostics);
+        assert!(formatted.output.contains("typed: i32 = 42;"));
+        assert!(formatted.output.contains("return 1;"));
+        assert!(formatted.output.contains("inferred = 7i32;"));
+        assert!(formatted.output.contains("wrong: i64 = 9i32;"));
+        assert!(formatted.output.contains("2]"));
+        assert!(!formatted.output.contains("2usize"));
+        assert_eq!(
+            formatted.output,
+            format("numeric-context.tn", formatted.output.as_bytes()).output
+        );
     }
 
     #[test]
@@ -626,6 +846,27 @@ function main(): void {
             formatted.output,
             format("foreign.tn", formatted.output.as_bytes()).output
         );
+    }
+
+    #[test]
+    fn formats_pointer_reference_and_symbol_method_spelling() {
+        let formatted = format(
+            "canonical-types.tn",
+            b"interface Disposable{[Symbol.dispose]():void;}class Resource{public async [Symbol.asyncDispose]():Promise<void,never>{const borrowed:& i32=undefined;const shared:& mut i32=undefined;const mutable:* mut i32=undefined;const immutable:* const i32=undefined;return;}}",
+        );
+        assert!(formatted.is_success(), "{:?}", formatted.diagnostics);
+        assert!(
+            formatted
+                .output
+                .contains("public async [Symbol.asyncDispose]()")
+        );
+        assert!(formatted.output.contains("shared: &mut i32"));
+        assert!(formatted.output.contains("borrowed: &i32"));
+        assert!(formatted.output.contains("mutable: *mut i32"));
+        assert!(formatted.output.contains("immutable: *const i32"));
+        assert!(!formatted.output.contains("& mut"));
+        assert!(!formatted.output.contains("* mut"));
+        assert!(!formatted.output.contains("* const"));
     }
 
     #[test]

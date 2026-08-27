@@ -1,13 +1,36 @@
 use crate::project::SupportMode;
 use crate::{Emit, LinkConfig, Profile, Project, ProjectConfig, Sanitizer, Target};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tn_diagnostics::Diagnostic;
-use tn_hir::{DeclarationId, DefinitionData, Namespace, PrimitiveType, Program, Type, Visibility};
+use tn_hir::{
+    DeclarationId, DeclarationKind, DefinitionData, Namespace, PrimitiveType, Program, Type,
+    Visibility,
+};
 use tn_mir::{Callable, GenericBody, Instance, MonomorphizedBody};
+
+const BUILD_CACHE_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct CachedFile {
+    path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct BuildCache {
+    version: u32,
+    configuration: String,
+    compiler_sha256: String,
+    sources: Vec<CachedFile>,
+    product: CachedFile,
+    companions: Vec<CachedFile>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildOutput {
@@ -60,6 +83,120 @@ impl PhaseTimings {
     }
 }
 
+fn cache_path(product: &Path) -> PathBuf {
+    let name = product
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or_else(|| "typenative-product".to_owned(), str::to_owned);
+    product.with_file_name(format!(".{name}.tn-cache.json"))
+}
+
+fn support_mode_name(mode: SupportMode) -> &'static str {
+    match mode {
+        SupportMode::None => "none",
+        SupportMode::Runtime => "runtime",
+        SupportMode::Startup => "startup",
+    }
+}
+
+fn configuration_fingerprint(project: &Project) -> Option<String> {
+    serde_json::to_string(&serde_json::json!({
+        "root": &project.root,
+        "entry": &project.entry,
+        "configuration": &project.config,
+        "supportMode": support_mode_name(project.config.support_mode),
+    }))
+    .ok()
+}
+
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    Ok(encoded)
+}
+
+fn cached_file(path: PathBuf) -> std::io::Result<CachedFile> {
+    let sha256 = file_sha256(&path)?;
+    Ok(CachedFile { path, sha256 })
+}
+
+fn cached_file_is_current(file: &CachedFile) -> bool {
+    file_sha256(&file.path).is_ok_and(|digest| digest == file.sha256)
+}
+
+fn compiler_sha256() -> std::io::Result<String> {
+    file_sha256(&std::env::current_exe()?)
+}
+
+fn build_cache_is_current(project: &Project, product: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(cache_path(product)) else {
+        return false;
+    };
+    let Ok(cache) = serde_json::from_slice::<BuildCache>(&bytes) else {
+        return false;
+    };
+    cache.version == BUILD_CACHE_VERSION
+        && configuration_fingerprint(project).as_deref() == Some(&cache.configuration)
+        && compiler_sha256().is_ok_and(|digest| digest == cache.compiler_sha256.as_str())
+        && cached_file_is_current(&cache.product)
+        && cache.sources.iter().all(cached_file_is_current)
+        && cache.companions.iter().all(cached_file_is_current)
+}
+
+fn companion_paths(project: &Project, product: &Path) -> Vec<PathBuf> {
+    match project.config.emit {
+        Emit::SharedLibrary => vec![product.with_extension("h")],
+        Emit::NodeAddon => vec![product.with_extension("d.ts")],
+        Emit::Executable | Emit::Object | Emit::LlvmIr | Emit::Bitcode | Emit::Assembly => {
+            Vec::new()
+        }
+    }
+}
+
+fn write_build_cache(
+    project: &Project,
+    program: &Program,
+    product: &Path,
+) -> Result<(), BuildError> {
+    let mut source_paths = program
+        .graph
+        .modules
+        .iter()
+        .map(|module| module.path.clone())
+        .collect::<Vec<_>>();
+    source_paths.sort();
+    source_paths.dedup();
+    let sources = source_paths
+        .into_iter()
+        .map(cached_file)
+        .collect::<Result<Vec<_>, _>>()?;
+    let companions = companion_paths(project, product)
+        .into_iter()
+        .map(cached_file)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cache = BuildCache {
+        version: BUILD_CACHE_VERSION,
+        configuration: configuration_fingerprint(project)
+            .ok_or_else(|| BuildError::Message("build configuration is not serializable".into()))?,
+        compiler_sha256: compiler_sha256()?,
+        sources,
+        product: cached_file(product.to_path_buf())?,
+        companions,
+    };
+    let path = cache_path(product);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(temporary.as_file_mut(), &cache)
+        .map_err(|error| BuildError::Message(format!("failed to encode build cache: {error}")))?;
+    temporary.as_file_mut().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 /// Builds the configured `TypeNative` project through verified LLVM emission.
 ///
 /// # Errors
@@ -83,6 +220,12 @@ pub fn build_project_with_timings(
     timings_enabled: bool,
 ) -> Result<BuildOutput, BuildError> {
     let mut timings = PhaseTimings::new(timings_enabled);
+    let product = output.map_or_else(|| default_output(project), Path::to_path_buf);
+    if build_cache_is_current(project, &product) {
+        timings.record_duration("cache-hit", Duration::ZERO);
+        timings.emit();
+        return Ok(BuildOutput { product });
+    }
     let (program, checked_bodies, ownership, drop_semantics, module_duration, ownership_duration) =
         checked_program(project)?;
     timings.record_duration("module-check", module_duration);
@@ -129,9 +272,9 @@ pub fn build_project_with_timings(
     };
     let entry_instance = root.clone();
     let mut roots = root.iter().cloned().collect::<Vec<_>>();
+    roots.extend(decorator_roots(&program));
     roots.extend(drop_roots(&program, &drop_callables));
     match project.config.support_mode {
-        SupportMode::Startup => {}
         SupportMode::Runtime => roots.extend(runtime_support_functions(&program).into_iter().map(
             |(declaration, function)| {
                 instance_for_function(Callable::function(declaration.id), function)
@@ -147,7 +290,7 @@ pub fn build_project_with_timings(
                     }),
             );
         }
-        SupportMode::None => {}
+        SupportMode::Startup | SupportMode::None => {}
     }
     if project.config.support_mode == SupportMode::None && project.config.emit == Emit::NodeAddon {
         for (_, function) in entry_exported_functions(&program) {
@@ -400,7 +543,6 @@ pub fn build_project_with_timings(
         Profile::Debug => tn_codegen_llvm::CodegenProfile::Debug,
         Profile::Optimized => tn_codegen_llvm::CodegenProfile::Optimized,
     };
-    let product = output.map_or_else(|| default_output(project), Path::to_path_buf);
     if let Some(parent) = product.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -451,6 +593,7 @@ pub fn build_project_with_timings(
     } else if project.config.emit == Emit::NodeAddon {
         write_node_declarations(&program, &product.with_extension("d.ts"))?;
     }
+    write_build_cache(project, &program, &product)?;
     timings.record("llvm-link", started);
     timings.emit();
     Ok(BuildOutput { product })
@@ -617,6 +760,10 @@ fn function_effects(program: &Program, callable: Callable) -> Vec<DeclarationId>
         ) => constructor
             .iter()
             .chain(methods)
+            .find(|method| method.id == member)
+            .map(|method| &method.function),
+        (DefinitionData::Struct { methods, .. }, Some(member)) => methods
+            .iter()
             .find(|method| method.id == member)
             .map(|method| &method.function),
         (
@@ -1121,6 +1268,10 @@ fn type_parameters(program: &Program, body: &tn_mir::Body) -> Vec<String> {
             .chain(methods)
             .find(|method| method.id == member)
             .map(|method| &method.function),
+        (DefinitionData::Struct { methods, .. }, Some(member)) => methods
+            .iter()
+            .find(|method| method.id == member)
+            .map(|method| &method.function),
         (
             DefinitionData::Implementation { methods, .. }
             | DefinitionData::Extern { functions: methods },
@@ -1355,12 +1506,183 @@ fn layouts(
         inlines: inline_callables(program),
         async_functions: async_function_layouts(program),
         abi_wrappers: std::collections::BTreeMap::new(),
+        decorators: decorator_layouts(program),
     }
 }
 
 fn inline_callables(program: &Program) -> std::collections::BTreeSet<Callable> {
     let _ = program;
     std::collections::BTreeSet::new()
+}
+
+fn decorator_layouts(
+    program: &Program,
+) -> std::collections::BTreeMap<Callable, Vec<tn_codegen_llvm::DecoratorLayout>> {
+    let mut layouts: std::collections::BTreeMap<Callable, Vec<tn_codegen_llvm::DecoratorLayout>> =
+        std::collections::BTreeMap::new();
+    for definition in &program.definitions {
+        let module = program
+            .graph
+            .declaration(definition.declaration)
+            .and_then(|declaration| program.graph.module(declaration.module));
+        let Some(module) = module else {
+            continue;
+        };
+        let mut add = |callable: Callable,
+                       attributes: &[tn_hir::Attribute],
+                       signature: &tn_hir::Function,
+                       name: String,
+                       is_static: bool,
+                       is_private: bool| {
+            for attribute in attributes {
+                let Some((decorator_declaration, decorator)) =
+                    resolve_decorator(program, module, &attribute.name)
+                else {
+                    continue;
+                };
+                layouts
+                    .entry(callable)
+                    .or_default()
+                    .push(tn_codegen_llvm::DecoratorLayout {
+                        decorator: Callable::function(decorator_declaration),
+                        signature: function_type(decorator),
+                        name: name.clone(),
+                        is_static,
+                        is_private,
+                    });
+            }
+            let _ = signature;
+        };
+
+        let declaration_attributes: &[tn_hir::Attribute] = program
+            .graph
+            .declaration(definition.declaration)
+            .map_or(&[], |declaration| declaration.attributes.as_slice());
+        if let DefinitionData::Function(function) = &definition.data {
+            add(
+                Callable::function(definition.declaration),
+                declaration_attributes,
+                function,
+                program
+                    .graph
+                    .declaration(definition.declaration)
+                    .and_then(|declaration| declaration.name.clone())
+                    .unwrap_or_else(|| format!("function_{}", definition.declaration.0)),
+                false,
+                false,
+            );
+        }
+
+        let methods = match &definition.data {
+            DefinitionData::Struct { methods, .. }
+            | DefinitionData::Enum { methods, .. }
+            | DefinitionData::Interface { methods }
+            | DefinitionData::Implementation { methods, .. }
+            | DefinitionData::Class { methods, .. } => methods.as_slice(),
+            _ => &[],
+        };
+        for method in methods {
+            if method.attributes.is_empty() {
+                continue;
+            }
+            add(
+                Callable {
+                    declaration: definition.declaration,
+                    member: Some(method.id),
+                },
+                &method.attributes,
+                &method.function,
+                method.name.clone(),
+                method.receiver == tn_hir::ReceiverMode::Static,
+                method.visibility == Visibility::Private,
+            );
+        }
+        if let DefinitionData::Class {
+            constructor: Some(constructor),
+            ..
+        } = &definition.data
+            && !constructor.attributes.is_empty()
+        {
+            add(
+                Callable {
+                    declaration: definition.declaration,
+                    member: Some(constructor.id),
+                },
+                &constructor.attributes,
+                &constructor.function,
+                "constructor".to_owned(),
+                constructor.receiver == tn_hir::ReceiverMode::Static,
+                constructor.visibility == Visibility::Private,
+            );
+        }
+    }
+    layouts
+}
+
+fn decorator_roots(program: &Program) -> Vec<Instance> {
+    let layouts = decorator_layouts(program);
+    let mut roots = layouts
+        .values()
+        .flat_map(|decorators| decorators.iter())
+        .filter_map(|decorator| {
+            // The canonical unknown-identity decorator is intentionally a source-level marker;
+            // it has no first-class LLVM representation.  Typed method decorators do have a
+            // concrete callable contract and therefore need their bodies rooted for codegen.
+            if decorator
+                .signature
+                .parameters
+                .first()
+                .is_none_or(|ty| matches!(ty, Type::Unknown))
+            {
+                return None;
+            }
+            let definition = program.definition(decorator.decorator.declaration)?;
+            let DefinitionData::Function(function) = &definition.data else {
+                return None;
+            };
+            if !function.generics.is_empty() {
+                return None;
+            }
+            Some(instance_for_function(decorator.decorator, function))
+        })
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn resolve_decorator<'a>(
+    program: &'a Program,
+    module: &'a tn_hir::Module,
+    name: &str,
+) -> Option<(DeclarationId, &'a tn_hir::Function)> {
+    if let Some(declaration) = module.declarations.iter().find(|declaration| {
+        declaration.kind == DeclarationKind::Function && declaration.name.as_deref() == Some(name)
+    }) {
+        return program
+            .definition(declaration.id)
+            .and_then(|definition| match &definition.data {
+                DefinitionData::Function(function) => Some((declaration.id, function)),
+                _ => None,
+            });
+    }
+    module.imports.iter().find_map(|import| {
+        let tn_hir::ImportClause::Named(names) = &import.clause else {
+            return None;
+        };
+        let imported = names.iter().find(|item| item.local == name)?;
+        let target = program.graph.module(import.target)?;
+        let declaration = target.declarations.iter().find(|declaration| {
+            declaration.kind == DeclarationKind::Function
+                && declaration.exported
+                && declaration.name.as_deref() == Some(imported.imported.as_str())
+        })?;
+        let definition = program.definition(declaration.id)?;
+        match &definition.data {
+            DefinitionData::Function(function) => Some((declaration.id, function)),
+            _ => None,
+        }
+    })
 }
 
 fn async_function_layouts(
@@ -1484,12 +1806,15 @@ fn drop_layouts(program: &Program) -> std::collections::BTreeMap<DeclarationId, 
                 methods,
                 ..
             } => {
-                let is_drop = program
+                let is_disposable = program
                     .graph
                     .declaration(*interface)
                     .and_then(|declaration| declaration.name.as_deref())
-                    == Some("Drop");
-                if is_drop && let Some(method) = methods.iter().find(|method| method.name == "drop")
+                    == Some("Disposable");
+                if is_disposable
+                    && let Some(method) = methods
+                        .iter()
+                        .find(|method| method.name == "[Symbol.dispose]")
                 {
                     drops.insert(
                         *target,
@@ -1501,8 +1826,10 @@ fn drop_layouts(program: &Program) -> std::collections::BTreeMap<DeclarationId, 
                 }
             }
             DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. }
-                if has_drop_attribute(program, definition.declaration)
-                    && let Some(method) = methods.iter().find(|method| method.name == "drop") =>
+                if has_dispose_method(program, definition.declaration)
+                    && let Some(method) = methods
+                        .iter()
+                        .find(|method| method.name == "[Symbol.dispose]") =>
             {
                 drops.entry(definition.declaration).or_insert(Callable {
                     declaration: definition.declaration,
@@ -1526,11 +1853,10 @@ fn drop_roots(
             if !definition.generics.is_empty() {
                 return None;
             }
-            let methods = match &definition.data {
-                DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. } => {
-                    methods
-                }
-                _ => return None,
+            let (DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. }) =
+                &definition.data
+            else {
+                return None;
             };
             let method = methods
                 .iter()
@@ -1556,15 +1882,18 @@ fn drop_implementations(program: &Program) -> Vec<tn_mir::DropImplementation> {
         else {
             continue;
         };
-        let is_drop = program
+        let is_disposable = program
             .graph
             .declaration(*interface)
             .and_then(|declaration| declaration.name.as_deref())
-            == Some("Drop");
-        if !is_drop {
+            == Some("Disposable");
+        if !is_disposable {
             continue;
         }
-        let Some(method) = methods.iter().find(|method| method.name == "drop") else {
+        let Some(method) = methods
+            .iter()
+            .find(|method| method.name == "[Symbol.dispose]")
+        else {
             continue;
         };
         implementations.push(tn_mir::DropImplementation {
@@ -1578,7 +1907,7 @@ fn drop_implementations(program: &Program) -> Vec<tn_mir::DropImplementation> {
     for definition in &program.definitions {
         let (methods, target) = match &definition.data {
             DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. }
-                if has_drop_attribute(program, definition.declaration) =>
+                if has_dispose_method(program, definition.declaration) =>
             {
                 (
                     methods,
@@ -1595,7 +1924,10 @@ fn drop_implementations(program: &Program) -> Vec<tn_mir::DropImplementation> {
             }
             _ => continue,
         };
-        let Some(method) = methods.iter().find(|method| method.name == "drop") else {
+        let Some(method) = methods
+            .iter()
+            .find(|method| method.name == "[Symbol.dispose]")
+        else {
             continue;
         };
         implementations.push(tn_mir::DropImplementation {
@@ -1610,12 +1942,12 @@ fn drop_implementations(program: &Program) -> Vec<tn_mir::DropImplementation> {
     implementations
 }
 
-fn has_drop_attribute(program: &Program, declaration: DeclarationId) -> bool {
+fn has_dispose_method(program: &Program, declaration: DeclarationId) -> bool {
     program.definition(declaration).is_some_and(|definition| {
         matches!(
             &definition.data,
             DefinitionData::Struct { methods, .. } | DefinitionData::Class { methods, .. }
-                if methods.iter().any(|method| method.name == "drop")
+                if methods.iter().any(|method| method.name == "[Symbol.dispose]")
         )
     })
 }
@@ -2009,13 +2341,13 @@ fn startup_source_text(entry: &str, mode: EntryMode) -> String {
     );
     match mode {
         EntryMode::Void => format!(
-            "{preamble}(): void;\n}}\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    {entry}();\n  }}\n  return 0i32;\n}}\n"
+            "{preamble}(): void;\n}}\nexport unsafe function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    {entry}();\n  }}\n  return 0i32;\n}}\n"
         ),
         EntryMode::Integer => format!(
-            "{preamble}(): i32;\n}}\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    return {entry}();\n  }}\n}}\n"
+            "{preamble}(): i32;\n}}\nexport unsafe function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    return {entry}();\n  }}\n}}\n"
         ),
         EntryMode::FallibleVoid | EntryMode::FallibleInteger => format!(
-            "{preamble}(): EntryResult;\n  function tn_runtime_free(pointer: * mut u8): void;\n}}\nextern struct EntryResult {{\n  public failed: u64;\n  public payload: u64;\n}}\nexport function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    let result = {entry}();\n    if (result.failed !== 0u64) {{\n      const errorField = & mut result.payload;\n      tn_runtime_free(*(errorField as * mut * mut u8));\n      return 1i32;\n    }}\n    {}\n  }}\n}}\n",
+            "{preamble}(): EntryResult;\n  function tn_runtime_free(pointer: * mut u8): void;\n}}\nextern struct EntryResult {{\n  public failed: u64;\n  public payload: u64;\n}}\nexport unsafe function main(argc: i32, argv: * mut u8): i32 {{\n  unsafe {{\n    tn_process_set_args(argc, argv);\n    let result = {entry}();\n    if (result.failed !== 0u64) {{\n      const errorField = & mut result.payload;\n      tn_runtime_free(*(errorField as * mut * mut u8));\n      return 1i32;\n    }}\n    {}\n  }}\n}}\n",
             if matches!(mode, EntryMode::FallibleInteger) {
                 "const valueField = & mut result.payload;\n    return *(valueField as * mut i32);"
             } else {

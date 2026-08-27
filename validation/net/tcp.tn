@@ -4,35 +4,41 @@ import { NetworkError, TcpListener, tryConnect } from "std/net";
 
 async function client(port: u16): Promise<void, never> {
   try {
-    let stream = try tryConnect({ host: "127.0.0.1", port: port });
-    let output = new BytesMut({ capacity: 8usize });
+    let stream = try tryConnect({
+      host: "127.0.0.1", port: port
+    });
+    let output = new BytesMut({
+      capacity: 8
+    });
     output.appendAscii("ping");
-    try await stream.writeAll( & output);
+    try await stream.writeAll( &output);
     stream.close();
   } catch (error: NetworkError) {
     return;
   }
   return;
 }
-
 async function exchange(): Promise<i32, never> {
-  const port: u16 = 39291u16;
+  const port: u16 = 39291;
   try {
-    await using listener = try new TcpListener({ host: "127.0.0.1", port: port });
-    using tasks = new TaskGroup();
+    await using listener = try new TcpListener({
+      host: "127.0.0.1", port: port
+    });
+    await using tasks = new TaskGroup();
     tasks.spawn(client(port));
     let stream = try await listener.accept();
-    let input = new BytesMut({ capacity: 8usize });
-    const received = try await stream.readInto( & mut input);
+    let input = new BytesMut({
+      capacity: 8
+    });
+    const received = try await stream.readInto( &mut input);
     stream.close();
-    tasks.close();
-    const first = input.get(0usize)!;
-    return received === 4usize && first === 112u8 ? 0i32 : 1i32;
+    await tasks.close();
+    const first = input.get(0)!;
+    return received === 4 && first === 112?0: 1;
   } catch (error: NetworkError) {
     return error.rawCode;
   }
 }
-
 function main(): i32 {
   return run(exchange());
 }

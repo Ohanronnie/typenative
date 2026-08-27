@@ -1,22 +1,22 @@
 import { isNull } from "std/alloc";
 import { lookup } from "std/env";
-import { closeLibrary, FfiError, symbol, tryOpenLibraryPointer } from "std/ffi";
+import { FfiError, tryOpenLibraryPointer } from "std/ffi";
 
 export function pluginProbe(): i32 {
-  const path = lookup("FORGE_PLUGIN_PATH");
-  if (isNull(path)) {
-    return 1i32;
-  }
   try {
     unsafe {
+      const path = lookup("FORGE_PLUGIN_PATH");
+      if (isNull(path)) {
+        return 1;
+      }
       let library = try tryOpenLibraryPointer(path);
-      const pointer = symbol( & library, "strlen");
-      const status = closeLibrary( & mut library);
+      const pointer = library.symbol("strlen");
+      const status = library.close();
       let missing = false;
-      missing = isNull(pointer as * const u8);
-      return missing || status !== 0i32?2i32: 0i32;
+      missing = isNull(pointer as *const u8);
+      return missing || status !== 0?2: 0;
     }
   } catch (error: FfiError) {
-    return 2i32;
+    return 2;
   }
 }

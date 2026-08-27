@@ -4,7 +4,7 @@ struct Failure {
 }
 function failure(): Failure {
   return {
-    rawCode: 17i32,
+    rawCode: 17,
   };
 }
 export function syncFail(): i32 throws Failure {
@@ -16,6 +16,6 @@ export class Holder {
   public echo(value: Bytes): Bytes throws Failure {
     return value;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }

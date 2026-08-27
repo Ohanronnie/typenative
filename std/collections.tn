@@ -3,18 +3,18 @@ import { AsyncIterable, Equal, Hash, IntoIterator, Iterable, Iterator, Ord, Orde
 import { c_size } from "std/ffi";
 
 declare extern "C" {
-  function tn_runtime_free(pointer: * mut u8): void;
-  function tn_bytes_write_u8(bytes: * mut u8, length: c_size, index: c_size, value: u8): i32;
-  function tn_bytes_copy_at(source: * const u8, length: c_size, offset: c_size, count: c_size, destination: * mut u8): i32;
-  function tn_bytes_copy_to_at(source: * const u8, sourceLength: c_size, sourceOffset: c_size, count: c_size, destination: * mut u8, destinationLength: c_size, destinationOffset: c_size): i32;
-  function tn_bytes_move_at(bytes: * mut u8, length: c_size, sourceOffset: c_size, destinationOffset: c_size, count: c_size): i32;
+  function tn_runtime_free(pointer: *mut u8): void;
+  function tn_bytes_write_u8(bytes: *mut u8, length: c_size, index: c_size, value: u8): i32;
+  function tn_bytes_copy_at(source: *const u8, length: c_size, offset: c_size, count: c_size, destination: *mut u8): i32;
+  function tn_bytes_copy_to_at(source: *const u8, sourceLength: c_size, sourceOffset: c_size, count: c_size, destination: *mut u8, destinationLength: c_size, destinationOffset: c_size): i32;
+  function tn_bytes_move_at(bytes: *mut u8, length: c_size, sourceOffset: c_size, destinationOffset: c_size, count: c_size): i32;
 }
 function sizeOf<T>(): usize {
-  return 0usize;
+  return 0;
 }
-function rawAllocTyped<T>(size: usize): * mut T {
+function rawAllocTyped<T>(size: usize): *mut T {
   unsafe {
-    return rawAlloc(size)as * mut T;
+    return rawAlloc(size)as *mut T;
   }
 }
 function isString<T>(): bool {
@@ -23,78 +23,82 @@ function isString<T>(): bool {
 function isCopy<T>(): bool {
   return false;
 }
-function elementInitialized(pointer: * const u8, index: usize): bool {
+function elementInitialized(pointer: *const u8, index: usize): bool {
   return false;
 }
-function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
+function moveElement<T>(pointer: *mut T, index: usize, initialized: *mut u8): T {
   unsafe {
     return * pointer;
   }
 }
-function dropElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): bool {
+function dropElement<T>(pointer: *mut T, index: usize, initialized: *mut u8): bool {
   return false;
 }
-function dropValue<T>(pointer: * mut T): bool {
+function dropValue<T>(pointer: *mut T): bool {
   return false;
 }
-function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
+function storeElement<T>(pointer: *mut T, index: usize, initialized: *mut u8, value: T): bool {
   return false;
 }
-function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
+function dropInitializedElements<T>(pointer: *mut T, length: usize, initialized: *mut u8): bool {
   return false;
 }
-function borrowElement<T>(pointer: * const T, index: usize): & T {
+function borrowElement<T>(pointer: *const T, index: usize): &T {
   unsafe {
     return & * pointer;
   }
 }
-function borrowElementMut<T>(pointer: * mut T, index: usize): & mut T {
+function borrowElementMut<T>(pointer: *mut T, index: usize): &mut T {
   unsafe {
-    return & mut * pointer;
+    return &mut * pointer;
   }
 }
-function sliceFromRawParts<T>(pointer: * const T, length: usize): &[T] {
+function sliceFromRawParts<T>(pointer: *const T, length: usize): &[T] {
   unsafe {
-    return & *(pointer as * const[T]);
+    return & *(pointer as *const[T]);
   }
 }
 function allocationError(): AllocError {
   return {
-    rawCode: 12i32
+    rawCode: 12
   };
 }
 export struct ArrayOptions {
   public capacity: usize;
 }
 export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
-  private pointer: * mut T;
-  private initialized: * mut u8;
+  private pointer: *mut T;
+  private initialized: *mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
   private elementSize: usize;
-  public constructor(options: ArrayOptions) {
+  public constructor(options: ArrayOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const capacity = resolved.capacity;
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
-      this.initialized = rawAlloc(options.capacity);
+      this.pointer = rawAllocTyped<T>(capacity * elementSize);
+      this.initialized = rawAlloc(capacity);
     }
-    this.length = 0usize;
-    this.capacity = options.capacity;
+    this.length = 0;
+    this.capacity = capacity;
     this.elementSize = elementSize;
-    let index: usize = 0usize;
-    while (index<options.capacity) {
+    let index: usize = 0;
+    while (index<capacity) {
       unsafe {
-        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+        tn_bytes_write_u8(this.initialized, capacity, index, 0);
       }
-      index = index + 1usize;
+      index = index + 1;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.length, this.initialized);
     }
     unsafe {
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
     }
   }
@@ -102,9 +106,9 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     if (minimumCapacity <= this.capacity) {
       return;
     }
-    let next: usize = 1usize;
-    if (this.capacity > 0usize) {
-      next = this.capacity * 2usize;
+    let next: usize = 1;
+    if (this.capacity > 0) {
+      next = this.capacity * 2;
     }
     if (next<minimumCapacity) {
       next = minimumCapacity;
@@ -112,22 +116,22 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     unsafe {
       const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
-      let initializedIndex: usize = 0usize;
+      let initializedIndex: usize = 0;
       while (initializedIndex<next) {
-        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
-        initializedIndex = initializedIndex + 1usize;
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0);
+        initializedIndex = initializedIndex + 1;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<this.length) {
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as *mut u8, next * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, index, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
@@ -138,32 +142,32 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     if (this.length === this.capacity) {
       return;
     }
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       unsafe {
-        rawFree(this.pointer as * mut u8);
+        rawFree(this.pointer as *mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAllocTyped<T>(0usize);
-        this.initialized = rawAlloc(0usize);
+        this.pointer = rawAllocTyped<T>(0);
+        this.initialized = rawAlloc(0);
       }
-      this.capacity = 0usize;
+      this.capacity = 0;
       return;
     }
     const target = this.length;
     unsafe {
       const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<target) {
-        tn_bytes_write_u8(replacementInitialized, target, index, 0u8);
+        tn_bytes_write_u8(replacementInitialized, target, index, 0);
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as *mut u8, target * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, index, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
@@ -172,28 +176,28 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
   }
   public push(value: T): void {
     if (this.length === this.capacity) {
-      this.reserve(this.length + 1usize);
+      this.reserve(this.length + 1);
     }
     if (isCopy<T>()) {
       unsafe {
-        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, this.length * this.elementSize);
+        tn_bytes_copy_to_at(( &value)as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, this.length * this.elementSize);
       }
     } else {
       unsafe {
         storeElement<T>(this.pointer, this.length, this.initialized, move value);
       }
     }
-    this.length = this.length + 1usize;
+    this.length = this.length + 1;
   }
-  public at(index: usize): & T | undefined {
+  public at(index: usize): &T | undefined {
     if (index >= this.length) {
       return undefined;
     }
     unsafe {
-      return borrowElement<T>(this.pointer as * const T, index);
+      return borrowElement<T>(this.pointer as *const T, index);
     }
   }
-  public atMut(index: usize): & mut T | undefined {
+  public atMut(index: usize): &mut T | undefined {
     if (index >= this.length) {
       return undefined;
     }
@@ -207,7 +211,7 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     }
     if (isCopy<T>()) {
       unsafe {
-        return tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, index * this.elementSize) === 0i32;
+        return tn_bytes_copy_to_at(( &value)as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, index * this.elementSize) === 0;
       }
     } else {
       unsafe {
@@ -221,33 +225,33 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     }
     if (!isCopy<T>()) {
       unsafe {
-        if (!elementInitialized(this.initialized as * const u8, index)) {
+        if (!elementInitialized(this.initialized as *const u8, index)) {
           return undefined;
         }
         const value = moveElement<T>(this.pointer, index, this.initialized);
-        const remaining = this.length - index - 1usize;
-        if (remaining > 0usize) {
-          tn_bytes_move_at(this.pointer as * mut u8, this.capacity * this.elementSize,(index + 1usize) * this.elementSize, index * this.elementSize, remaining * this.elementSize);
-          tn_bytes_move_at(this.initialized, this.capacity, index + 1usize, index, remaining);
+        const remaining = this.length - index - 1;
+        if (remaining > 0) {
+          tn_bytes_move_at(this.pointer as *mut u8, this.capacity * this.elementSize,(index + 1) * this.elementSize, index * this.elementSize, remaining * this.elementSize);
+          tn_bytes_move_at(this.initialized, this.capacity, index + 1, index, remaining);
         }
-        tn_bytes_write_u8(this.initialized, this.capacity, this.length - 1usize, 0u8);
-        this.length = this.length - 1usize;
+        tn_bytes_write_u8(this.initialized, this.capacity, this.length - 1, 0);
+        this.length = this.length - 1;
         return value;
       }
     }
     unsafe {
       const output = rawAllocTyped<T>(this.elementSize);
-      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
-        rawFree(output as * mut u8);
+      if (tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as *mut u8) !== 0) {
+        rawFree(output as *mut u8);
         return undefined;
       }
-      const remaining = this.length - index - 1usize;
-      if (remaining > 0usize) {
-        tn_bytes_move_at(this.pointer as * mut u8, this.capacity * this.elementSize,(index + 1usize) * this.elementSize, index * this.elementSize, remaining * this.elementSize);
+      const remaining = this.length - index - 1;
+      if (remaining > 0) {
+        tn_bytes_move_at(this.pointer as *mut u8, this.capacity * this.elementSize,(index + 1) * this.elementSize, index * this.elementSize, remaining * this.elementSize);
       }
-      this.length = this.length - 1usize;
+      this.length = this.length - 1;
       const value = * output;
-      rawFree(output as * mut u8);
+      rawFree(output as *mut u8);
       return value;
     }
   }
@@ -257,7 +261,7 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     }
     if (!isCopy<T>()) {
       unsafe {
-        if (!elementInitialized(this.initialized as * const u8, index)) {
+        if (!elementInitialized(this.initialized as *const u8, index)) {
           return undefined;
         }
         return moveElement<T>(this.pointer, index, this.initialized);
@@ -265,30 +269,30 @@ export class Array<T > implements IntoIterator<T, ArrayIterator<T> > {
     }
     unsafe {
       const output = rawAllocTyped<T>(this.elementSize);
-      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
-        rawFree(output as * mut u8);
+      if (tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, output as *mut u8) !== 0) {
+        rawFree(output as *mut u8);
         return undefined;
       }
       const value = * output;
-      rawFree(output as * mut u8);
+      rawFree(output as *mut u8);
       return value;
     }
   }
   public pop(): T | undefined {
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       return undefined;
     }
-    return this.removeAt(this.length - 1usize);
+    return this.removeAt(this.length - 1);
   }
   public clear(): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.length, this.initialized);
     }
-    this.length = 0usize;
+    this.length = 0;
   }
   public slice(): &[T] {
     unsafe {
-      return sliceFromRawParts<T>(this.pointer as * const T, this.length);
+      return sliceFromRawParts<T>(this.pointer as *const T, this.length);
     }
   }
   move intoIterator(): ArrayIterator<T> {
@@ -300,11 +304,11 @@ export class ArrayIterator<T > implements Iterator<T>, Iterable<T> {
   private cursor: usize;
   public constructor(collection: Array<T >) {
     this.collection = move collection;
-    this.cursor = 0usize;
+    this.cursor = 0;
   }
   private nextIndex(): usize {
     const index = this.cursor;
-    this.cursor = this.cursor + 1usize;
+    this.cursor = this.cursor + 1;
     return index;
   }
   next(): T | undefined {
@@ -317,11 +321,11 @@ export class AsyncArrayIterator<T > implements AsyncIterable<T> {
   private cursor: usize;
   public constructor(collection: Array<T >) {
     this.collection = move collection;
-    this.cursor = 0usize;
+    this.cursor = 0;
   }
   private nextIndex(): usize {
     const index = this.cursor;
-    this.cursor = this.cursor + 1usize;
+    this.cursor = this.cursor + 1;
     return index;
   }
   async next(): Promise<T | undefined, never> {
@@ -333,34 +337,38 @@ export struct QueueOptions {
   public capacity: usize;
 }
 export class Queue<T > implements IntoIterator<T, QueueIterator<T> > {
-  private pointer: * mut T;
-  private initialized: * mut u8;
+  private pointer: *mut T;
+  private initialized: *mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
   private elementSize: usize;
   private head: usize;
-  public constructor(options: QueueOptions) {
+  public constructor(options: QueueOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const capacity = resolved.capacity;
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
-      this.initialized = rawAlloc(options.capacity);
+      this.pointer = rawAllocTyped<T>(capacity * elementSize);
+      this.initialized = rawAlloc(capacity);
     }
-    this.length = 0usize;
-    this.capacity = options.capacity;
+    this.length = 0;
+    this.capacity = capacity;
     this.elementSize = elementSize;
-    this.head = 0usize;
-    let index: usize = 0usize;
-    while (index<options.capacity) {
+    this.head = 0;
+    let index: usize = 0;
+    while (index<capacity) {
       unsafe {
-        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+        tn_bytes_write_u8(this.initialized, capacity, index, 0);
       }
-      index = index + 1usize;
+      index = index + 1;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
     }
   }
@@ -368,9 +376,9 @@ export class Queue<T > implements IntoIterator<T, QueueIterator<T> > {
     if (minimumCapacity <= this.capacity) {
       return;
     }
-    let next: usize = 1usize;
-    if (this.capacity > 0usize) {
-      next = this.capacity * 2usize;
+    let next: usize = 1;
+    if (this.capacity > 0) {
+      next = this.capacity * 2;
     }
     if (next<minimumCapacity) {
       next = minimumCapacity;
@@ -378,129 +386,129 @@ export class Queue<T > implements IntoIterator<T, QueueIterator<T> > {
     unsafe {
       const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
-      let initializedIndex: usize = 0usize;
+      let initializedIndex: usize = 0;
       while (initializedIndex<next) {
-        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
-        initializedIndex = initializedIndex + 1usize;
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0);
+        initializedIndex = initializedIndex + 1;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<this.length) {
         const sourceIndex =(this.head + index) % this.capacity;
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as *mut u8, next * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
     }
     this.capacity = next;
-    this.head = 0usize;
+    this.head = 0;
   }
   public shrinkToFit(): void {
     if (this.length === this.capacity) {
       return;
     }
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       unsafe {
-        rawFree(this.pointer as * mut u8);
+        rawFree(this.pointer as *mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAllocTyped<T>(0usize);
-        this.initialized = rawAlloc(0usize);
+        this.pointer = rawAllocTyped<T>(0);
+        this.initialized = rawAlloc(0);
       }
-      this.capacity = 0usize;
-      this.head = 0usize;
+      this.capacity = 0;
+      this.head = 0;
       return;
     }
     const target = this.length;
     unsafe {
       const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
-      let initializedIndex: usize = 0usize;
+      let initializedIndex: usize = 0;
       while (initializedIndex<target) {
-        tn_bytes_write_u8(replacementInitialized, target, initializedIndex, 0u8);
-        initializedIndex = initializedIndex + 1usize;
+        tn_bytes_write_u8(replacementInitialized, target, initializedIndex, 0);
+        initializedIndex = initializedIndex + 1;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<this.length) {
         const sourceIndex =(this.head + index) % this.capacity;
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as *mut u8, target * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
     }
     this.capacity = target;
-    this.head = 0usize;
+    this.head = 0;
   }
   public enqueue(value: T): void {
     if (this.length === this.capacity) {
-      this.reserve(this.length + 1usize);
+      this.reserve(this.length + 1);
     }
     const destinationIndex =(this.head + this.length) % this.capacity;
     if (isCopy<T>()) {
       unsafe {
-        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, destinationIndex * this.elementSize);
+        tn_bytes_copy_to_at(( &value)as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, destinationIndex * this.elementSize);
       }
     } else {
       unsafe {
         storeElement<T>(this.pointer, destinationIndex, this.initialized, move value);
       }
     }
-    this.length = this.length + 1usize;
+    this.length = this.length + 1;
   }
   public dequeue(): T | undefined {
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       return undefined;
     }
     const sourceIndex = this.head;
     if (!isCopy<T>()) {
       unsafe {
         const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
-        this.head =(this.head + 1usize) % this.capacity;
-        this.length = this.length - 1usize;
+        this.head =(this.head + 1) % this.capacity;
+        this.length = this.length - 1;
         return value;
       }
     }
     unsafe {
       const output = rawAllocTyped<T>(this.elementSize);
-      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
-        rawFree(output as * mut u8);
+      if (tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as *mut u8) !== 0) {
+        rawFree(output as *mut u8);
         return undefined;
       }
       const value = * output;
-      rawFree(output as * mut u8);
-      this.head =(this.head + 1usize) % this.capacity;
-      this.length = this.length - 1usize;
+      rawFree(output as *mut u8);
+      this.head =(this.head + 1) % this.capacity;
+      this.length = this.length - 1;
       return value;
     }
   }
-  public peek(): & T | undefined {
-    if (this.length === 0usize) {
+  public peek(): &T | undefined {
+    if (this.length === 0) {
       return undefined;
     }
     unsafe {
-      return borrowElement<T>(this.pointer as * const T, this.head);
+      return borrowElement<T>(this.pointer as *const T, this.head);
     }
   }
   public clear(): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
     }
-    this.length = 0usize;
-    this.head = 0usize;
+    this.length = 0;
+    this.head = 0;
   }
   move intoIterator(): QueueIterator<T> {
     return new QueueIterator<T>(move this);
@@ -519,34 +527,38 @@ export struct DequeOptions {
   public capacity: usize;
 }
 export class Deque<T > implements IntoIterator<T, DequeIterator<T> > {
-  private pointer: * mut T;
-  private initialized: * mut u8;
+  private pointer: *mut T;
+  private initialized: *mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
   private elementSize: usize;
   private head: usize;
-  public constructor(options: DequeOptions) {
+  public constructor(options: DequeOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const capacity = resolved.capacity;
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
-      this.initialized = rawAlloc(options.capacity);
+      this.pointer = rawAllocTyped<T>(capacity * elementSize);
+      this.initialized = rawAlloc(capacity);
     }
-    this.length = 0usize;
-    this.capacity = options.capacity;
+    this.length = 0;
+    this.capacity = capacity;
     this.elementSize = elementSize;
-    this.head = 0usize;
-    let index: usize = 0usize;
-    while (index<options.capacity) {
+    this.head = 0;
+    let index: usize = 0;
+    while (index<capacity) {
       unsafe {
-        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+        tn_bytes_write_u8(this.initialized, capacity, index, 0);
       }
-      index = index + 1usize;
+      index = index + 1;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
     }
   }
@@ -554,9 +566,9 @@ export class Deque<T > implements IntoIterator<T, DequeIterator<T> > {
     if (minimumCapacity <= this.capacity) {
       return;
     }
-    let next: usize = 1usize;
-    if (this.capacity > 0usize) {
-      next = this.capacity * 2usize;
+    let next: usize = 1;
+    if (this.capacity > 0) {
+      next = this.capacity * 2;
     }
     if (next<minimumCapacity) {
       next = minimumCapacity;
@@ -564,118 +576,118 @@ export class Deque<T > implements IntoIterator<T, DequeIterator<T> > {
     unsafe {
       const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
-      let initializedIndex: usize = 0usize;
+      let initializedIndex: usize = 0;
       while (initializedIndex<next) {
-        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
-        initializedIndex = initializedIndex + 1usize;
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0);
+        initializedIndex = initializedIndex + 1;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<this.length) {
         const sourceIndex =(this.head + index) % this.capacity;
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as *mut u8, next * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
     }
     this.capacity = next;
-    this.head = 0usize;
+    this.head = 0;
   }
   public shrinkToFit(): void {
     if (this.length === this.capacity) {
       return;
     }
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       unsafe {
-        rawFree(this.pointer as * mut u8);
+        rawFree(this.pointer as *mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAllocTyped<T>(0usize);
-        this.initialized = rawAlloc(0usize);
+        this.pointer = rawAllocTyped<T>(0);
+        this.initialized = rawAlloc(0);
       }
-      this.capacity = 0usize;
-      this.head = 0usize;
+      this.capacity = 0;
+      this.head = 0;
       return;
     }
     const target = this.length;
     unsafe {
       const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
-      let initializedIndex: usize = 0usize;
+      let initializedIndex: usize = 0;
       while (initializedIndex<target) {
-        tn_bytes_write_u8(replacementInitialized, target, initializedIndex, 0u8);
-        initializedIndex = initializedIndex + 1usize;
+        tn_bytes_write_u8(replacementInitialized, target, initializedIndex, 0);
+        initializedIndex = initializedIndex + 1;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<this.length) {
         const sourceIndex =(this.head + index) % this.capacity;
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, replacement as *mut u8, target * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
     }
     this.capacity = target;
-    this.head = 0usize;
+    this.head = 0;
   }
   public pushBack(value: T): void {
     if (this.length === this.capacity) {
-      this.reserve(this.length + 1usize);
+      this.reserve(this.length + 1);
     }
     const destinationIndex =(this.head + this.length) % this.capacity;
     if (isCopy<T>()) {
       unsafe {
-        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, destinationIndex * this.elementSize);
+        tn_bytes_copy_to_at(( &value)as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, destinationIndex * this.elementSize);
       }
     } else {
       unsafe {
         storeElement<T>(this.pointer, destinationIndex, this.initialized, move value);
       }
     }
-    this.length = this.length + 1usize;
+    this.length = this.length + 1;
   }
   public pushFront(value: T): void {
     if (this.length === this.capacity) {
-      this.reserve(this.length + 1usize);
+      this.reserve(this.length + 1);
     }
-    if (this.length === 0usize) {
-      this.head = 0usize;
-    } else if (this.head === 0usize) {
-      this.head = this.capacity - 1usize;
+    if (this.length === 0) {
+      this.head = 0;
+    } else if (this.head === 0) {
+      this.head = this.capacity - 1;
     } else {
-      this.head = this.head - 1usize;
+      this.head = this.head - 1;
     }
     if (isCopy<T>()) {
       unsafe {
-        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, this.head * this.elementSize);
+        tn_bytes_copy_to_at(( &value)as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, this.head * this.elementSize);
       }
     } else {
       unsafe {
         storeElement<T>(this.pointer, this.head, this.initialized, move value);
       }
     }
-    this.length = this.length + 1usize;
+    this.length = this.length + 1;
   }
   public popFront(): T | undefined {
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       return undefined;
     }
     const sourceIndex = this.head;
-    const nextHead =(this.head + 1usize) % this.capacity;
-    const nextLength = this.length - 1usize;
+    const nextHead =(this.head + 1) % this.capacity;
+    const nextLength = this.length - 1;
     if (!isCopy<T>()) {
       unsafe {
         const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
@@ -686,23 +698,23 @@ export class Deque<T > implements IntoIterator<T, DequeIterator<T> > {
     }
     unsafe {
       const output = rawAllocTyped<T>(this.elementSize);
-      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
-        rawFree(output as * mut u8);
+      if (tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as *mut u8) !== 0) {
+        rawFree(output as *mut u8);
         return undefined;
       }
       const value = * output;
-      rawFree(output as * mut u8);
+      rawFree(output as *mut u8);
       this.head = nextHead;
       this.length = nextLength;
       return value;
     }
   }
   public popBack(): T | undefined {
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       return undefined;
     }
-    const sourceIndex =(this.head + this.length - 1usize) % this.capacity;
-    const nextLength = this.length - 1usize;
+    const sourceIndex =(this.head + this.length - 1) % this.capacity;
+    const nextLength = this.length - 1;
     if (!isCopy<T>()) {
       unsafe {
         const value = moveElement<T>(this.pointer, sourceIndex, this.initialized);
@@ -712,39 +724,39 @@ export class Deque<T > implements IntoIterator<T, DequeIterator<T> > {
     }
     unsafe {
       const output = rawAllocTyped<T>(this.elementSize);
-      if (tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as * mut u8) !== 0i32) {
-        rawFree(output as * mut u8);
+      if (tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, sourceIndex * this.elementSize, this.elementSize, output as *mut u8) !== 0) {
+        rawFree(output as *mut u8);
         return undefined;
       }
       const value = * output;
-      rawFree(output as * mut u8);
+      rawFree(output as *mut u8);
       this.length = nextLength;
       return value;
     }
   }
-  public peek(): & T | undefined {
-    if (this.length === 0usize) {
+  public peek(): &T | undefined {
+    if (this.length === 0) {
       return undefined;
     }
     unsafe {
-      return borrowElement<T>(this.pointer as * const T, this.head);
+      return borrowElement<T>(this.pointer as *const T, this.head);
     }
   }
-  public peekBack(): & T | undefined {
-    if (this.length === 0usize) {
+  public peekBack(): &T | undefined {
+    if (this.length === 0) {
       return undefined;
     }
-    const index =(this.head + this.length - 1usize) % this.capacity;
+    const index =(this.head + this.length - 1) % this.capacity;
     unsafe {
-      return borrowElement<T>(this.pointer as * const T, index);
+      return borrowElement<T>(this.pointer as *const T, index);
     }
   }
   public clear(): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
     }
-    this.length = 0usize;
-    this.head = 0usize;
+    this.length = 0;
+    this.head = 0;
   }
   move intoIterator(): DequeIterator<T> {
     return new DequeIterator<T>(move this);
@@ -763,39 +775,43 @@ export struct HeapOptions {
   public capacity: usize;
 }
 export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> > {
-  private pointer: * mut T;
-  private initialized: * mut u8;
+  private pointer: *mut T;
+  private initialized: *mut u8;
   public readonly length: usize;
   public readonly capacity: usize;
   private elementSize: usize;
-  public constructor(options: HeapOptions) {
+  public constructor(options: HeapOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const capacity = resolved.capacity;
     const elementSize = sizeOf<T>();
     unsafe {
-      this.pointer = rawAllocTyped<T>(options.capacity * elementSize);
-      this.initialized = rawAlloc(options.capacity);
+      this.pointer = rawAllocTyped<T>(capacity * elementSize);
+      this.initialized = rawAlloc(capacity);
     }
-    this.length = 0usize;
-    this.capacity = options.capacity;
+    this.length = 0;
+    this.capacity = capacity;
     this.elementSize = elementSize;
-    let index: usize = 0usize;
-    while (index<options.capacity) {
+    let index: usize = 0;
+    while (index<capacity) {
       unsafe {
-        tn_bytes_write_u8(this.initialized, options.capacity, index, 0u8);
+        tn_bytes_write_u8(this.initialized, capacity, index, 0);
       }
-      index = index + 1usize;
+      index = index + 1;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
     }
   }
   private less(leftIndex: usize, rightIndex: usize): bool {
     unsafe {
-      const left = borrowElement<T>(this.pointer as * const T, leftIndex);
-      const right = borrowElement<T>(this.pointer as * const T, rightIndex);
+      const left = borrowElement<T>(this.pointer as *const T, leftIndex);
+      const right = borrowElement<T>(this.pointer as *const T, rightIndex);
       const comparable =( * left)as Ord<T>;
       return switch(comparable.compare(right)) {
         case Ordering.Less: true, case Ordering.Equal: false, case Ordering.Greater: false,
@@ -809,9 +825,9 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     if (isCopy<T>()) {
       unsafe {
         const temporary = rawAlloc(this.elementSize);
-        tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, leftIndex * this.elementSize, this.elementSize, temporary);
-        tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, rightIndex * this.elementSize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, leftIndex * this.elementSize);
-        tn_bytes_copy_to_at(temporary as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, rightIndex * this.elementSize);
+        tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, leftIndex * this.elementSize, this.elementSize, temporary);
+        tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, rightIndex * this.elementSize, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, leftIndex * this.elementSize);
+        tn_bytes_copy_to_at(temporary as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, rightIndex * this.elementSize);
         rawFree(temporary);
       }
       return;
@@ -827,9 +843,9 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     if (minimumCapacity <= this.capacity) {
       return;
     }
-    let next: usize = 1usize;
-    if (this.capacity > 0usize) {
-      next = this.capacity * 2usize;
+    let next: usize = 1;
+    if (this.capacity > 0) {
+      next = this.capacity * 2;
     }
     if (next<minimumCapacity) {
       next = minimumCapacity;
@@ -837,22 +853,22 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     unsafe {
       const replacement = rawAllocTyped<T>(next * this.elementSize);
       const replacementInitialized = rawAlloc(next);
-      let initializedIndex: usize = 0usize;
+      let initializedIndex: usize = 0;
       while (initializedIndex<next) {
-        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0u8);
-        initializedIndex = initializedIndex + 1usize;
+        tn_bytes_write_u8(replacementInitialized, next, initializedIndex, 0);
+        initializedIndex = initializedIndex + 1;
       }
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<this.length) {
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, next * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as *mut u8, next * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, index, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
@@ -863,32 +879,32 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     if (this.length === this.capacity) {
       return;
     }
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       unsafe {
-        rawFree(this.pointer as * mut u8);
+        rawFree(this.pointer as *mut u8);
         rawFree(this.initialized);
-        this.pointer = rawAllocTyped<T>(0usize);
-        this.initialized = rawAlloc(0usize);
+        this.pointer = rawAllocTyped<T>(0);
+        this.initialized = rawAlloc(0);
       }
-      this.capacity = 0usize;
+      this.capacity = 0;
       return;
     }
     const target = this.length;
     unsafe {
       const replacement = rawAllocTyped<T>(target * this.elementSize);
       const replacementInitialized = rawAlloc(target);
-      let index: usize = 0usize;
+      let index: usize = 0;
       while (index<target) {
-        tn_bytes_write_u8(replacementInitialized, target, index, 0u8);
+        tn_bytes_write_u8(replacementInitialized, target, index, 0);
         if (isCopy<T>()) {
-          tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as * mut u8, target * this.elementSize, index * this.elementSize);
+          tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, index * this.elementSize, this.elementSize, replacement as *mut u8, target * this.elementSize, index * this.elementSize);
         } else {
           const value = moveElement<T>(this.pointer, index, this.initialized);
           storeElement<T>(replacement, index, replacementInitialized, move value);
         }
-        index = index + 1usize;
+        index = index + 1;
       }
-      rawFree(this.pointer as * mut u8);
+      rawFree(this.pointer as *mut u8);
       rawFree(this.initialized);
       this.pointer = replacement;
       this.initialized = replacementInitialized;
@@ -897,11 +913,11 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
   }
   public push(value: T): void {
     if (this.length === this.capacity) {
-      this.reserve(this.length + 1usize);
+      this.reserve(this.length + 1);
     }
     if (isCopy<T>()) {
       unsafe {
-        tn_bytes_copy_to_at(( & value)as * const u8, this.elementSize, 0usize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, this.length * this.elementSize);
+        tn_bytes_copy_to_at(( &value)as *const u8, this.elementSize, 0, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, this.length * this.elementSize);
       }
     } else {
       unsafe {
@@ -909,9 +925,9 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
       }
     }
     let index = this.length;
-    this.length = this.length + 1usize;
-    while (index > 0usize) {
-      const parent =(index - 1usize) / 2usize;
+    this.length = this.length + 1;
+    while (index > 0) {
+      const parent =(index - 1) / 2;
       if (!this.less(index, parent)) {
         break;
       }
@@ -919,25 +935,25 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
       index = parent;
     }
   }
-  public peek(): & T | undefined {
-    if (this.length === 0usize) {
+  public peek(): &T | undefined {
+    if (this.length === 0) {
       return undefined;
     }
     unsafe {
-      return borrowElement<T>(this.pointer as * const T, 0usize);
+      return borrowElement<T>(this.pointer as *const T, 0);
     }
   }
   public pop(): T | undefined {
-    if (this.length === 0usize) {
+    if (this.length === 0) {
       return undefined;
     }
-    const finalIndex = this.length - 1usize;
+    const finalIndex = this.length - 1;
     if (!isCopy<T>()) {
       unsafe {
-        const result = moveElement<T>(this.pointer, 0usize, this.initialized);
-        if (finalIndex > 0usize) {
+        const result = moveElement<T>(this.pointer, 0, this.initialized);
+        if (finalIndex > 0) {
           const replacement = moveElement<T>(this.pointer, finalIndex, this.initialized);
-          storeElement<T>(this.pointer, 0usize, this.initialized, move replacement);
+          storeElement<T>(this.pointer, 0, this.initialized, move replacement);
         }
         this.length = finalIndex;
         this.siftDown();
@@ -946,11 +962,11 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     }
     unsafe {
       const output = rawAllocTyped<T>(this.elementSize);
-      tn_bytes_copy_at(this.pointer as * const u8, this.capacity * this.elementSize, 0usize, this.elementSize, output as * mut u8);
+      tn_bytes_copy_at(this.pointer as *const u8, this.capacity * this.elementSize, 0, this.elementSize, output as *mut u8);
       const result = * output;
-      rawFree(output as * mut u8);
-      if (finalIndex > 0usize) {
-        tn_bytes_copy_to_at(this.pointer as * const u8, this.capacity * this.elementSize, finalIndex * this.elementSize, this.elementSize, this.pointer as * mut u8, this.capacity * this.elementSize, 0usize);
+      rawFree(output as *mut u8);
+      if (finalIndex > 0) {
+        tn_bytes_copy_to_at(this.pointer as *const u8, this.capacity * this.elementSize, finalIndex * this.elementSize, this.elementSize, this.pointer as *mut u8, this.capacity * this.elementSize, 0);
       }
       this.length = finalIndex;
       this.siftDown();
@@ -958,13 +974,13 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     }
   }
   private siftDown(): void {
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (true) {
-      const left = index * 2usize + 1usize;
+      const left = index * 2 + 1;
       if (left >= this.length) {
         return;
       }
-      const right = left + 1usize;
+      const right = left + 1;
       let smallest = left;
       if (right<this.length && this.less(right, left)) {
         smallest = right;
@@ -980,7 +996,7 @@ export class Heap<T extends Ord<T> > implements IntoIterator<T, HeapIterator<T> 
     unsafe {
       dropInitializedElements<T>(this.pointer, this.capacity, this.initialized);
     }
-    this.length = 0usize;
+    this.length = 0;
   }
   move intoIterator(): HeapIterator<T> {
     return new HeapIterator<T>(move this);
@@ -995,41 +1011,41 @@ export class HeapIterator<T extends Ord<T> > implements Iterator<T> {
     return this.collection.pop();
   }
 }
-function tableHash<K extends Hash>(value: & K): u64 {
+function tableHash<K extends Hash>(value: &K): u64 {
   unsafe {
     const protocol = value as Hash;
     return protocol.hash();
   }
 }
-function tableEqual<K extends Equal<K> >(left: & K, right: & K): bool {
+function tableEqual<K extends Equal<K> >(left: &K, right: &K): bool {
   unsafe {
     const protocol = left as Equal<K>;
     return protocol.equals(right);
   }
 }
-function tableReadByte(pointer: * const u8, index: usize): u8 {
+function tableReadByte(pointer: *const u8, index: usize): u8 {
   unsafe {
     return * borrowElement<u8>(pointer, index);
   }
 }
-function tableReadState(pointer: * mut u8, index: usize): u8 {
+function tableReadState(pointer: *mut u8, index: usize): u8 {
   unsafe {
-    return tableReadByte(pointer as * const u8, index);
+    return tableReadByte(pointer as *const u8, index);
   }
 }
-function tableWriteByte(pointer: * mut u8, index: usize, value: u8): void {
+function tableWriteByte(pointer: *mut u8, index: usize, value: u8): void {
   unsafe {
-    const slot = borrowElement<u8>(pointer as * const u8, index)as * mut u8;
+    const slot = borrowElement<u8>(pointer as *const u8, index)as *mut u8;
     storeRaw<u8>(slot, value);
   }
 }
 class TypedTable<K extends Equal<K > & Hash, V> {
-  private keys: * mut K;
-  private values: * mut V;
-  private keyInitialized: * mut u8;
-  private valueInitialized: * mut u8;
-  private states: * mut u8;
-  private sequence: * mut usize;
+  private keys: *mut K;
+  private values: *mut V;
+  private keyInitialized: *mut u8;
+  private valueInitialized: *mut u8;
+  private states: *mut u8;
+  private sequence: *mut usize;
   public readonly length: usize;
   public readonly capacity: usize;
   private keySize: usize;
@@ -1040,8 +1056,8 @@ class TypedTable<K extends Equal<K > & Hash, V> {
   private mask: usize;
   public constructor(initialCapacity: usize, ordered: bool) {
     let capacity = initialCapacity;
-    if (capacity<8usize) {
-      capacity = 8usize;
+    if (capacity<8) {
+      capacity = 8;
     }
     const keySize = sizeOf<K>();
     const valueSize = sizeOf<V>();
@@ -1049,84 +1065,86 @@ class TypedTable<K extends Equal<K > & Hash, V> {
     this.valueSize = valueSize;
     this.keys = rawAllocTyped<K>(capacity * keySize);
     this.values = rawAllocTyped<V>(capacity * valueSize);
-    this.keyInitialized = rawAlloc(capacity);
-    this.valueInitialized = rawAlloc(capacity);
-    this.states = rawAlloc(capacity);
-    if (ordered) {
-      this.sequence = rawAllocTyped<usize>(capacity * sizeOf<usize>());
-    } else {
-      this.sequence = nullPointer<usize>();
+    unsafe {
+      this.keyInitialized = rawAlloc(capacity);
+      this.valueInitialized = rawAlloc(capacity);
+      this.states = rawAlloc(capacity);
+      if (ordered) {
+        this.sequence = rawAllocTyped<usize>(capacity * sizeOf<usize>());
+      } else {
+        this.sequence = nullPointer<usize>();
+      }
     }
-    this.length = 0usize;
+    this.length = 0;
     this.capacity = capacity;
     this.ordered = ordered;
-    this.used = 0usize;
-    this.nextSequence = 0usize;
-    if (capacity !== 0usize &&(capacity &(capacity - 1usize)) === 0usize) {
-      this.mask = capacity - 1usize;
+    this.used = 0;
+    this.nextSequence = 0;
+    if (capacity !== 0 &&(capacity &(capacity - 1)) === 0) {
+      this.mask = capacity - 1;
     } else {
-      this.mask = 0usize;
+      this.mask = 0;
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== capacity) {
       unsafe {
-        tableWriteByte(this.keyInitialized, index, 0u8);
-        tableWriteByte(this.valueInitialized, index, 0u8);
-        tableWriteByte(this.states, index, 0u8);
+        tableWriteByte(this.keyInitialized, index, 0);
+        tableWriteByte(this.valueInitialized, index, 0);
+        tableWriteByte(this.states, index, 0);
         if (ordered) {
-          storeRaw<usize>(borrowElement<usize>(this.sequence as * const usize, index)as * mut usize, 0usize);
+          storeRaw<usize>(borrowElement<usize>(this.sequence as *const usize, index)as *mut usize, 0);
         }
       }
-      index = index + 1usize;
+      index = index + 1;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     unsafe {
       dropInitializedElements<K>(this.keys, this.capacity, this.keyInitialized);
       dropInitializedElements<V>(this.values, this.capacity, this.valueInitialized);
-      rawFree(this.keys as * mut u8);
-      rawFree(this.values as * mut u8);
+      rawFree(this.keys as *mut u8);
+      rawFree(this.values as *mut u8);
       rawFree(this.keyInitialized);
       rawFree(this.valueInitialized);
       rawFree(this.states);
       if (this.ordered) {
-        rawFree(this.sequence as * mut u8);
+        rawFree(this.sequence as *mut u8);
       }
     }
   }
   private startIndex(hash: u64): usize {
-    if (this.mask !== 0usize) {
+    if (this.mask !== 0) {
       return u64ToUsize(hash & usizeToU64(this.mask));
     }
     return u64ToUsize(hash % usizeToU64(this.capacity));
   }
-  private slotFor(key: & K, hash: u64): usize {
+  private slotFor(key: &K, hash: u64): usize {
     let index = this.startIndex(hash);
     let tombstone = this.capacity;
-    let probes: usize = 0usize;
+    let probes: usize = 0;
     while (probes !== this.capacity) {
       const state = tableReadState(this.states, index);
-      if (state === 0u8) {
+      if (state === 0) {
         return tombstone !== this.capacity?tombstone: index;
       }
-      if (state === 2u8) {
+      if (state === 2) {
         if (tombstone === this.capacity) {
           tombstone = index;
         }
       } else {
         unsafe {
-          const stored = borrowElement<K>(this.keys as * const K, index);
+          const stored = borrowElement<K>(this.keys as *const K, index);
           if (tableEqual<K>(stored, key)) {
             return index;
           }
         }
       }
-      if (this.mask !== 0usize) {
-        index =(index + 1usize) & this.mask;
+      if (this.mask !== 0) {
+        index =(index + 1) & this.mask;
       } else {
-        index =(index + 1usize) % this.capacity;
+        index =(index + 1) % this.capacity;
       }
-      probes = probes + 1usize;
+      probes = probes + 1;
     }
     return tombstone;
   }
@@ -1140,60 +1158,62 @@ class TypedTable<K extends Equal<K > & Hash, V> {
     const oldCapacity = this.capacity;
     this.keys = rawAllocTyped<K>(target * this.keySize);
     this.values = rawAllocTyped<V>(target * this.valueSize);
-    this.keyInitialized = rawAlloc(target);
-    this.valueInitialized = rawAlloc(target);
-    this.states = rawAlloc(target);
-    if (this.ordered) {
-      this.sequence = rawAllocTyped<usize>(target * sizeOf<usize>());
-    } else {
-      this.sequence = nullPointer<usize>();
+    unsafe {
+      this.keyInitialized = rawAlloc(target);
+      this.valueInitialized = rawAlloc(target);
+      this.states = rawAlloc(target);
+      if (this.ordered) {
+        this.sequence = rawAllocTyped<usize>(target * sizeOf<usize>());
+      } else {
+        this.sequence = nullPointer<usize>();
+      }
     }
     this.capacity = target;
-    if (target !== 0usize &&(target &(target - 1usize)) === 0usize) {
-      this.mask = target - 1usize;
+    if (target !== 0 &&(target &(target - 1)) === 0) {
+      this.mask = target - 1;
     } else {
-      this.mask = 0usize;
+      this.mask = 0;
     }
-    this.used = 0usize;
-    let index: usize = 0usize;
+    this.used = 0;
+    let index: usize = 0;
     while (index !== target) {
       unsafe {
-        tableWriteByte(this.keyInitialized, index, 0u8);
-        tableWriteByte(this.valueInitialized, index, 0u8);
-        tableWriteByte(this.states, index, 0u8);
+        tableWriteByte(this.keyInitialized, index, 0);
+        tableWriteByte(this.valueInitialized, index, 0);
+        tableWriteByte(this.states, index, 0);
         if (this.ordered) {
-          storeRaw<usize>(borrowElement<usize>(this.sequence as * const usize, index)as * mut usize, 0usize);
+          storeRaw<usize>(borrowElement<usize>(this.sequence as *const usize, index)as *mut usize, 0);
         }
       }
-      index = index + 1usize;
+      index = index + 1;
     }
-    index = 0usize;
+    index = 0;
     while (index !== oldCapacity) {
-      if (tableReadState(oldStates, index) === 1u8) {
+      if (tableReadState(oldStates, index) === 1) {
         unsafe {
           const key = moveElement<K>(oldKeys, index, oldKeyInitialized);
           const value = moveElement<V>(oldValues, index, oldValueInitialized);
-          const slot = this.slotFor( & key, tableHash<K>( & key));
+          const slot = this.slotFor( &key, tableHash<K>( &key));
           storeElement<K>(this.keys, slot, this.keyInitialized, move key);
           storeElement<V>(this.values, slot, this.valueInitialized, move value);
-          tableWriteByte(this.states, slot, 1u8);
+          tableWriteByte(this.states, slot, 1);
           if (this.ordered) {
-            const oldOrder = * borrowElement<usize>(oldSequence as * const usize, index);
-            storeRaw<usize>(borrowElement<usize>(this.sequence as * const usize, slot)as * mut usize, oldOrder);
+            const oldOrder = * borrowElement<usize>(oldSequence as *const usize, index);
+            storeRaw<usize>(borrowElement<usize>(this.sequence as *const usize, slot)as *mut usize, oldOrder);
           }
-          this.used = this.used + 1usize;
+          this.used = this.used + 1;
         }
       }
-      index = index + 1usize;
+      index = index + 1;
     }
     unsafe {
-      rawFree(oldKeys as * mut u8);
-      rawFree(oldValues as * mut u8);
+      rawFree(oldKeys as *mut u8);
+      rawFree(oldValues as *mut u8);
       rawFree(oldKeyInitialized);
       rawFree(oldValueInitialized);
       rawFree(oldStates);
       if (this.ordered) {
-        rawFree(oldSequence as * mut u8);
+        rawFree(oldSequence as *mut u8);
       }
     }
   }
@@ -1203,27 +1223,27 @@ class TypedTable<K extends Equal<K > & Hash, V> {
     }
     let target = this.capacity;
     while (target<minimumCapacity) {
-      target = target * 2usize;
+      target = target * 2;
     }
     this.resize(target);
   }
   private ensureInsertCapacity(): void {
-    if (this.used + 1usize < this.capacity - this.capacity / 4usize) {
+    if (this.used + 1 < this.capacity - this.capacity / 4) {
       return;
     }
-    this.resize(this.capacity * 2usize);
+    this.resize(this.capacity * 2);
   }
   public insert(key: K, value: V): bool {
-    const hash = tableHash<K>( & key);
+    const hash = tableHash<K>( &key);
     return this.insertPrehashed(move key, move value, hash);
   }
   public insertPrehashed(key: K, value: V, hash: u64): bool {
     this.ensureInsertCapacity();
-    let slot = this.slotFor( & key, hash);
-    if (tableReadState(this.states, slot) === 1u8) {
+    let slot = this.slotFor( &key, hash);
+    if (tableReadState(this.states, slot) === 1) {
       const replacedKey = move key;
       unsafe {
-        dropValue<K>(( & mut replacedKey)as * mut K);
+        dropValue<K>(( &mut replacedKey)as *mut K);
         storeElement<V>(this.values, slot, this.valueInitialized, move value);
       }
       return false;
@@ -1231,52 +1251,52 @@ class TypedTable<K extends Equal<K > & Hash, V> {
     unsafe {
       storeElement<K>(this.keys, slot, this.keyInitialized, move key);
       storeElement<V>(this.values, slot, this.valueInitialized, move value);
-      tableWriteByte(this.states, slot, 1u8);
+      tableWriteByte(this.states, slot, 1);
       if (this.ordered) {
         const order = this.nextSequence;
-        storeRaw<usize>(borrowElement<usize>(this.sequence as * const usize, slot)as * mut usize, order);
-        this.nextSequence = this.nextSequence + 1usize;
+        storeRaw<usize>(borrowElement<usize>(this.sequence as *const usize, slot)as *mut usize, order);
+        this.nextSequence = this.nextSequence + 1;
       }
     }
-    this.length = this.length + 1usize;
-    this.used = this.used + 1usize;
+    this.length = this.length + 1;
+    this.used = this.used + 1;
     return true;
   }
-  public get(key: & K): & V | undefined {
+  public get(key: &K): &V | undefined {
     return this.getPrehashed(key, tableHash<K>(key));
   }
-  public getPrehashed(key: & K, hash: u64): & V | undefined {
+  public getPrehashed(key: &K, hash: u64): &V | undefined {
     const slot = this.slotFor(key, hash);
-    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1) {
       return undefined;
     }
     unsafe {
-      return borrowElement<V>(this.values as * const V, slot);
+      return borrowElement<V>(this.values as *const V, slot);
     }
   }
-  public getMut(key: & K): & mut V | undefined {
+  public getMut(key: &K): &mut V | undefined {
     return this.getMutPrehashed(key, tableHash<K>(key));
   }
-  public getMutPrehashed(key: & K, hash: u64): & mut V | undefined {
+  public getMutPrehashed(key: &K, hash: u64): &mut V | undefined {
     const slot = this.slotFor(key, hash);
-    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1) {
       return undefined;
     }
     unsafe {
       return borrowElementMut<V>(this.values, slot);
     }
   }
-  public contains(key: & K): bool {
+  public contains(key: &K): bool {
     const slot = this.slotFor(key, tableHash<K>(key));
-    return slot !== this.capacity && tableReadState(this.states, slot) === 1u8;
+    return slot !== this.capacity && tableReadState(this.states, slot) === 1;
   }
-  public remove(key: & K): V | undefined {
+  public remove(key: &K): V | undefined {
     const slot = this.slotFor(key, tableHash<K>(key));
-    if (slot === this.capacity || tableReadState(this.states, slot) !== 1u8) {
+    if (slot === this.capacity || tableReadState(this.states, slot) !== 1) {
       return undefined;
     }
-    tableWriteByte(this.states, slot, 2u8);
-    this.length = this.length - 1usize;
+    tableWriteByte(this.states, slot, 2);
+    this.length = this.length - 1;
     unsafe {
       dropElement<K>(this.keys, slot, this.keyInitialized);
       const removedValue = moveElement<V>(this.values, slot, this.valueInitialized);
@@ -1288,56 +1308,56 @@ class TypedTable<K extends Equal<K > & Hash, V> {
       dropInitializedElements<K>(this.keys, this.capacity, this.keyInitialized);
       dropInitializedElements<V>(this.values, this.capacity, this.valueInitialized);
     }
-    let index: usize = 0usize;
+    let index: usize = 0;
     while (index !== this.capacity) {
-      tableWriteByte(this.keyInitialized, index, 0u8);
-      tableWriteByte(this.valueInitialized, index, 0u8);
-      tableWriteByte(this.states, index, 0u8);
-      index = index + 1usize;
+      tableWriteByte(this.keyInitialized, index, 0);
+      tableWriteByte(this.valueInitialized, index, 0);
+      tableWriteByte(this.states, index, 0);
+      index = index + 1;
     }
-    this.length = 0usize;
-    this.used = 0usize;
-    this.nextSequence = 0usize;
+    this.length = 0;
+    this.used = 0;
+    this.nextSequence = 0;
   }
   public shrinkToFit(): void {
-    let target = this.length * 2usize;
-    if (target<8usize) {
-      target = 8usize;
+    let target = this.length * 2;
+    if (target<8) {
+      target = 8;
     }
     if (target<this.capacity) {
       this.resize(target);
     }
   }
-  public nextEntry(cursor: & mut usize): MapEntry<K, V > | undefined {
+  public nextEntry(cursor: &mut usize): MapEntry<K, V > | undefined {
     let selected = this.capacity;
     if (this.ordered) {
-      let selectedOrder = ~0usize;
-      let index: usize = 0usize;
+      let selectedOrder: usize = ~0;
+      let index: usize = 0;
       while (index !== this.capacity) {
-        if (tableReadState(this.states, index) === 1u8) {
+        if (tableReadState(this.states, index) === 1) {
           unsafe {
-            const order = * borrowElement<usize>(this.sequence as * const usize, index);
+            const order = * borrowElement<usize>(this.sequence as *const usize, index);
             if (order >= * cursor && order<selectedOrder) {
               selected = index;
               selectedOrder = order;
             }
           }
         }
-        index = index + 1usize;
+        index = index + 1;
       }
       if (selected === this.capacity) {
         return undefined;
       }
       unsafe {
-        * cursor = selectedOrder + 1usize;
+        * cursor = selectedOrder + 1;
       }
     } else {
-      let index = 0usize;
+      let index: usize = 0;
       unsafe {
         index = * cursor;
       }
-      while (index !== this.capacity && tableReadState(this.states, index) !== 1u8) {
-        index = index + 1usize;
+      while (index !== this.capacity && tableReadState(this.states, index) !== 1) {
+        index = index + 1;
       }
       if (index === this.capacity) {
         unsafe {
@@ -1347,11 +1367,11 @@ class TypedTable<K extends Equal<K > & Hash, V> {
       }
       selected = index;
       unsafe {
-        * cursor = index + 1usize;
+        * cursor = index + 1;
       }
     }
-    tableWriteByte(this.states, selected, 2u8);
-    this.length = this.length - 1usize;
+    tableWriteByte(this.states, selected, 2);
+    this.length = this.length - 1;
     unsafe {
       const key = moveElement<K>(this.keys, selected, this.keyInitialized);
       const value = moveElement<V>(this.values, selected, this.valueInitialized);
@@ -1372,40 +1392,44 @@ export class Map<K extends Equal<K > & Hash, V > implements IntoIterator<MapEntr
   private table: TypedTable<K, V>;
   public readonly length: usize;
   public readonly capacity: usize;
-  public constructor(options: MapOptions) {
-    const table = new TypedTable<K, V>(options.capacity, false);
+  public constructor(options: MapOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const initialCapacity = resolved.capacity;
+    const table = new TypedTable<K, V>(initialCapacity, false);
     const length = table.length;
     const capacity = table.capacity;
     this.table = move table;
     this.length = length;
     this.capacity = capacity;
   }
-  public set(key: K, value: V): & mut Map<K, V> {
-    const hash = tableHash<K>( & key);
+  public set(key: K, value: V): &mut Map<K, V> {
+    const hash = tableHash<K>( &key);
     return this.setPrehashed(move key, move value, hash);
   }
-  public setPrehashed(key: K, value: V, hash: u64): & mut Map<K, V> {
+  private setPrehashed(key: K, value: V, hash: u64): &mut Map<K, V> {
     this.table.insertPrehashed(move key, move value, hash);
     this.length = this.table.length;
     this.capacity = this.table.capacity;
-    return & mut this;
+    return &mut this;
   }
-  public get(key: & K): & V | undefined {
+  public get(key: &K): &V | undefined {
     return this.table.get(key);
   }
-  public getPrehashed(key: & K, hash: u64): & V | undefined {
+  private getPrehashed(key: &K, hash: u64): &V | undefined {
     return this.table.getPrehashed(key, hash);
   }
-  public getMut(key: & K): & mut V | undefined {
+  public getMut(key: &K): &mut V | undefined {
     return this.table.getMut(key);
   }
-  public getMutPrehashed(key: & K, hash: u64): & mut V | undefined {
+  private getMutPrehashed(key: &K, hash: u64): &mut V | undefined {
     return this.table.getMutPrehashed(key, hash);
   }
-  public has(key: & K): bool {
+  public has(key: &K): bool {
     return this.table.contains(key);
   }
-  public delete(key: & K): V | undefined {
+  public delete(key: &K): V | undefined {
     const removed = this.table.remove(key);
     this.length = this.table.length;
     return removed;
@@ -1422,13 +1446,13 @@ export class Map<K extends Equal<K > & Hash, V > implements IntoIterator<MapEntr
     this.table.shrinkToFit();
     this.capacity = this.table.capacity;
   }
-  public nextEntry(cursor: & mut usize): MapEntry<K, V > | undefined {
+  public nextEntry(cursor: &mut usize): MapEntry<K, V > | undefined {
     return this.table.nextEntry(cursor);
   }
   move intoIterator(): MapIterator<K, V> {
     return new MapIterator<K, V>(move this);
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 class MapIterator<K extends Equal<K > & Hash, V > implements Iterator<MapEntry<K, V> > {
@@ -1436,12 +1460,12 @@ class MapIterator<K extends Equal<K > & Hash, V > implements Iterator<MapEntry<K
   private cursor: usize;
   public constructor(collection: Map<K, V >) {
     this.collection = move collection;
-    this.cursor = 0usize;
+    this.cursor = 0;
   }
   next(): MapEntry<K, V > | undefined {
-    return this.collection.nextEntry( & mut this.cursor);
+    return this.collection.nextEntry( &mut this.cursor);
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 export struct SetOptions {
@@ -1451,8 +1475,12 @@ export class Set<T extends Equal<T > & Hash > implements IntoIterator<T, SetIter
   private table: TypedTable<T, u8>;
   public readonly length: usize;
   public readonly capacity: usize;
-  public constructor(options: SetOptions) {
-    const table = new TypedTable<T, u8>(options.capacity, false);
+  public constructor(options: SetOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const initialCapacity = resolved.capacity;
+    const table = new TypedTable<T, u8>(initialCapacity, false);
     const length = table.length;
     const capacity = table.capacity;
     this.table = move table;
@@ -1460,15 +1488,15 @@ export class Set<T extends Equal<T > & Hash > implements IntoIterator<T, SetIter
     this.capacity = capacity;
   }
   public add(value: T): bool {
-    const inserted = this.table.insert(move value, 0u8);
+    const inserted = this.table.insert(move value, 0);
     this.length = this.table.length;
     this.capacity = this.table.capacity;
     return inserted;
   }
-  public has(value: & T): bool {
+  public has(value: &T): bool {
     return this.table.contains(value);
   }
-  public delete(value: & T): bool {
+  public delete(value: &T): bool {
     const removed = this.table.remove(value);
     this.length = this.table.length;
     return removed !== undefined;
@@ -1481,7 +1509,7 @@ export class Set<T extends Equal<T > & Hash > implements IntoIterator<T, SetIter
     this.table.shrinkToFit();
     this.capacity = this.table.capacity;
   }
-  public nextEntry(cursor: & mut usize): MapEntry<T, u8 > | undefined {
+  public nextEntry(cursor: &mut usize): MapEntry<T, u8 > | undefined {
     return this.table.nextEntry(cursor);
   }
   public clear(): void {
@@ -1491,7 +1519,7 @@ export class Set<T extends Equal<T > & Hash > implements IntoIterator<T, SetIter
   move intoIterator(): SetIterator<T> {
     return new SetIterator<T>(move this);
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 class SetIterator<T extends Equal<T > & Hash > implements Iterator<T> {
@@ -1499,16 +1527,16 @@ class SetIterator<T extends Equal<T > & Hash > implements Iterator<T> {
   private cursor: usize;
   public constructor(collection: Set<T >) {
     this.collection = move collection;
-    this.cursor = 0usize;
+    this.cursor = 0;
   }
   next(): T | undefined {
-    const entry = this.collection.nextEntry( & mut this.cursor);
+    const entry = this.collection.nextEntry( &mut this.cursor);
     if (entry === undefined) {
       return undefined;
     }
     return move entry!.key;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 export struct OrderedMapOptions {
@@ -1518,27 +1546,31 @@ export class OrderedMap<K extends Equal<K > & Hash, V > implements IntoIterator<
   private table: TypedTable<K, V>;
   public readonly length: usize;
   public readonly capacity: usize;
-  public constructor(options: OrderedMapOptions) {
-    const table = new TypedTable<K, V>(options.capacity, true);
+  public constructor(options: OrderedMapOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const initialCapacity = resolved.capacity;
+    const table = new TypedTable<K, V>(initialCapacity, true);
     const length = table.length;
     const capacity = table.capacity;
     this.table = move table;
     this.length = length;
     this.capacity = capacity;
   }
-  public set(key: K, value: V): & mut OrderedMap<K, V> {
+  public set(key: K, value: V): &mut OrderedMap<K, V> {
     this.table.insert(move key, move value);
     this.length = this.table.length;
     this.capacity = this.table.capacity;
-    return & mut this;
+    return &mut this;
   }
-  public get(key: & K): & V | undefined {
+  public get(key: &K): &V | undefined {
     return this.table.get(key);
   }
-  public has(key: & K): bool {
+  public has(key: &K): bool {
     return this.table.contains(key);
   }
-  public delete(key: & K): V | undefined {
+  public delete(key: &K): V | undefined {
     const removed = this.table.remove(key);
     this.length = this.table.length;
     return removed;
@@ -1551,7 +1583,7 @@ export class OrderedMap<K extends Equal<K > & Hash, V > implements IntoIterator<
     this.table.shrinkToFit();
     this.capacity = this.table.capacity;
   }
-  public nextEntry(cursor: & mut usize): MapEntry<K, V > | undefined {
+  public nextEntry(cursor: &mut usize): MapEntry<K, V > | undefined {
     return this.table.nextEntry(cursor);
   }
   public clear(): void {
@@ -1561,7 +1593,7 @@ export class OrderedMap<K extends Equal<K > & Hash, V > implements IntoIterator<
   move intoIterator(): OrderedMapIterator<K, V> {
     return new OrderedMapIterator<K, V>(move this);
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 class OrderedMapIterator<K extends Equal<K > & Hash, V > implements Iterator<MapEntry<K, V> > {
@@ -1569,12 +1601,12 @@ class OrderedMapIterator<K extends Equal<K > & Hash, V > implements Iterator<Map
   private cursor: usize;
   public constructor(collection: OrderedMap<K, V >) {
     this.collection = move collection;
-    this.cursor = 0usize;
+    this.cursor = 0;
   }
   next(): MapEntry<K, V > | undefined {
-    return this.collection.nextEntry( & mut this.cursor);
+    return this.collection.nextEntry( &mut this.cursor);
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 export struct OrderedSetOptions {
@@ -1584,8 +1616,12 @@ export class OrderedSet<T extends Equal<T > & Hash > implements IntoIterator<T, 
   private table: TypedTable<T, u8>;
   public readonly length: usize;
   public readonly capacity: usize;
-  public constructor(options: OrderedSetOptions) {
-    const table = new TypedTable<T, u8>(options.capacity, true);
+  public constructor(options: OrderedSetOptions | undefined) {
+    const resolved = options ?? {
+      capacity: 0
+    };
+    const initialCapacity = resolved.capacity;
+    const table = new TypedTable<T, u8>(initialCapacity, true);
     const length = table.length;
     const capacity = table.capacity;
     this.table = move table;
@@ -1593,15 +1629,15 @@ export class OrderedSet<T extends Equal<T > & Hash > implements IntoIterator<T, 
     this.capacity = capacity;
   }
   public add(value: T): bool {
-    const inserted = this.table.insert(move value, 0u8);
+    const inserted = this.table.insert(move value, 0);
     this.length = this.table.length;
     this.capacity = this.table.capacity;
     return inserted;
   }
-  public has(value: & T): bool {
+  public has(value: &T): bool {
     return this.table.contains(value);
   }
-  public delete(value: & T): bool {
+  public delete(value: &T): bool {
     const removed = this.table.remove(value);
     this.length = this.table.length;
     return removed !== undefined;
@@ -1614,7 +1650,7 @@ export class OrderedSet<T extends Equal<T > & Hash > implements IntoIterator<T, 
     this.table.shrinkToFit();
     this.capacity = this.table.capacity;
   }
-  public nextEntry(cursor: & mut usize): MapEntry<T, u8 > | undefined {
+  public nextEntry(cursor: &mut usize): MapEntry<T, u8 > | undefined {
     return this.table.nextEntry(cursor);
   }
   public clear(): void {
@@ -1624,7 +1660,7 @@ export class OrderedSet<T extends Equal<T > & Hash > implements IntoIterator<T, 
   move intoIterator(): OrderedSetIterator<T> {
     return new OrderedSetIterator<T>(move this);
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }
 class OrderedSetIterator<T extends Equal<T > & Hash > implements Iterator<T> {
@@ -1632,15 +1668,15 @@ class OrderedSetIterator<T extends Equal<T > & Hash > implements Iterator<T> {
   private cursor: usize;
   public constructor(collection: OrderedSet<T >) {
     this.collection = move collection;
-    this.cursor = 0usize;
+    this.cursor = 0;
   }
   next(): T | undefined {
-    const entry = this.collection.nextEntry( & mut this.cursor);
+    const entry = this.collection.nextEntry( &mut this.cursor);
     if (entry === undefined) {
       return undefined;
     }
     return move entry!.key;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }

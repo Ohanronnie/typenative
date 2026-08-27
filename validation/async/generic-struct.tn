@@ -4,10 +4,10 @@ struct Value {
 }
 async function value(): Promise<Value, never> {
   return {
-    value: 41i32
+    value: 41
   };
 }
 function main(): i32 {
   const result = run(value());
-  return result.value + 1i32;
+  return result.value + 1;
 }

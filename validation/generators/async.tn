@@ -2,11 +2,11 @@ import { run } from "std/async";
 import { AsyncIterable } from "std/core";
 
 async function* events(): AsyncIterable<i32> {
-  yield 7i32;
-  yield 9i32;
+  yield 7;
+  yield 9;
 }
 async function consume(): Promise<i32, never> {
-  let result: i32 = 0i32;
+  let result: i32 = 0;
   for await (const value of events()) {
     result = result + value;
   }

@@ -15,16 +15,16 @@ function main(): i32 {
   {
     let value = String("box-failure");
     unsafe {
-      tn_runtime_fail_alloc_after(0usize);
+      tn_runtime_fail_alloc_after(0);
     }
     try {
       let ignored = try tryBoxNew(move value);
-      return 10i32;
+      return 10;
     } catch (error: AllocError) {
       unsafe {
         tn_runtime_clear_alloc_failure();
-        if (tn_runtime_free_count() !== 3u64) {
-          return 11i32;
+        if (tn_runtime_free_count() !== 3) {
+          return 11;
         }
       }
     }
@@ -32,16 +32,16 @@ function main(): i32 {
   {
     let value = String("rc-failure");
     unsafe {
-      tn_runtime_fail_alloc_after(0usize);
+      tn_runtime_fail_alloc_after(0);
     }
     try {
       let ignored = try tryRcNew(move value);
-      return 12i32;
+      return 12;
     } catch (error: AllocError) {
       unsafe {
         tn_runtime_clear_alloc_failure();
-        if (tn_runtime_free_count() !== 6u64) {
-          return 13i32;
+        if (tn_runtime_free_count() !== 6) {
+          return 13;
         }
       }
     }
@@ -50,8 +50,8 @@ function main(): i32 {
     let boxed = boxNew(String("box"));
   }
   unsafe {
-    if (tn_runtime_free_count() !== 8u64) {
-      return 1i32;
+    if (tn_runtime_free_count() !== 8) {
+      return 1;
     }
   }
   unsafe {
@@ -63,12 +63,12 @@ function main(): i32 {
     let weak = owner.downgrade();
     const upgraded = weak.upgrade();
     if (upgraded === undefined) {
-      return 2i32;
+      return 2;
     }
   }
   unsafe {
-    if (tn_runtime_free_count() !== 5u64) {
-      return 3i32;
+    if (tn_runtime_free_count() !== 5) {
+      return 3;
     }
   }
   unsafe {
@@ -76,12 +76,12 @@ function main(): i32 {
   }
   {
     let owner = rcNew(String("rc"));
-    let clone = rcClone( & owner);
+    let clone = rcClone( &owner);
   }
   unsafe {
-    if (tn_runtime_free_count() !== 2u64) {
-      return 5i32;
+    if (tn_runtime_free_count() !== 2) {
+      return 5;
     }
   }
-  return 42i32;
+  return 42;
 }

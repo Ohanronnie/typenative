@@ -30,7 +30,7 @@ use inkwell::{FloatPredicate, IntPredicate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
-use tn_hir::{DeclarationId, FunctionType, PrimitiveType, Type};
+use tn_hir::{DeclarationId, FunctionType, HirClosureId, PrimitiveType, Type};
 use tn_mir::{
     BasicBlockId, BinaryOperator, Body, Callable, Completion, Constant, Instance,
     MonomorphizedBody, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind,
@@ -78,6 +78,19 @@ pub struct Layouts {
     pub inlines: BTreeSet<Callable>,
     pub async_functions: BTreeMap<Callable, FunctionType>,
     pub abi_wrappers: BTreeMap<Callable, AbiWrapperKind>,
+    /// User decorators attached to callable declarations.  The code generator keeps the
+    /// original callable available and builds a wrapper that applies these decorators at
+    /// runtime before invoking the resulting callable.
+    pub decorators: BTreeMap<Callable, Vec<DecoratorLayout>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecoratorLayout {
+    pub decorator: Callable,
+    pub signature: FunctionType,
+    pub name: String,
+    pub is_static: bool,
+    pub is_private: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -472,10 +485,12 @@ fn generate<'ctx>(
     generator.declare_externs(units)?;
     generator.declare_globals()?;
     generator.declare_bodies(units)?;
+    generator.declare_closures(units)?;
     generator.declare_descriptors(units)?;
     generator.declare_witnesses()?;
     generator.lower_constructor_wrappers()?;
     generator.lower_bodies(units)?;
+    generator.lower_closures(units)?;
     generator.lower_async_wrappers()?;
     generator.lower_abi_wrappers()?;
     generator.debug_info.finalize();
@@ -579,6 +594,7 @@ struct Generator<'ctx> {
     debug_info: DebugInfoState<'ctx>,
     async_wrappers: Vec<AsyncWrapper<'ctx>>,
     abi_wrappers: Vec<AbiWrapper<'ctx>>,
+    closures: BTreeMap<HirClosureId, ClosureTarget<'ctx>>,
     is_macos: bool,
     sanitizers: BTreeSet<Sanitizer>,
 }
@@ -872,14 +888,7 @@ impl<'ctx> NodeBridgeGenerator<'ctx> {
     }
 
     fn node_requires_indirect(&self, ty: &Type) -> bool {
-        if self.generator.is_indirect_abi_type(ty) {
-            return true;
-        }
-        matches!(
-            ty,
-            Type::Reference { referent, .. }
-                if matches!(referent.as_ref(), Type::Nominal(_, _))
-        )
+        self.generator.is_indirect_abi_type(ty)
     }
 
     fn convert_argument(
@@ -3167,7 +3176,7 @@ impl<'ctx> NodeBridgeGenerator<'ctx> {
         self.emit_class_constructor(constructor, class, finalizer)?;
         let mut methods = Vec::new();
         for (method_index, method) in class.methods.iter().enumerate() {
-            if method.name == "drop" {
+            if method.name == "[Symbol.dispose]" {
                 continue;
             }
             let callback = self.emit_class_method(index, method_index, class, method)?;
@@ -4618,9 +4627,18 @@ impl<'ctx> NodeBridgeGenerator<'ctx> {
                     failure,
                     &format!("{name}.{}.{}.convert", error.name, field.name),
                 )?;
+                // Error payloads use `rawCode` internally so the source model does not collide
+                // with the language's diagnostic code terminology.  Node consumers receive the
+                // conventional `code` property while all other public payload fields retain
+                // their declared names.
+                let property_name = if field.name == "rawCode" {
+                    "code"
+                } else {
+                    field.name.as_str()
+                };
                 let property = self.c_string(
                     builder,
-                    &field.name,
+                    property_name,
                     &format!("{name}.{}.{}.property", error.name, field.name),
                 )?;
                 let status = self.call_status(
@@ -5631,6 +5649,16 @@ struct AbiWrapper<'ctx> {
     kind: AbiWrapperKind,
 }
 
+struct ClosureTarget<'ctx> {
+    body: FunctionValue<'ctx>,
+    trampoline: FunctionValue<'ctx>,
+    drop: Option<FunctionValue<'ctx>>,
+    environment: Option<StructType<'ctx>>,
+    captures: Vec<Type>,
+    function: FunctionType,
+    consumes_environment: bool,
+}
+
 impl<'ctx> Generator<'ctx> {
     fn add_inline_hint(&self, function: FunctionValue<'ctx>) {
         let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("inlinehint");
@@ -5667,6 +5695,7 @@ impl<'ctx> Generator<'ctx> {
             debug_info,
             async_wrappers: Vec::new(),
             abi_wrappers: Vec::new(),
+            closures: BTreeMap::new(),
             is_macos: target_triple.contains("apple-darwin"),
             sanitizers: sanitizers.clone(),
         }
@@ -5739,7 +5768,7 @@ impl<'ctx> Generator<'ctx> {
                 self.debug_info.attach_function(wrapper, &exported_name);
                 self.functions.insert(unit.instance.clone(), wrapper);
                 let mut emitted_signature = self.normalize_function_type(&signature);
-                emitted_signature.effects = unit.instance.effects.clone();
+                emitted_signature.effects.clone_from(&unit.instance.effects);
                 self.signatures
                     .insert(unit.instance.clone(), emitted_signature);
                 let context_fields = body_type
@@ -5877,6 +5906,269 @@ impl<'ctx> Generator<'ctx> {
             }
         }
         self.declare_constructor_wrappers(units)?;
+        Ok(())
+    }
+
+    fn declare_closures(&mut self, units: &[MonomorphizedBody]) -> Result<(), CodegenError> {
+        for unit in units {
+            self.declare_closures_in_body(&unit.body)?;
+        }
+        Ok(())
+    }
+
+    fn declare_closures_in_body(&mut self, body: &Body) -> Result<(), CodegenError> {
+        for block in &body.blocks {
+            for statement in &block.statements {
+                let StatementKind::Assign(_, value) = &statement.kind else {
+                    continue;
+                };
+                let Rvalue::Closure {
+                    id,
+                    function,
+                    captures,
+                    body: closure_body,
+                } = value.as_ref()
+                else {
+                    continue;
+                };
+                if !self.closures.contains_key(id) {
+                    let capture_types = captures
+                        .iter()
+                        .map(|capture| closure_operand_type(body, capture))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let body_type = self.body_function_type(closure_body)?;
+                    let body_function = self.module.add_function(
+                        &format!("tn_closure_{}_body", id.0),
+                        body_type,
+                        None,
+                    );
+                    body_function.set_linkage(Linkage::Internal);
+                    let environment = if capture_types.is_empty() {
+                        None
+                    } else {
+                        let mut fields = vec![self.context.bool_type().into()];
+                        fields.extend(
+                            capture_types
+                                .iter()
+                                .map(|capture| self.basic_type(capture))
+                                .collect::<Result<Vec<_>, _>>()?,
+                        );
+                        Some(self.context.struct_type(&fields, false))
+                    };
+                    let mut trampoline_parameters = vec![Type::RawPointer {
+                        mutable: true,
+                        pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+                    }];
+                    trampoline_parameters.extend(function.parameters.clone());
+                    let trampoline_type = self.llvm_function_type(
+                        &trampoline_parameters,
+                        &function.result,
+                        &function.effects,
+                    )?;
+                    let trampoline = self.module.add_function(
+                        &format!("tn_closure_{}_invoke", id.0),
+                        trampoline_type,
+                        None,
+                    );
+                    trampoline.set_linkage(Linkage::Internal);
+                    let drop = environment.map(|_| {
+                        let pointer = self.context.ptr_type(AddressSpace::default());
+                        let function = self.module.add_function(
+                            &format!("tn_closure_{}_drop", id.0),
+                            self.context.void_type().fn_type(&[pointer.into()], false),
+                            None,
+                        );
+                        function.set_linkage(Linkage::Internal);
+                        function
+                    });
+                    self.closures.insert(
+                        *id,
+                        ClosureTarget {
+                            body: body_function,
+                            trampoline,
+                            drop,
+                            environment,
+                            captures: capture_types.clone(),
+                            function: function.clone(),
+                            consumes_environment: capture_types
+                                .iter()
+                                .any(|capture| !self.is_copy_type(capture)),
+                        },
+                    );
+                    self.declare_closures_in_body(closure_body)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_closures(&self, units: &[MonomorphizedBody]) -> Result<(), CodegenError> {
+        for unit in units {
+            self.lower_closures_in_body(&unit.body)?;
+        }
+        Ok(())
+    }
+
+    fn lower_closures_in_body(&self, body: &Body) -> Result<(), CodegenError> {
+        for block in &body.blocks {
+            for statement in &block.statements {
+                let StatementKind::Assign(_, value) = &statement.kind else {
+                    continue;
+                };
+                let Rvalue::Closure {
+                    id,
+                    captures,
+                    body: closure_body,
+                    ..
+                } = value.as_ref()
+                else {
+                    continue;
+                };
+                let target = self
+                    .closures
+                    .get(id)
+                    .ok_or_else(|| CodegenError::Unsupported("closure target is missing".into()))?;
+                FunctionGenerator::new(self, closure_body, target.body)
+                    .and_then(|generator| generator.lower())?;
+                self.lower_closure_trampoline(target, closure_body)?;
+                if let Some(drop) = target.drop {
+                    self.lower_closure_drop(target, drop, closure_body)?;
+                }
+                let _ = captures;
+                self.lower_closures_in_body(closure_body)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_closure_trampoline(
+        &self,
+        target: &ClosureTarget<'ctx>,
+        body: &Body,
+    ) -> Result<(), CodegenError> {
+        let entry = self.context.append_basic_block(target.trampoline, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(entry);
+        let mut parameters = target.trampoline.get_param_iter();
+        let environment = parameters
+            .next()
+            .ok_or_else(|| {
+                CodegenError::Unsupported("closure environment parameter missing".into())
+            })?
+            .into_pointer_value();
+        let env_fields = target.environment;
+        let mut arguments = Vec::new();
+        if let Some(environment_type) = env_fields {
+            for index in 0..target.captures.len() {
+                let address = builder.build_struct_gep(
+                    environment_type,
+                    environment,
+                    u32::try_from(index + 1)
+                        .map_err(|_| CodegenError::Unsupported("closure capture limit".into()))?,
+                    "closure.capture.address",
+                )?;
+                arguments.push(
+                    builder
+                        .build_load(
+                            self.basic_type(&target.captures[index])?,
+                            address,
+                            "closure.capture",
+                        )?
+                        .into(),
+                );
+            }
+            if target.consumes_environment {
+                let consumed = builder.build_struct_gep(
+                    environment_type,
+                    environment,
+                    0,
+                    "closure.consumed",
+                )?;
+                builder.build_store(consumed, self.context.bool_type().const_int(1, false))?;
+            }
+        }
+        arguments.extend(parameters.map(|parameter| parameter.as_basic_value_enum()));
+        let call_arguments = arguments
+            .iter()
+            .copied()
+            .map(BasicMetadataValueEnum::from)
+            .collect::<Vec<_>>();
+        let call = builder.build_call(target.body, &call_arguments, "closure.body")?;
+        if target.function.result.as_ref() == &Type::Primitive(PrimitiveType::Void)
+            && target.function.effects.is_empty()
+        {
+            builder.build_return(None)?;
+        } else if target.function.effects.is_empty() {
+            let value = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("closure body returned void".into()))?;
+            builder.build_return(Some(&value))?;
+        } else {
+            let value = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("closure body returned void".into()))?;
+            builder.build_return(Some(&value))?;
+        }
+        let _ = body;
+        Ok(())
+    }
+
+    fn lower_closure_drop(
+        &self,
+        target: &ClosureTarget<'ctx>,
+        function: FunctionValue<'ctx>,
+        body: &Body,
+    ) -> Result<(), CodegenError> {
+        let entry = self.context.append_basic_block(function, "entry");
+        let drop_block = self.context.append_basic_block(function, "drop");
+        let free_block = self.context.append_basic_block(function, "free");
+        let builder = self.context.create_builder();
+        builder.position_at_end(entry);
+        let environment = function
+            .get_first_param()
+            .ok_or_else(|| CodegenError::Unsupported("closure drop environment missing".into()))?
+            .into_pointer_value();
+        let environment_type = target
+            .environment
+            .ok_or_else(|| CodegenError::Unsupported("closure drop layout is missing".into()))?;
+        let consumed = builder
+            .build_load(
+                self.context.bool_type(),
+                builder.build_struct_gep(environment_type, environment, 0, "closure.consumed")?,
+                "closure.consumed.value",
+            )?
+            .into_int_value();
+        builder.build_conditional_branch(consumed, free_block, drop_block)?;
+        builder.position_at_end(drop_block);
+        let lightweight = FunctionGenerator {
+            generator: self,
+            body,
+            function,
+            builder,
+            blocks: Vec::new(),
+            locals: Vec::new(),
+            drop_flags: Vec::new(),
+        };
+        for (index, capture) in target.captures.iter().enumerate() {
+            let address = lightweight.builder.build_struct_gep(
+                environment_type,
+                environment,
+                u32::try_from(index + 1)
+                    .map_err(|_| CodegenError::Unsupported("closure capture limit".into()))?,
+                "closure.drop.capture",
+            )?;
+            lightweight.lower_drop_value_at_pointer(address, capture)?;
+        }
+        lightweight.builder.build_unconditional_branch(free_block)?;
+        lightweight.builder.position_at_end(free_block);
+        lightweight.builder.build_call(
+            self.runtime_free(),
+            &[environment.into()],
+            "closure.env.free",
+        )?;
+        lightweight.builder.build_return(None)?;
         Ok(())
     }
 
@@ -6139,7 +6431,7 @@ impl<'ctx> Generator<'ctx> {
                             local.argument && matches!(local.name.as_deref(), Some("this" | "self"))
                         })
                         .map(|local| &local.ty);
-                    if receiver != Some(&Type::Nominal(declaration, arguments.clone())) {
+                    if !class_receiver_matches(receiver, declaration, arguments.as_slice()) {
                         return None;
                     }
                     self.functions
@@ -6810,6 +7102,28 @@ impl<'ctx> Generator<'ctx> {
                     "tn_runtime_free",
                     self.context.void_type().fn_type(
                         &[self.context.ptr_type(AddressSpace::default()).into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_thread_spawn_task(&self) -> FunctionValue<'ctx> {
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        self.module
+            .get_function("tn_thread_spawn_task")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "tn_thread_spawn_task",
+                    pointer.fn_type(
+                        &[
+                            pointer.into(),
+                            pointer.into(),
+                            pointer.into(),
+                            pointer.into(),
+                            self.pointer_int_type().into(),
+                        ],
                         false,
                     ),
                     None,
@@ -7840,6 +8154,12 @@ impl<'ctx> Generator<'ctx> {
         Ok(self.context.struct_type(&fields, false))
     }
 
+    fn callable_type(&self) -> StructType<'ctx> {
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        self.context
+            .struct_type(&[pointer.into(), pointer.into(), pointer.into()], false)
+    }
+
     fn basic_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
         let resolved = self.resolve_alias(ty);
         if resolved != *ty {
@@ -7889,9 +8209,9 @@ impl<'ctx> Generator<'ctx> {
             | Type::String
             | Type::Str
             | Type::Promise { .. }
-            | Type::Function(_)
             | Type::Template(_)
             | Type::ErrorUnion(_) => pointer(),
+            Type::Function(_) => self.callable_type().into(),
             Type::DynamicInterface(_, _) => self
                 .context
                 .struct_type(&[pointer(), pointer()], false)
@@ -7930,6 +8250,31 @@ impl<'ctx> Generator<'ctx> {
                 )));
             }
         })
+    }
+
+    fn is_copy_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Primitive(_) | Type::RawPointer { .. } => true,
+            Type::Reference { mutable, .. } => !mutable,
+            Type::Optional(inner) | Type::Array(inner, _) => self.is_copy_type(inner),
+            Type::Tuple(elements) | Type::Template(elements) => {
+                elements.iter().all(|element| self.is_copy_type(element))
+            }
+            Type::Nominal(declaration, _) => self.layouts.copies.contains(declaration),
+            Type::ErrorUnion(effects) => effects
+                .iter()
+                .all(|effect| self.layouts.copies.contains(effect)),
+            Type::Function(_)
+            | Type::Promise { .. }
+            | Type::String
+            | Type::Str
+            | Type::Slice(_)
+            | Type::DynamicInterface(_, _)
+            | Type::Generic(_)
+            | Type::Lifetime(_)
+            | Type::Error
+            | Type::Unknown => false,
+        }
     }
 
     fn nominal_type(
@@ -8557,11 +8902,19 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             Type::Reference { referent, .. }
                 if self.generator.is_class_type(referent)
         ) {
-            let value = self.builder.build_load(
-                self.generator.context.ptr_type(AddressSpace::default()),
-                self.place_pointer(place)?,
-                "class.borrow",
-            )?;
+            // A dereference place already resolves to the class object's address.  Loading
+            // from it would read the descriptor header and turn the reference into a bogus
+            // object pointer (notably for `&mut *(raw as *mut Class)`).  Named/field places,
+            // on the other hand, store the class pointer in their slot and still need a load.
+            let value = if matches!(place.projection.last(), Some(Projection::Dereference)) {
+                self.place_pointer(place)?.into()
+            } else {
+                self.builder.build_load(
+                    self.generator.context.ptr_type(AddressSpace::default()),
+                    self.place_pointer(place)?,
+                    "class.borrow",
+                )?
+            };
             self.builder.build_store(destination, value)?;
         } else {
             self.builder
@@ -8793,6 +9146,86 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 fields,
                 ..
             } => self.lower_aggregate(ty, *variant, fields),
+            Rvalue::Closure { id, captures, .. } => {
+                let target =
+                    self.generator.closures.get(id).ok_or_else(|| {
+                        CodegenError::Unsupported("closure target is missing".into())
+                    })?;
+                let pointer = self.generator.context.ptr_type(AddressSpace::default());
+                let (environment, drop) = if let Some(environment_type) = target.environment {
+                    let size = environment_type.size_of().ok_or_else(|| {
+                        CodegenError::Unsupported("closure environment size is unavailable".into())
+                    })?;
+                    let environment = self
+                        .builder
+                        .build_call(
+                            self.generator.runtime_alloc(),
+                            &[size.into()],
+                            "closure.env.alloc",
+                        )?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::Builder(
+                                "closure environment allocation returned void".into(),
+                            )
+                        })?
+                        .into_pointer_value();
+                    let consumed = self.builder.build_struct_gep(
+                        environment_type,
+                        environment,
+                        0,
+                        "closure.consumed",
+                    )?;
+                    self.builder
+                        .build_store(consumed, self.generator.context.bool_type().const_zero())?;
+                    for (index, capture) in captures.iter().enumerate() {
+                        let address = self.builder.build_struct_gep(
+                            environment_type,
+                            environment,
+                            u32::try_from(index + 1).map_err(|_| {
+                                CodegenError::Unsupported("closure capture limit".into())
+                            })?,
+                            "closure.capture.store",
+                        )?;
+                        self.builder
+                            .build_store(address, self.lower_operand(capture)?)?;
+                    }
+                    (
+                        environment,
+                        target.drop.map_or(pointer.const_null(), |drop| {
+                            drop.as_global_value().as_pointer_value()
+                        }),
+                    )
+                } else {
+                    (pointer.const_null(), pointer.const_null())
+                };
+                let callable_type = self.generator.callable_type();
+                let mut callable = callable_type.const_zero();
+                callable = self
+                    .builder
+                    .build_insert_value(
+                        callable,
+                        target.trampoline.as_global_value().as_pointer_value(),
+                        0,
+                        "closure.code",
+                    )?
+                    .into_struct_value();
+                callable = self
+                    .builder
+                    .build_insert_value(callable, environment, 1, "closure.environment")?
+                    .into_struct_value();
+                Ok(self
+                    .builder
+                    .build_insert_value(callable, drop, 2, "closure.drop")?
+                    .into_struct_value()
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "thread_spawn" => self.lower_thread_spawn(operands, ty),
             Rvalue::Length(place) => {
                 let length = match self.place_type(place)? {
                     Type::Array(_, length) => {
@@ -8857,6 +9290,35 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .into());
                 }
                 let source_type = self.operand_type(operand)?;
+                if matches!(source_type, Type::Function(_)) && matches!(ty, Type::RawPointer { .. })
+                {
+                    // A plain function cast to a raw pointer is used by the C ABI (for
+                    // example, pthread entry points).  The callable representation adds an
+                    // environment parameter for indirect language calls, but a C callback
+                    // receives only its declared arguments.  Preserve the emitted function
+                    // pointer for a direct function constant instead of exposing the language
+                    // adapter, whose hidden environment argument would shift the callback's
+                    // first argument.
+                    if let Operand::Constant(Constant::Function(declaration, function_ty)) = operand
+                    {
+                        let Type::Function(function_type) = function_ty else {
+                            return Err(CodegenError::Unsupported(
+                                "function cast lacks a function type".into(),
+                            ));
+                        };
+                        let function = self.resolve_emitted_callable(
+                            Callable::function(*declaration),
+                            function_type,
+                        )?;
+                        return Ok(function.as_global_value().as_pointer_value().into());
+                    }
+                    let callable = self.lower_operand(operand)?.into_struct_value();
+                    return Ok(self.builder.build_extract_value(
+                        callable,
+                        0,
+                        "callable.code.cast",
+                    )?);
+                }
                 if matches!(
                     source_type,
                     Type::Reference {
@@ -8890,6 +9352,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 implementation,
                 member,
                 ty,
+                object,
                 ..
             } => {
                 let Type::Function(function_type) = ty else {
@@ -8903,14 +9366,42 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         member: *member,
                         ty: ty.clone(),
                     }))?;
+                let receiver = self.lower_receiver_operand(&Operand::Copy(object.clone()))?;
+                let receiver = receiver.into_pointer_value();
+                let pointer = self
+                    .generator
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .const_null();
                 let _ = function_type;
-                Ok(function.as_global_value().as_pointer_value().into())
+                self.callable_value(
+                    function.as_global_value().as_pointer_value(),
+                    receiver,
+                    pointer,
+                )
+                .map(Into::into)
             }
             Rvalue::VtableLookup { object, slot, .. } => {
-                Ok(self.lower_vtable_lookup(object, *slot)?.into())
+                let code = self.lower_vtable_lookup(object, *slot)?;
+                let receiver = self.lower_class_object_pointer(object)?;
+                let null = self
+                    .generator
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .const_null();
+                self.callable_value(code, receiver, null).map(Into::into)
             }
             Rvalue::WitnessLookup { object, slot, .. } => {
-                Ok(self.lower_witness_lookup(object, *slot)?.into())
+                let code = self.lower_witness_lookup(object, *slot)?;
+                let receiver = self
+                    .lower_receiver_operand(&Operand::Copy(object.clone()))?
+                    .into_pointer_value();
+                let null = self
+                    .generator
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .const_null();
+                self.callable_value(code, receiver, null).map(Into::into)
             }
             Rvalue::TypeTest { operand, target } => {
                 let Type::Nominal(_, _) = target else {
@@ -10271,6 +10762,19 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ty,
+            } if operation == "task_into_promise" => {
+                if operands.len() != 1 || !matches!(ty, Type::Promise { .. }) {
+                    return Err(CodegenError::Unsupported(
+                        "task_into_promise requires one task and a promise result".into(),
+                    ));
+                }
+                let task = self.lower_operand(&operands[0])?.into_struct_value();
+                Ok(self.builder.build_extract_value(task, 0, "task.promise")?)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
             } if operation == "arc_clone" => {
                 let source_operand = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("arc_clone operation lacks a receiver".into())
@@ -10369,7 +10873,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         fields: &[Operand],
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
-            Type::Tuple(_) | Type::Optional(_) => {
+            Type::Tuple(_) => {
                 let structure = self.generator.basic_type(ty)?.into_struct_type();
                 let mut value = structure.const_zero();
                 for (index, field) in fields.iter().enumerate() {
@@ -10382,6 +10886,36 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                                 CodegenError::Unsupported("aggregate field limit".into())
                             })?,
                             "aggregate.field",
+                        )?
+                        .into_struct_value();
+                }
+                Ok(value.into())
+            }
+            Type::Optional(_) => {
+                let structure = self.generator.basic_type(ty)?.into_struct_type();
+                let mut value = structure.const_zero();
+                value = self
+                    .builder
+                    .build_insert_value(
+                        value,
+                        self.generator
+                            .context
+                            .bool_type()
+                            .const_int(u64::from(variant.unwrap_or(0) != 0), false),
+                        0,
+                        "optional.tag",
+                    )?
+                    .into_struct_value();
+                for (index, field) in fields.iter().enumerate() {
+                    value = self
+                        .builder
+                        .build_insert_value(
+                            value,
+                            self.lower_operand(field)?,
+                            u32::try_from(index + 1).map_err(|_| {
+                                CodegenError::Unsupported("optional field limit".into())
+                            })?,
+                            "optional.field",
                         )?
                         .into_struct_value();
                 }
@@ -11199,7 +11733,6 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 | Type::String
                 | Type::Str
                 | Type::Promise { .. }
-                | Type::Function(_)
                 | Type::Template(_)
                 | Type::ErrorUnion(_)
         ) || matches!(
@@ -11210,7 +11743,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
 
     fn is_copy_type(&self, ty: &Type) -> bool {
         match ty {
-            Type::Primitive(_) | Type::RawPointer { .. } | Type::Function(_) => true,
+            Type::Primitive(_) | Type::RawPointer { .. } => true,
             Type::Reference { mutable, .. } => !mutable,
             Type::Optional(inner) | Type::Array(inner, _) => self.is_copy_type(inner),
             Type::Tuple(elements) | Type::Template(elements) => {
@@ -11221,6 +11754,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .iter()
                 .all(|effect| self.generator.layouts.copies.contains(effect)),
             Type::Promise { .. }
+            | Type::Function(_)
             | Type::String
             | Type::Str
             | Type::Slice(_)
@@ -11563,6 +12097,51 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     "drop.promise",
                 )?;
             }
+            Type::Function(_) => {
+                let callable = self
+                    .builder
+                    .build_load(self.generator.callable_type(), pointer, "drop.callable")?
+                    .into_struct_value();
+                let drop_function = self
+                    .builder
+                    .build_extract_value(callable, 2, "drop.callable.function")?
+                    .into_pointer_value();
+                let environment = self
+                    .builder
+                    .build_extract_value(callable, 1, "drop.callable.environment")?
+                    .into_pointer_value();
+                let invoke_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "drop.callable.invoke");
+                let merge_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "drop.callable.merge");
+                let has_drop = self
+                    .builder
+                    .build_is_not_null(drop_function, "drop.callable.present")?;
+                self.builder
+                    .build_conditional_branch(has_drop, invoke_block, merge_block)?;
+                self.builder.position_at_end(invoke_block);
+                let drop_type = self.generator.context.void_type().fn_type(
+                    &[self
+                        .generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .as_basic_type_enum()
+                        .into()],
+                    false,
+                );
+                self.builder.build_indirect_call(
+                    drop_type,
+                    drop_function,
+                    &[environment.into()],
+                    "drop.callable.invoke",
+                )?;
+                self.builder.build_unconditional_branch(merge_block)?;
+                self.builder.position_at_end(merge_block);
+            }
             Type::Optional(inner) => {
                 let structure = self.generator.basic_type(ty)?.into_struct_type();
                 let tag_address = self.builder.build_struct_gep(
@@ -11783,7 +12362,6 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             | Type::Slice(_)
             | Type::Reference { .. }
             | Type::RawPointer { .. }
-            | Type::Function(_)
             | Type::Generic(_)
             | Type::Lifetime(_)
             | Type::Error
@@ -11938,8 +12516,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         success: BasicBlockId,
         error: Option<BasicBlockId>,
     ) -> Result<(), CodegenError> {
-        let arguments = receiver
-            .map(|receiver| self.lower_receiver_operand(receiver))
+        let direct_call = matches!(function, Operand::Constant(_));
+        let arguments = direct_call
+            .then(|| receiver.map(|receiver| self.lower_receiver_operand(receiver)))
+            .flatten()
             .transpose()?
             .into_iter()
             .chain(
@@ -11967,36 +12547,35 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "indirect call target is not a function value".into(),
                     ));
                 };
-                let mut parameters = Vec::with_capacity(
-                    function_type.parameters.len() + usize::from(receiver.is_some()),
-                );
-                if let Some(receiver) = receiver {
-                    parameters.push(match self.operand_type(receiver)? {
-                        Type::DynamicInterface(_, _) => Type::RawPointer {
-                            mutable: true,
-                            pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
-                        },
-                        Type::String => Generator::receiver_pointer_type(),
-                        Type::Nominal(declaration, arguments)
-                            if !self
-                                .generator
-                                .is_class_type(&Type::Nominal(declaration, arguments.clone())) =>
-                        {
-                            Generator::receiver_pointer_type()
-                        }
-                        ty => ty,
-                    });
-                }
+                let mut parameters = Vec::with_capacity(function_type.parameters.len() + 1);
+                parameters.push(Type::RawPointer {
+                    mutable: true,
+                    pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+                });
                 parameters.extend(function_type.parameters.iter().cloned());
                 let llvm_type = self.generator.llvm_function_type(
                     &parameters,
                     &function_type.result,
                     &function_type.effects,
                 )?;
-                let pointer = self.lower_operand(function)?.into_pointer_value();
-                (
+                let callable = self.lower_operand(function)?.into_struct_value();
+                let pointer = self
+                    .builder
+                    .build_extract_value(callable, 0, "callable.code")?
+                    .into_pointer_value();
+                let environment =
                     self.builder
-                        .build_indirect_call(llvm_type, pointer, &arguments, "call")?,
+                        .build_extract_value(callable, 1, "callable.environment")?;
+                let mut call_arguments = Vec::with_capacity(arguments.len() + 1);
+                call_arguments.push(environment.into());
+                call_arguments.extend(arguments);
+                (
+                    self.builder.build_indirect_call(
+                        llvm_type,
+                        pointer,
+                        &call_arguments,
+                        "call",
+                    )?,
                     function_type.clone(),
                 )
             }
@@ -12091,6 +12670,12 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 "interface.data",
             )?);
         }
+        if self.generator.is_class_type(&receiver_type)
+            && let Some(place) = operand_place(receiver)
+            && matches!(place.projection.last(), Some(Projection::Dereference))
+        {
+            return Ok(self.lower_class_object_pointer(place)?.into());
+        }
         let indirect_value_receiver = matches!(receiver_type, Type::String)
             || matches!(
                 &receiver_type,
@@ -12179,6 +12764,24 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         callable: Callable,
         function_type: &FunctionType,
     ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let target = self.resolve_emitted_callable_raw(callable, function_type)?;
+        if self
+            .generator
+            .layouts
+            .decorators
+            .get(&callable)
+            .is_some_and(|decorators| !decorators.is_empty())
+        {
+            return self.declare_decorator_wrapper(callable, function_type, target);
+        }
+        Ok(target)
+    }
+
+    fn resolve_emitted_callable_raw(
+        &self,
+        callable: Callable,
+        function_type: &FunctionType,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
         let mut matches = self
             .generator
             .signatures
@@ -12223,6 +12826,285 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             )));
         }
         Ok(function)
+    }
+
+    fn declare_decorator_wrapper(
+        &self,
+        callable: Callable,
+        requested: &FunctionType,
+        target: FunctionValue<'ctx>,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let decorators = self
+            .generator
+            .layouts
+            .decorators
+            .get(&callable)
+            .cloned()
+            .unwrap_or_default();
+        if decorators.is_empty() {
+            return Ok(target);
+        }
+        if decorators.iter().any(|decorator| {
+            decorator
+                .signature
+                .parameters
+                .first()
+                .is_none_or(|parameter| matches!(parameter, Type::Unknown))
+        }) {
+            // Unknown-identity decorators are a source-level annotation.  They are checked for
+            // signature validity but deliberately do not cross the native ABI until the target
+            // type is concrete (method decorators use the exact callable contract below).
+            return Ok(target);
+        }
+        let wrapper_name = format!(
+            "tn_decorated_{}_{}",
+            callable.declaration.0,
+            stable_hash(&format!("{callable:?}:{requested:?}"))
+        );
+        if let Some(wrapper) = self.generator.module.get_function(&wrapper_name) {
+            return Ok(wrapper);
+        }
+
+        // The wrapper preserves the target's concrete native ABI.  Method receivers are already
+        // represented as pointers in LLVM, so the same function type can be used for both the
+        // original target and its decorated entry point.
+        let wrapper = self
+            .generator
+            .module
+            .add_function(&wrapper_name, target.get_type(), None);
+        wrapper.set_linkage(Linkage::Internal);
+        let entry = self.generator.context.append_basic_block(wrapper, "entry");
+        let builder = self.generator.context.create_builder();
+        builder.position_at_end(entry);
+
+        let target_parameters = target.get_type().get_param_types();
+        let explicit_count = requested.parameters.len();
+        let has_receiver = target_parameters.len() == explicit_count.saturating_add(1);
+        if target_parameters.len() != explicit_count && !has_receiver {
+            return Err(CodegenError::Unsupported(format!(
+                "decorated callable {callable:?} has an incompatible native parameter count"
+            )));
+        }
+
+        let mut adapter_parameters = vec![Type::RawPointer {
+            mutable: true,
+            pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+        }];
+        adapter_parameters.extend(requested.parameters.clone());
+        let adapter_type = self.generator.llvm_function_type(
+            &adapter_parameters,
+            &requested.result,
+            &requested.effects,
+        )?;
+        let adapter_name = format!(
+            "tn_decorator_target_{}_{}",
+            callable.declaration.0,
+            stable_hash(&format!("{callable:?}:{requested:?}:target"))
+        );
+        let adapter = self
+            .generator
+            .module
+            .get_function(&adapter_name)
+            .unwrap_or_else(|| {
+                let function =
+                    self.generator
+                        .module
+                        .add_function(&adapter_name, adapter_type, None);
+                function.set_linkage(Linkage::Internal);
+                function
+            });
+        if adapter.get_first_basic_block().is_none() {
+            let adapter_entry = self.generator.context.append_basic_block(adapter, "entry");
+            let adapter_builder = self.generator.context.create_builder();
+            adapter_builder.position_at_end(adapter_entry);
+            let mut adapter_parameters = adapter.get_param_iter();
+            let environment = adapter_parameters
+                .next()
+                .ok_or_else(|| CodegenError::Builder("decorator environment is missing".into()))?;
+            let explicit = adapter_parameters
+                .map(|value| value.as_basic_value_enum().into())
+                .collect::<Vec<BasicMetadataValueEnum>>();
+            let mut target_arguments =
+                Vec::with_capacity(explicit.len() + usize::from(has_receiver));
+            if has_receiver {
+                target_arguments.push(environment.into());
+            }
+            target_arguments.extend(explicit);
+            let call = adapter_builder.build_call(target, &target_arguments, "decorator.target")?;
+            if requested.result.as_ref() == &Type::Primitive(PrimitiveType::Void)
+                && requested.effects.is_empty()
+            {
+                adapter_builder.build_return(None)?;
+            } else {
+                let value = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::Builder("decorated target returned void".into())
+                })?;
+                adapter_builder.build_return(Some(&value))?;
+            }
+        }
+
+        let pointer = self.generator.context.ptr_type(AddressSpace::default());
+        let null = pointer.const_null();
+        let initial_environment = if has_receiver {
+            wrapper
+                .get_first_param()
+                .map(|value| value.into_pointer_value())
+                .ok_or_else(|| CodegenError::Builder("decorated receiver is missing".into()))?
+        } else {
+            null
+        };
+        let mut decorated = self.callable_value_with_builder(
+            &builder,
+            adapter.as_global_value().as_pointer_value(),
+            initial_environment,
+            null,
+        )?;
+
+        for (index, decorator) in decorators.iter().enumerate().rev() {
+            let decorator_target =
+                self.resolve_emitted_callable_raw(decorator.decorator, &decorator.signature)?;
+            let mut arguments = vec![decorated.into()];
+            if decorator.signature.parameters.len() == 2 {
+                let context_type = decorator.signature.parameters.get(1).ok_or_else(|| {
+                    CodegenError::Unsupported("decorator context is missing".into())
+                })?;
+                let context = self.decorator_context_value(
+                    &builder,
+                    context_type,
+                    &decorator.name,
+                    decorator.is_static,
+                    decorator.is_private,
+                )?;
+                arguments.push(context.into());
+            }
+            let call = builder.build_call(
+                decorator_target,
+                &arguments,
+                &format!("decorator.apply.{index}"),
+            )?;
+            decorated = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("decorator returned void".into()))?
+                .into_struct_value();
+        }
+
+        let code = builder
+            .build_extract_value(decorated, 0, "decorated.code")?
+            .into_pointer_value();
+        let environment = builder
+            .build_extract_value(decorated, 1, "decorated.environment")?
+            .into_pointer_value();
+        let mut invoke_parameters = vec![Type::RawPointer {
+            mutable: true,
+            pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+        }];
+        invoke_parameters.extend(requested.parameters.clone());
+        let invoke_type = self.generator.llvm_function_type(
+            &invoke_parameters,
+            &requested.result,
+            &requested.effects,
+        )?;
+        let invoke_arguments = wrapper
+            .get_param_iter()
+            .skip(usize::from(has_receiver))
+            .map(|value| value.as_basic_value_enum().into())
+            .collect::<Vec<BasicMetadataValueEnum>>();
+        let mut call_arguments = Vec::with_capacity(invoke_arguments.len() + 1);
+        call_arguments.push(environment.into());
+        call_arguments.extend(invoke_arguments);
+        let call =
+            builder.build_indirect_call(invoke_type, code, &call_arguments, "decorated.call")?;
+        if requested.result.as_ref() == &Type::Primitive(PrimitiveType::Void)
+            && requested.effects.is_empty()
+        {
+            builder.build_return(None)?;
+        } else {
+            let value = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("decorated callable returned void".into()))?;
+            builder.build_return(Some(&value))?;
+        }
+        Ok(wrapper)
+    }
+
+    fn callable_value_with_builder(
+        &self,
+        builder: &Builder<'ctx>,
+        code: PointerValue<'ctx>,
+        environment: PointerValue<'ctx>,
+        drop: PointerValue<'ctx>,
+    ) -> Result<StructValue<'ctx>, CodegenError> {
+        let mut value = self.generator.callable_type().const_zero();
+        value = builder
+            .build_insert_value(value, code, 0, "decorator.callable.code")?
+            .into_struct_value();
+        value = builder
+            .build_insert_value(value, environment, 1, "decorator.callable.environment")?
+            .into_struct_value();
+        Ok(builder
+            .build_insert_value(value, drop, 2, "decorator.callable.drop")?
+            .into_struct_value())
+    }
+
+    fn decorator_context_value(
+        &self,
+        builder: &Builder<'ctx>,
+        context_type: &Type,
+        name: &str,
+        is_static: bool,
+        is_private: bool,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let context = self.generator.basic_type(context_type)?.into_struct_type();
+        if context.count_fields() < 3 {
+            return Err(CodegenError::Unsupported(
+                "ClassMethodDecoratorContext must contain name, isStatic, and isPrivate".into(),
+            ));
+        }
+        let name_bytes = builder.build_global_string_ptr(name, "decorator.context.name")?;
+        let name_value = builder
+            .build_call(
+                self.generator.runtime_string_from_bytes(),
+                &[
+                    name_bytes.as_pointer_value().into(),
+                    self.generator
+                        .pointer_int_type()
+                        .const_int(u64::try_from(name.len()).unwrap_or(u64::MAX), false)
+                        .into(),
+                ],
+                "decorator.context.string",
+            )?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder("decorator context string missing".into()))?;
+        let mut value = context.const_zero();
+        value = builder
+            .build_insert_value(value, name_value, 0, "decorator.context.name.value")?
+            .into_struct_value();
+        value = builder
+            .build_insert_value(
+                value,
+                self.generator
+                    .context
+                    .bool_type()
+                    .const_int(u64::from(is_static), false),
+                1,
+                "decorator.context.static",
+            )?
+            .into_struct_value();
+        Ok(builder
+            .build_insert_value(
+                value,
+                self.generator
+                    .context
+                    .bool_type()
+                    .const_int(u64::from(is_private), false),
+                2,
+                "decorator.context.private",
+            )?
+            .into_struct_value()
+            .into())
     }
 
     fn return_success(&self, payload: Option<&Operand>) -> Result<(), CodegenError> {
@@ -12362,6 +13244,175 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .build_struct_gep(envelope_type, envelope, 1, "error.payload.address")?;
         self.builder.build_store(payload_address, payload_pointer)?;
         Ok(envelope)
+    }
+
+    fn lower_thread_spawn(
+        &self,
+        operands: &[Operand],
+        handle_type: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if operands.len() != 1 {
+            return Err(CodegenError::Unsupported(
+                "thread_spawn expects one callable".into(),
+            ));
+        }
+        let Type::Function(signature) = self.operand_type(&operands[0])? else {
+            return Err(CodegenError::Unsupported(
+                "thread_spawn requires a function value".into(),
+            ));
+        };
+        if !signature.parameters.is_empty() || !signature.effects.is_empty() || signature.is_async {
+            return Err(CodegenError::Unsupported(
+                "Thread.spawn requires an infallible synchronous zero-argument callable".into(),
+            ));
+        }
+        if signature.result.as_ref() == &Type::Primitive(PrimitiveType::Void) {
+            return Err(CodegenError::Unsupported(
+                "Thread.spawn requires a value-producing callable".into(),
+            ));
+        }
+        let callable = self.lower_operand(&operands[0])?.into_struct_value();
+        let pointer = self.generator.context.ptr_type(AddressSpace::default());
+        let code = self
+            .builder
+            .build_extract_value(callable, 0, "thread.callable.code")?
+            .into_pointer_value();
+        let environment = self
+            .builder
+            .build_extract_value(callable, 1, "thread.callable.environment")?
+            .into_pointer_value();
+        let drop = self
+            .builder
+            .build_extract_value(callable, 2, "thread.callable.drop")?
+            .into_pointer_value();
+        let result_type = self.generator.basic_type(signature.result.as_ref())?;
+        let result_size = result_type
+            .size_of()
+            .ok_or_else(|| CodegenError::Unsupported("thread result has no known size".into()))?;
+
+        // The runtime owns this five-pointer state while the pthread callback runs:
+        // { invoke, code, environment, drop, result }.  The generated invoke wrapper
+        // supplies the typed call ABI for the concrete T, keeping the public API typed.
+        let state_type = self.generator.context.struct_type(
+            &[
+                pointer.into(),
+                pointer.into(),
+                pointer.into(),
+                pointer.into(),
+                pointer.into(),
+            ],
+            false,
+        );
+        let wrapper_name = format!(
+            "tn_thread_task_invoke_{}",
+            stable_hash(&format!(
+                "{}:{:?}",
+                self.function.get_name().to_string_lossy(),
+                operands
+            ))
+        );
+        let invoke = if let Some(existing) = self.generator.module.get_function(&wrapper_name) {
+            existing
+        } else {
+            let invoke_type = self
+                .generator
+                .context
+                .void_type()
+                .fn_type(&[pointer.into()], false);
+            let invoke = self
+                .generator
+                .module
+                .add_function(&wrapper_name, invoke_type, None);
+            invoke.set_linkage(Linkage::Internal);
+            let entry = self.generator.context.append_basic_block(invoke, "entry");
+            let wrapper_builder = self.generator.context.create_builder();
+            wrapper_builder.position_at_end(entry);
+            let argument = invoke
+                .get_first_param()
+                .ok_or_else(|| CodegenError::Builder("thread invoke argument is missing".into()))?
+                .into_pointer_value();
+            let code_address =
+                wrapper_builder.build_struct_gep(state_type, argument, 1, "thread.code.address")?;
+            let code_value = wrapper_builder
+                .build_load(pointer, code_address, "thread.code")?
+                .into_pointer_value();
+            let environment_address = wrapper_builder.build_struct_gep(
+                state_type,
+                argument,
+                2,
+                "thread.environment.address",
+            )?;
+            let environment_value = wrapper_builder
+                .build_load(pointer, environment_address, "thread.environment")?
+                .into_pointer_value();
+            let result_address = wrapper_builder.build_struct_gep(
+                state_type,
+                argument,
+                4,
+                "thread.result.address",
+            )?;
+            let result_pointer = wrapper_builder
+                .build_load(pointer, result_address, "thread.result")?
+                .into_pointer_value();
+            let call_type = self.generator.llvm_function_type(
+                &[Type::RawPointer {
+                    mutable: true,
+                    pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+                }],
+                &signature.result,
+                &[],
+            )?;
+            let call = wrapper_builder.build_indirect_call(
+                call_type,
+                code_value,
+                &[environment_value.into()],
+                "thread.call",
+            )?;
+            let result = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("thread callable returned no value".into()))?;
+            wrapper_builder.build_store(result_pointer, result)?;
+            wrapper_builder.build_return(None)?;
+            invoke
+        };
+        let runtime_handle = self
+            .builder
+            .build_call(
+                self.generator.runtime_thread_spawn_task(),
+                &[
+                    invoke.as_global_value().as_pointer_value().into(),
+                    code.into(),
+                    environment.into(),
+                    drop.into(),
+                    result_size.into(),
+                ],
+                "thread.spawn",
+            )?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::Builder("thread spawn returned no handle".into()))?
+            .into_pointer_value();
+        let handle_layout = self.generator.basic_type(handle_type)?.into_struct_type();
+        let value = self
+            .builder
+            .build_insert_value(
+                handle_layout.const_zero(),
+                runtime_handle,
+                0,
+                "thread.handle",
+            )?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(
+                value,
+                self.generator.context.bool_type().const_zero(),
+                1,
+                "thread.joined",
+            )?
+            .into_struct_value()
+            .into())
     }
 
     fn lower_atomic_operation(
@@ -12804,6 +13855,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => {
                 let place_type = self.place_type(place)?;
+                if self.generator.is_class_type(&place_type)
+                    && matches!(place.projection.last(), Some(Projection::Dereference))
+                {
+                    return Ok(self.place_pointer(place)?.into());
+                }
                 let raw_string_dereference = place_type == Type::Str
                     && matches!(place.projection.last(), Some(Projection::Dereference))
                     && matches!(
@@ -12827,6 +13883,79 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             Operand::Copy(place) | Operand::Move(place) => self.place_type(place),
             Operand::Constant(constant) => Ok(constant.ty()),
         }
+    }
+
+    fn callable_value(
+        &self,
+        code: PointerValue<'ctx>,
+        environment: PointerValue<'ctx>,
+        drop: PointerValue<'ctx>,
+    ) -> Result<StructValue<'ctx>, CodegenError> {
+        let mut value = self.generator.callable_type().const_zero();
+        value = self
+            .builder
+            .build_insert_value(value, code, 0, "callable.code")?
+            .into_struct_value();
+        value = self
+            .builder
+            .build_insert_value(value, environment, 1, "callable.environment")?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(value, drop, 2, "callable.drop")?
+            .into_struct_value())
+    }
+
+    fn direct_callable_adapter(
+        &self,
+        callable: Callable,
+        signature: &FunctionType,
+        target: FunctionValue<'ctx>,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!(
+            "tn_callable_adapter_{}_{}",
+            callable.declaration.0,
+            stable_hash(&format!("{callable:?}:{signature:?}"))
+        );
+        if let Some(function) = self.generator.module.get_function(&name) {
+            return Ok(function);
+        }
+        let mut parameters = vec![Type::RawPointer {
+            mutable: true,
+            pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+        }];
+        parameters.extend(signature.parameters.clone());
+        let function_type = self.generator.llvm_function_type(
+            &parameters,
+            &signature.result,
+            &signature.effects,
+        )?;
+        let adapter = self
+            .generator
+            .module
+            .add_function(&name, function_type, None);
+        adapter.set_linkage(Linkage::Internal);
+        let entry = self.generator.context.append_basic_block(adapter, "entry");
+        let builder = self.generator.context.create_builder();
+        builder.position_at_end(entry);
+        let arguments = adapter
+            .get_param_iter()
+            .skip(1)
+            .map(|argument| argument.as_basic_value_enum().into())
+            .collect::<Vec<BasicMetadataValueEnum>>();
+        let call = builder.build_call(target, &arguments, "callable.target")?;
+        if signature.result.as_ref() == &Type::Primitive(PrimitiveType::Void)
+            && signature.effects.is_empty()
+        {
+            builder.build_return(None)?;
+        } else {
+            let value = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::Builder("callable target returned void".into()))?;
+            builder.build_return(Some(&value))?;
+        }
+        Ok(adapter)
     }
 
     fn lower_vtable_lookup(
@@ -12861,14 +13990,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 "virtual slot is out of range".into(),
             ));
         }
-        let object_pointer = self
-            .builder
-            .build_load(
-                self.generator.context.ptr_type(AddressSpace::default()),
-                self.place_pointer(object)?,
-                "virtual.object",
-            )?
-            .into_pointer_value();
+        let object_pointer = self.lower_class_object_pointer(object)?;
         let object_layout = self.generator.class_object_type(&object_type)?;
         let header = self.builder.build_struct_gep(
             object_layout,
@@ -12908,6 +14030,29 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         Ok(self
             .builder
             .build_load(pointer, entry, "virtual.entry")?
+            .into_pointer_value())
+    }
+
+    /// Resolve the heap object behind a class place, including a mutable class
+    /// reference passed through a function boundary.  References are address
+    /// based, so a dereference place can carry either the class pointer itself
+    /// or a pointer to a slot containing that pointer; the latter needs one
+    /// additional load before reading the class descriptor.
+    fn lower_class_object_pointer(
+        &self,
+        object: &Place,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let pointer = self.place_pointer(object)?;
+        if matches!(object.projection.last(), Some(Projection::Dereference)) {
+            return Ok(pointer);
+        }
+        Ok(self
+            .builder
+            .build_load(
+                self.generator.context.ptr_type(AddressSpace::default()),
+                pointer,
+                "virtual.object",
+            )?
             .into_pointer_value())
     }
 
@@ -13220,10 +14365,21 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "function constant lacks a function type".into(),
                     ));
                 };
-                self.resolve_emitted_callable(Callable::function(*declaration), function_type)?
-                    .as_global_value()
-                    .as_pointer_value()
-                    .into()
+                let callable = Callable::function(*declaration);
+                let target = self.resolve_emitted_callable(callable, function_type)?;
+                let adapter = self.direct_callable_adapter(callable, function_type, target)?;
+                self.callable_value(
+                    adapter.as_global_value().as_pointer_value(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                )?
+                .into()
             }
             Constant::Method { owner, member, ty } => {
                 let Type::Function(function_type) = ty else {
@@ -13231,15 +14387,23 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "method constant lacks a function type".into(),
                     ));
                 };
-                self.resolve_emitted_callable(
-                    Callable {
-                        declaration: *owner,
-                        member: Some(*member),
-                    },
-                    function_type,
+                let callable = Callable {
+                    declaration: *owner,
+                    member: Some(*member),
+                };
+                let target = self.resolve_emitted_callable(callable, function_type)?;
+                let adapter = self.direct_callable_adapter(callable, function_type, target)?;
+                self.callable_value(
+                    adapter.as_global_value().as_pointer_value(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
                 )?
-                .as_global_value()
-                .as_pointer_value()
                 .into()
             }
             Constant::Constructor { owner, member, ty } => {
@@ -13248,7 +14412,8 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "constructor constant lacks a function type".into(),
                     ));
                 };
-                self.generator
+                let target = self
+                    .generator
                     .constructors
                     .iter()
                     .find(|target| {
@@ -13262,10 +14427,24 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             (*owner, *member)
                         ))
                     })?
-                    .function
-                    .as_global_value()
-                    .as_pointer_value()
-                    .into()
+                    .function;
+                let callable = Callable {
+                    declaration: *owner,
+                    member: *member,
+                };
+                let adapter = self.direct_callable_adapter(callable, function_type, target)?;
+                self.callable_value(
+                    adapter.as_global_value().as_pointer_value(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                )?
+                .into()
             }
             Constant::String(value) => self.lower_static_string(value)?.into(),
         })
@@ -13385,18 +14564,22 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             .ok_or_else(|| CodegenError::Unsupported("missing local".into()))?;
         let mut ty = self.local_type(place.local.0)?;
         let mut variant = None;
+        let mut class_object_pointer = false;
         for projection in &place.projection {
             match projection {
                 Projection::Field { index, ty: field } => {
                     let structure = if self.generator.is_class_type(&ty) {
-                        let object = self
-                            .builder
-                            .build_load(
-                                self.generator.context.ptr_type(AddressSpace::default()),
-                                pointer,
-                                "class.object",
-                            )?
-                            .into_pointer_value();
+                        let object = if class_object_pointer {
+                            pointer
+                        } else {
+                            self.builder
+                                .build_load(
+                                    self.generator.context.ptr_type(AddressSpace::default()),
+                                    pointer,
+                                    "class.object",
+                                )?
+                                .into_pointer_value()
+                        };
                         pointer = object;
                         self.generator.class_object_type(&ty)?
                     } else {
@@ -13417,6 +14600,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     )?;
                     ty = field.clone();
                     variant = None;
+                    class_object_pointer = false;
                 }
                 Projection::Dereference => {
                     let referent_type = match &ty {
@@ -13445,7 +14629,22 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         Type::Reference { referent, .. }
                             if self.generator.is_class_type(referent)
                     );
-                    if !fat_reference && !class_reference {
+                    if class_reference {
+                        // Class references are address-based: the reference slot stores the
+                        // heap object pointer.  Load that pointer once and keep it marked as an
+                        // object pointer for subsequent field or virtual-dispatch projections.
+                        // In particular, borrowed objects supplied by an FFI bridge may have a
+                        // null descriptor, so probing descriptor memory here would be invalid.
+                        pointer = self
+                            .builder
+                            .build_load(
+                                self.generator.context.ptr_type(AddressSpace::default()),
+                                pointer,
+                                "class.reference.value",
+                            )?
+                            .into_pointer_value();
+                        class_object_pointer = true;
+                    } else if !fat_reference {
                         pointer = self
                             .builder
                             .build_load(
@@ -13454,6 +14653,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                                 "dereference.address",
                             )?
                             .into_pointer_value();
+                        class_object_pointer = self.generator.is_class_type(&referent_type);
                     }
                     ty = referent_type;
                 }
@@ -13467,6 +14667,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         )?
                         .into_int_value();
                     (pointer, ty) = self.index_pointer_from(pointer, &ty, index)?;
+                    class_object_pointer = false;
                 }
                 Projection::Downcast(selected) => {
                     if let Type::Optional(inner) = &ty {
@@ -13483,6 +14684,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             "optional.payload.address",
                         )?;
                         ty = inner.as_ref().clone();
+                        class_object_pointer = false;
                     } else if matches!(ty, Type::Nominal(declaration, _) if self.generator.is_enum(declaration))
                     {
                         variant = Some(*selected);
@@ -13499,6 +14701,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         )));
                     }
                     ty = Type::Nominal(*base, Vec::new());
+                    class_object_pointer = self.generator.is_class_type(&ty);
                 }
             }
         }
@@ -13680,6 +14883,26 @@ fn operand_place(operand: &Operand) -> Option<&Place> {
     }
 }
 
+fn closure_operand_type(body: &Body, operand: &Operand) -> Result<Type, CodegenError> {
+    match operand {
+        Operand::Constant(constant) => Ok(constant.ty()),
+        Operand::Copy(place) | Operand::Move(place) => {
+            if place.projection.is_empty() {
+                body.locals
+                    .get(place.local.0 as usize)
+                    .map(|local| local.ty.clone())
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("closure capture local is missing".into())
+                    })
+            } else {
+                Err(CodegenError::Unsupported(
+                    "closure captures must refer to local storage".into(),
+                ))
+            }
+        }
+    }
+}
+
 /// Returns the deterministic native symbol assigned to a specialized callable instance.
 pub fn symbol_for_instance(instance: &Instance) -> String {
     let mut name = instance.callable.member.map_or_else(
@@ -13820,6 +15043,29 @@ fn stable_hash(value: &str) -> u64 {
         .fold(14_695_981_039_346_656_037, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
         })
+}
+
+/// Return whether a monomorphized method receiver belongs to the class whose
+/// descriptor is being populated.  MIR keeps receiver arguments as references
+/// for mutating methods, while immutable methods may remain nominal values;
+/// descriptor lookup must normalize both forms to the same class owner.
+fn class_receiver_matches(
+    receiver: Option<&Type>,
+    declaration: DeclarationId,
+    arguments: &[Type],
+) -> bool {
+    let Some(receiver) = receiver else {
+        return false;
+    };
+    match receiver {
+        Type::Nominal(owner, receiver_arguments) => {
+            *owner == declaration && receiver_arguments == arguments
+        }
+        Type::Reference { referent, .. } => {
+            class_receiver_matches(Some(referent.as_ref()), declaration, arguments)
+        }
+        _ => false,
+    }
 }
 
 fn builtin_type_name(ty: &Type) -> &'static str {

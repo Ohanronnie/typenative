@@ -1,4 +1,3 @@
-
 class User {
   public id: i32;
   public text: string;
@@ -11,10 +10,10 @@ class User {
   }
 }
 function main(): i32 {
-  const original = new User(42i32, String("class"));
+  const original = new User(42, String("class"));
   const copied = original.clone();
-  if (copied.id !== 42i32 || copied.text !== "class") {
-    return 1i32;
+  if (copied.id !== 42 || copied.text !== "class") {
+    return 1;
   }
-  return 42i32;
+  return 42;
 }

@@ -5,7 +5,7 @@ import { Utf8Error } from "std/string";
 function echo(value: string): string {
   return value;
 }
-function sameText(left: & str, right: & str): bool {
+function sameText(left: &str, right: &str): bool {
   return left === right;
 }
 function make(): string {
@@ -13,66 +13,94 @@ function make(): string {
 }
 function main(): i32 throws Utf8Error | ParseIntegerError {
   const parsed = try usize.parseAscii(fromStatic("42"));
-  if (parsed !== 42usize) {
-    return 12i32;
+  if (parsed !== 42) {
+    return 12;
   }
   const made = String("made");
   if (made !== "made") {
-    return 7i32;
+    return 7;
   }
   const decoded = try String.fromUtf8(fromStatic("utf8"));
   if (decoded !== "utf8") {
-    return 8i32;
+    return 8;
   }
   const name: string = "ronnie";
   if (name !== "ronnie") {
-    return 10i32;
+    return 10;
   }
   const unicode = String("aé🙂");
-  if (unicode.length !== 3usize || unicode.byteLength !== 7usize) {
-    return 16i32;
+  if (unicode.length !== 3 || unicode.byteLength !== 7) {
+    return 16;
   }
   const embedded = String("a\0b");
   if (embedded !== "a\0b") {
-    return 13i32;
+    return 13;
   }
   const embeddedBytes: &[u8] = embedded.bytes();
-  if (embeddedBytes[0usize] !== 97u8 || embeddedBytes[1usize] !== 0u8 || embeddedBytes[2usize] !== 98u8) {
-    return 14i32;
+  if (embeddedBytes[0] !== 97 || embeddedBytes[1] !== 0 || embeddedBytes[2] !== 98) {
+    return 14;
   }
   const embeddedCopy = embedded.clone();
   if (embeddedCopy !== embedded) {
-    return 15i32;
+    return 15;
   }
   const guest = echo("guest");
   if (guest !== "guest") {
-    return 11i32;
+    return 11;
   }
   const result = make();
   if (result !== "done") {
-    return 1i32;
+    return 1;
   }
   const copy = result.clone();
   if (result !== "done") {
-    return 2i32;
+    return 2;
   }
   if (copy !== result) {
-    return 3i32;
+    return 3;
   }
   const upper = result.toAsciiUppercase();
   if (upper !== "DONE") {
-    return 9i32;
+    return 9;
   }
-  const view: & str = result.asStr();
+  const unicodeUpper = String("Straße café Ελληνικά Привет").toUpperCase();
+  if (String("é").toUpperCase() !== "É") {
+    return 17;
+  }
+  if (String("ß").toUpperCase() !== "SS") {
+    return 18;
+  }
+  if (String("ﬃ").toUpperCase() !== "FFI") {
+    return 23;
+  }
+  if (String("ŉ").toUpperCase() !== "ʼN") {
+    return 24;
+  }
+  if (String("ΐ").toUpperCase() !== "Ϊ́") {
+    return 25;
+  }
+  if (String("Ελληνικά").toUpperCase() !== "ΕΛΛΗΝΙΚΆ") {
+    return 19;
+  }
+  if (String("Привет").toUpperCase() !== "ПРИВЕТ") {
+    return 20;
+  }
+  if (unicodeUpper !== "STRASSE CAFÉ ΕΛΛΗΝΙΚΆ ПРИВЕТ") {
+    return 21;
+  }
+  if (!String("TypeNative").startsWith("Type") || !String("TypeNative").includes("Native")) {
+    return 22;
+  }
+  const view: &str = result.asStr();
   if (result !== "done") {
-    return 4i32;
+    return 4;
   }
   if (!sameText(view, "done")) {
-    return 5i32;
+    return 5;
   }
   const raw: &[u8] = result.bytes();
-  if (raw[0usize] !== 100u8 || raw[3usize] !== 101u8) {
-    return 6i32;
+  if (raw[0] !== 100 || raw[3] !== 101) {
+    return 6;
   }
-  return 42i32;
+  return 42;
 }

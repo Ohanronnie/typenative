@@ -1,22 +1,22 @@
 import { c_size } from "std/ffi";
 declare extern "C" {
-  function tn_console_write(fd: i32, bytes: * const u8, length: c_size): i32;
-  function tn_string_length(bytes: * const u8): c_size;
+  function tn_console_write(fd: i32, bytes: *const u8, length: c_size): i32;
+  function tn_string_length(bytes: *const u8): c_size;
 }
-export function log(text: & static str): void {
+export function log(text: &str): void {
   unsafe {
-    tn_console_write(1i32, text as * const u8, tn_string_length(text as * const u8));
-    tn_console_write(1i32, "\n" as * const u8, 1usize);
+    tn_console_write(1, text as *const u8, tn_string_length(text as *const u8));
+    tn_console_write(1, "\n" as *const u8, 1);
   }
 }
-export function error(text: & static str): void {
+export function error(text: &str): void {
   unsafe {
-    tn_console_write(2i32, text as * const u8, tn_string_length(text as * const u8));
-    tn_console_write(2i32, "\n" as * const u8, 1usize);
+    tn_console_write(2, text as *const u8, tn_string_length(text as *const u8));
+    tn_console_write(2, "\n" as *const u8, 1);
   }
 }
-export function write(text: & static str): void {
+export function write(text: &str): void {
   unsafe {
-    tn_console_write(1i32, text as * const u8, tn_string_length(text as * const u8));
+    tn_console_write(1, text as *const u8, tn_string_length(text as *const u8));
   }
 }

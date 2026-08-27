@@ -168,6 +168,8 @@ fn lower_one(
         generics,
         loop_targets: Vec::new(),
         error_contexts: Vec::new(),
+        async_managed_scopes: vec![Vec::new()],
+        disposing_async: false,
         ownership_facts: ownership_facts.clone(),
         generator_item_type: function
             .is_generator
@@ -247,6 +249,53 @@ fn generator_item_type(program: &Program, result: &Type, asynchronous: bool) -> 
     .flatten()
 }
 
+fn task_promise_type(program: &Program, ty: &Type) -> Option<Type> {
+    let Type::Nominal(declaration, arguments) = ty else {
+        return None;
+    };
+    let item = program.graph.declaration(*declaration)?;
+    let module = program.graph.module(item.module)?;
+    (item.name.as_deref() == Some("Task")
+        && module.path.ends_with("std/async.tn")
+        && arguments.len() == 2)
+        .then(|| Type::Promise {
+            result: Box::new(arguments[0].clone()),
+            error: Box::new(arguments[1].clone()),
+            effects: tn_hir::promise_effects(&arguments[1], &[]),
+        })
+}
+
+fn promise_effects_for_type(program: &Program, ty: &Type) -> Vec<DeclarationId> {
+    if let Type::Promise { effects, error, .. } = ty {
+        return tn_hir::promise_effects(error, effects);
+    }
+    let Type::Nominal(declaration, arguments) = ty else {
+        return Vec::new();
+    };
+    let Some(item) = program.graph.declaration(*declaration) else {
+        return Vec::new();
+    };
+    let Some(module) = program.graph.module(item.module) else {
+        return Vec::new();
+    };
+    if item.name.as_deref() != Some("Task")
+        || !module.path.ends_with("std/async.tn")
+        || arguments.len() != 2
+    {
+        return Vec::new();
+    }
+    tn_hir::promise_effects(&arguments[1], &[])
+}
+
+fn mir_nominal_id(ty: &Type) -> Option<DeclarationId> {
+    match ty {
+        Type::Nominal(declaration, _) | Type::DynamicInterface(declaration, _) => {
+            Some(*declaration)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct OpenBlock {
     statements: Vec<Statement>,
@@ -272,8 +321,10 @@ struct OwnershipMirLowerer<'a> {
     return_type: Type,
     declared_effects: Vec<DeclarationId>,
     generics: BTreeMap<String, Namespace>,
-    loop_targets: Vec<(BasicBlockId, BasicBlockId)>,
+    loop_targets: Vec<(BasicBlockId, BasicBlockId, usize)>,
     error_contexts: Vec<ErrorContext>,
+    async_managed_scopes: Vec<Vec<(LocalId, usize)>>,
+    disposing_async: bool,
     ownership_facts: OwnershipFacts,
     generator_item_type: Option<Type>,
     generator_async: bool,
@@ -287,6 +338,10 @@ impl OwnershipMirLowerer<'_> {
             self.start_generator();
         }
         self.lower_sequence(None);
+        if self.blocks[self.current].terminator.is_none() {
+            let managed = self.active_async_disposals();
+            self.lower_async_disposals(&managed);
+        }
         if let Some(finish) = self.generator_finish_block {
             if self.current != finish && self.blocks[self.current].terminator.is_none() {
                 self.terminate(
@@ -490,8 +545,13 @@ impl OwnershipMirLowerer<'_> {
             Some(TokenKind::LeftBrace) => {
                 let saved_names = self.names.clone();
                 let first_local = self.locals.len();
+                self.async_managed_scopes.push(Vec::new());
                 self.index += 1;
                 self.lower_sequence(Some(TokenKind::RightBrace));
+                let managed = self.async_managed_scopes.pop().unwrap_or_default();
+                if self.blocks[self.current].terminator.is_none() {
+                    self.lower_async_disposals(&managed);
+                }
                 for index in (first_local..self.locals.len()).rev() {
                     let local = LocalId(u32::try_from(index).expect("MIR local limit"));
                     self.statement(
@@ -706,8 +766,11 @@ impl OwnershipMirLowerer<'_> {
         );
         self.index = condition_end + 1;
         self.current = body_block;
-        self.loop_targets
-            .push((Self::block_id(condition_block), Self::block_id(exit_block)));
+        self.loop_targets.push((
+            Self::block_id(condition_block),
+            Self::block_id(exit_block),
+            self.async_managed_scopes.len(),
+        ));
         self.lower_statement();
         self.loop_targets.pop();
         if self.blocks[self.current].terminator.is_none() {
@@ -852,8 +915,11 @@ impl OwnershipMirLowerer<'_> {
             self.span(binding_token),
         );
         self.index = header_end + 1;
-        self.loop_targets
-            .push((Self::block_id(increment_block), Self::block_id(exit_block)));
+        self.loop_targets.push((
+            Self::block_id(increment_block),
+            Self::block_id(exit_block),
+            self.async_managed_scopes.len(),
+        ));
         self.lower_statement();
         self.loop_targets.pop();
         if self.blocks[self.current].terminator.is_none() {
@@ -1043,8 +1109,11 @@ impl OwnershipMirLowerer<'_> {
             self.span(binding_token),
         );
         self.index = header_end + 1;
-        self.loop_targets
-            .push((Self::block_id(condition_block), Self::block_id(exit_block)));
+        self.loop_targets.push((
+            Self::block_id(condition_block),
+            Self::block_id(exit_block),
+            self.async_managed_scopes.len(),
+        ));
         self.lower_statement();
         self.loop_targets.pop();
         if self.blocks[self.current].terminator.is_none() {
@@ -1202,8 +1271,11 @@ impl OwnershipMirLowerer<'_> {
             self.span(binding_token),
         );
         self.index = header_end + 1;
-        self.loop_targets
-            .push((Self::block_id(condition_block), Self::block_id(exit_block)));
+        self.loop_targets.push((
+            Self::block_id(condition_block),
+            Self::block_id(exit_block),
+            self.async_managed_scopes.len(),
+        ));
         self.lower_statement();
         self.loop_targets.pop();
         if self.blocks[self.current].terminator.is_none() {
@@ -1254,14 +1326,19 @@ impl OwnershipMirLowerer<'_> {
                         <= u32::try_from(self.tokens[block_end].range.end).unwrap_or(0)
             })
             .flat_map(|expression| {
-                expression.effects.iter().copied().chain(
-                    match &expression.ty {
-                        Type::Function(function) => function.effects.as_slice(),
-                        _ => &[],
-                    }
+                expression
+                    .effects
                     .iter()
-                    .copied(),
-                )
+                    .copied()
+                    .chain(
+                        match &expression.ty {
+                            Type::Function(function) => function.effects.as_slice(),
+                            _ => &[],
+                        }
+                        .iter()
+                        .copied(),
+                    )
+                    .chain(promise_effects_for_type(self.program, &expression.ty))
             })
             .collect::<Vec<_>>();
         effects.sort();
@@ -1275,6 +1352,7 @@ impl OwnershipMirLowerer<'_> {
             dispatch: Self::block_id(dispatch),
             payload,
             effects: effects.clone(),
+            scope_depth: self.async_managed_scopes.len(),
         });
         self.index = block_start;
         self.lower_statement();
@@ -1433,18 +1511,22 @@ impl OwnershipMirLowerer<'_> {
 
     fn lower_loop_control(&mut self) {
         let token = self.tokens[self.index];
-        let target = self
-            .loop_targets
-            .last()
-            .map(|(continue_target, break_target)| {
-                if token.kind == TokenKind::Break {
-                    *break_target
-                } else {
-                    *continue_target
-                }
-            });
-        if let Some(target) = target {
-            self.terminate(TerminatorKind::Goto(target), self.span(token));
+        let target =
+            self.loop_targets
+                .last()
+                .map(|(continue_target, break_target, scope_depth)| {
+                    if token.kind == TokenKind::Break {
+                        (*break_target, *scope_depth)
+                    } else {
+                        (*continue_target, *scope_depth)
+                    }
+                });
+        if let Some((target, scope_depth)) = target {
+            let managed = self.active_async_disposals_from(scope_depth);
+            self.lower_async_disposals(&managed);
+            if self.blocks[self.current].terminator.is_none() {
+                self.terminate(TerminatorKind::Goto(target), self.span(token));
+            }
         }
         self.index += 1;
         self.index += usize::from(self.kind() == Some(TokenKind::Semicolon));
@@ -1554,8 +1636,96 @@ impl OwnershipMirLowerer<'_> {
             StatementKind::Assign(Place::local(local), Box::new(Rvalue::Use(operand))),
             self.span(name_token),
         );
-        let _ = awaited;
+        if awaited && let Some(scope) = self.async_managed_scopes.last_mut() {
+            scope.push((local, name_index));
+        }
         self.index = end + usize::from(end < self.tokens.len());
+    }
+
+    fn lower_async_disposals(&mut self, managed: &[(LocalId, usize)]) {
+        let was_disposing = self.disposing_async;
+        self.disposing_async = true;
+        for (local, token) in managed.iter().rev() {
+            let Some(method) = self.disposal_method(&self.locals[local.0 as usize].ty) else {
+                continue;
+            };
+            let signature = tn_hir::FunctionType {
+                parameters: method
+                    .function
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect(),
+                result: Box::new(method.function.result.clone()),
+                effects: method.function.effects.clone(),
+                generics: Vec::new(),
+                is_async: true,
+                is_unsafe: method.function.is_unsafe,
+            };
+            let function_type = Type::Function(signature.clone());
+            let function = self.temporary(function_type.clone(), self.span(self.tokens[*token]));
+            self.statement(
+                StatementKind::StorageLive(function),
+                self.span(self.tokens[*token]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(function),
+                    Box::new(Rvalue::DirectMethod {
+                        object: Place::local(*local),
+                        implementation: self.method_owner(method.id).unwrap_or_else(|| {
+                            mir_nominal_id(&self.locals[local.0 as usize].ty)
+                                .expect("async disposable nominal owner")
+                        }),
+                        member: method.id,
+                        receiver: method.receiver,
+                        ty: function_type,
+                    }),
+                ),
+                self.span(self.tokens[*token]),
+            );
+            let Some((promise, promise_type)) = self.emit_call(
+                Operand::Move(Place::local(function)),
+                Some(Operand::Copy(Place::local(*local))),
+                &signature,
+                Vec::new(),
+                *token,
+            ) else {
+                continue;
+            };
+            let _ = self.lower_await_operand(promise, promise_type, *token);
+        }
+        self.disposing_async = was_disposing;
+    }
+
+    fn active_async_disposals(&self) -> Vec<(LocalId, usize)> {
+        self.async_managed_scopes
+            .iter()
+            .flat_map(|scope| scope.iter().copied())
+            .collect()
+    }
+
+    fn active_async_disposals_from(&self, scope_depth: usize) -> Vec<(LocalId, usize)> {
+        self.async_managed_scopes
+            .iter()
+            .skip(scope_depth)
+            .flat_map(|scope| scope.iter().copied())
+            .collect()
+    }
+
+    fn disposal_method(&self, ty: &Type) -> Option<tn_hir::Method> {
+        let declaration = mir_nominal_id(ty)?;
+        let definition = self.program.definition(declaration)?;
+        let (DefinitionData::Struct { methods, .. }
+        | DefinitionData::Class { methods, .. }
+        | DefinitionData::Implementation { methods, .. }) = &definition.data
+        else {
+            return None;
+        };
+        methods
+            .iter()
+            .find(|method| method.name == "[Symbol.asyncDispose]")
+            .cloned()
     }
 
     fn assign_remaining_initializer(
@@ -1917,6 +2087,8 @@ impl OwnershipMirLowerer<'_> {
             .map_or(TerminatorKind::Unreachable, |(operand, _)| {
                 TerminatorKind::Throw(operand)
             });
+        let managed = self.active_async_disposals();
+        self.lower_async_disposals(&managed);
         self.terminate(terminator, self.span(token));
         self.index = end + usize::from(end < self.tokens.len());
     }
@@ -1973,6 +2145,8 @@ impl OwnershipMirLowerer<'_> {
             } else {
                 TerminatorKind::Return(operand)
             };
+        let managed = self.active_async_disposals();
+        self.lower_async_disposals(&managed);
         self.terminate(terminator, self.span(token));
         self.index = end + usize::from(end < self.tokens.len());
     }
@@ -2133,6 +2307,9 @@ impl OwnershipMirLowerer<'_> {
             && self.matching_token(open, TokenKind::LeftBracket, TokenKind::RightBracket)
                 == Some(end - 1)
         {
+            if self.direct_member_access(start, end).is_some() {
+                return self.lower_computed_member(start, open, end);
+            }
             return self.lower_index(start, open, end);
         }
         if let Some(dot) = self.find_top_level(start, end, TokenKind::Dot)
@@ -2713,7 +2890,36 @@ impl OwnershipMirLowerer<'_> {
     }
 
     fn lower_await(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
-        let (value, promise_type) = self.lower_expression_range(start + 1, end, None)?;
+        let (mut value, mut promise_type) = self.lower_expression_range(start + 1, end, None)?;
+        if let Some(task_promise) = task_promise_type(self.program, &promise_type) {
+            let promise = self.temporary(task_promise.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(promise),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(promise),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "task_into_promise".into(),
+                        operands: vec![value],
+                        ty: task_promise.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            value = Operand::Move(Place::local(promise));
+            promise_type = task_promise;
+        }
+        self.lower_await_operand(value, promise_type, start)
+    }
+
+    fn lower_await_operand(
+        &mut self,
+        value: Operand,
+        promise_type: Type,
+        start: usize,
+    ) -> Option<(Operand, Type)> {
         let Type::Promise {
             result, effects, ..
         } = promise_type
@@ -2764,7 +2970,13 @@ impl OwnershipMirLowerer<'_> {
             );
         }
         self.current = cancel;
-        self.terminate(TerminatorKind::Unreachable, self.span(self.tokens[start]));
+        if !self.disposing_async {
+            let managed = self.active_async_disposals();
+            self.lower_async_disposals(&managed);
+        }
+        if self.blocks[self.current].terminator.is_none() {
+            self.terminate(TerminatorKind::Unreachable, self.span(self.tokens[start]));
+        }
         self.current = resume;
         Some((
             destination.map_or_else(
@@ -3278,6 +3490,8 @@ impl OwnershipMirLowerer<'_> {
             generics: self.generics.clone(),
             loop_targets: std::mem::take(&mut self.loop_targets),
             error_contexts: std::mem::take(&mut self.error_contexts),
+            async_managed_scopes: std::mem::take(&mut self.async_managed_scopes),
+            disposing_async: self.disposing_async,
             ownership_facts: self.ownership_facts.clone(),
             generator_item_type: self.generator_item_type.clone(),
             generator_async: self.generator_async,
@@ -3296,6 +3510,8 @@ impl OwnershipMirLowerer<'_> {
         self.next_region = nested.next_region;
         self.loop_targets = nested.loop_targets;
         self.error_contexts = nested.error_contexts;
+        self.async_managed_scopes = nested.async_managed_scopes;
+        self.disposing_async = nested.disposing_async;
         self.generator_item_type = nested.generator_item_type;
         self.generator_async = nested.generator_async;
         self.generator_buffer = nested.generator_buffer;
@@ -3389,6 +3605,8 @@ impl OwnershipMirLowerer<'_> {
             generics: self.generics.clone(),
             loop_targets: Vec::new(),
             error_contexts: Vec::new(),
+            async_managed_scopes: vec![Vec::new()],
+            disposing_async: false,
             ownership_facts: self.ownership_facts.clone(),
             generator_item_type: None,
             generator_async: false,
@@ -3488,23 +3706,23 @@ impl OwnershipMirLowerer<'_> {
         }
         let generic_bounds = self.generic_call_bounds(start, open);
         let callee_end = generic_bounds.map_or(open, |(less, _)| less);
-        let direct_member = self
-            .find_top_level(start, callee_end, TokenKind::Dot)
-            .filter(|dot| *dot + 2 == callee_end)
-            .and_then(|dot| {
-                let expression = self.hir_expression_range(start, callee_end)?;
-                let ResolvedValue::Member(member) = expression.resolution? else {
-                    return None;
-                };
-                if self.method_receiver(member) == Some(tn_hir::ReceiverMode::Static) {
-                    return None;
-                }
-                matches!(&expression.ty, Type::Function(_)).then_some((
-                    dot,
-                    member,
-                    expression.ty.clone(),
-                ))
-            });
+        let direct_member =
+            self.direct_member_access(start, callee_end)
+                .and_then(|(owner_end, member_token)| {
+                    let expression = self.hir_expression_range(start, callee_end)?;
+                    let ResolvedValue::Member(member) = expression.resolution? else {
+                        return None;
+                    };
+                    if self.method_receiver(member) == Some(tn_hir::ReceiverMode::Static) {
+                        return None;
+                    }
+                    matches!(&expression.ty, Type::Function(_)).then_some((
+                        owner_end,
+                        member_token,
+                        member,
+                        expression.ty.clone(),
+                    ))
+                });
         let callee_is_run = self
             .hir_expression_range(start, callee_end)
             .and_then(|expression| expression.resolution)
@@ -3518,14 +3736,15 @@ impl OwnershipMirLowerer<'_> {
             == Some("run");
         let has_direct_member = direct_member.is_some();
         let (mut function, function_type, prelowered_arguments) =
-            if let Some((dot, member, ty)) = direct_member {
-                let (owner, owner_type) = self.lower_expression_range(start, dot, None)?;
+            if let Some((owner_end, member_token, member, ty)) = direct_member {
+                let (owner, owner_type) = self.lower_expression_range(start, owner_end, None)?;
                 let Type::Function(signature) = ty.clone() else {
                     return None;
                 };
                 let arguments =
                     self.lower_call_arguments(self.argument_ranges(open + 1, end - 1), &signature)?;
-                let lowered = self.lower_member_from(owner, &owner_type, member, ty, dot + 1)?;
+                let lowered =
+                    self.lower_member_from(owner, &owner_type, member, ty, member_token)?;
                 (lowered.0, lowered.1, Some(arguments))
             } else {
                 let lowered = self.lower_expression_range(start, callee_end, None)?;
@@ -3590,6 +3809,26 @@ impl OwnershipMirLowerer<'_> {
             && matches!(actual, Type::Promise { .. })
         {
             concrete.parameters[0] = actual.clone();
+        }
+        if self.is_intrinsic_operation(start, callee_end, "thread_spawn") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "thread_spawn".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
         }
         if self.is_intrinsic_operation(start, callee_end, "size_of") {
             let type_argument = substitutions
@@ -4234,6 +4473,11 @@ impl OwnershipMirLowerer<'_> {
             specialize_method_operand(self, &function, &Type::Function(concrete.clone()));
         }
         replace_callable_type(&mut function, Type::Function(concrete.clone()));
+        if let Operand::Move(place) = function.clone() {
+            // Calling a callable borrows its code/environment pair. The call itself does not
+            // consume the callable; ownership is released by its enclosing scope.
+            function = Operand::Copy(place);
+        }
         let receiver = operand_place(function.clone())
             .and_then(|place| self.bound_receivers.get(&place.local).cloned());
         self.emit_call(function, receiver, &concrete, arguments, start)
@@ -4433,7 +4677,7 @@ impl OwnershipMirLowerer<'_> {
                 .function
                 .parameters
                 .iter()
-                .map(|parameter| parameter.ty.clone())
+                .map(|parameter| substitute_mir_type(&parameter.ty, &substitutions))
                 .collect()
         });
         let ranges = self.argument_ranges(open + 1, end - 1);
@@ -4481,12 +4725,47 @@ impl OwnershipMirLowerer<'_> {
         let mut arguments = Vec::new();
         for (index, (argument, actual, argument_start)) in lowered_arguments.into_iter().enumerate()
         {
-            arguments.push(self.reborrow_argument(
+            let argument = self.reborrow_argument(
                 argument,
                 &actual,
                 signature.parameters.get(index),
                 argument_start,
-            ));
+            );
+            if let Some(parameter @ Type::Optional(inner)) = signature.parameters.get(index)
+                && &actual == inner.as_ref()
+            {
+                let optional = self.temporary(parameter.clone(), self.span(self.tokens[start]));
+                self.statement(
+                    StatementKind::StorageLive(optional),
+                    self.span(self.tokens[start]),
+                );
+                self.statement(
+                    StatementKind::Assign(
+                        Place::local(optional),
+                        Box::new(Rvalue::Aggregate {
+                            ty: parameter.clone(),
+                            variant: Some(1),
+                            fields: vec![argument],
+                            field_types: vec![actual],
+                        }),
+                    ),
+                    self.span(self.tokens[start]),
+                );
+                self.statement(
+                    StatementKind::SetDiscriminant(Place::local(optional), 1),
+                    self.span(self.tokens[start]),
+                );
+                arguments.push(Operand::Move(Place::local(optional)));
+            } else {
+                arguments.push(argument);
+            }
+        }
+        for parameter in signature.parameters.iter().skip(arguments.len()) {
+            if matches!(parameter, Type::Optional(_)) {
+                arguments.push(Operand::Constant(tn_mir::Constant::Undefined(
+                    parameter.clone(),
+                )));
+            }
         }
         let function = Operand::Constant(tn_mir::Constant::Constructor {
             owner,
@@ -4569,6 +4848,14 @@ impl OwnershipMirLowerer<'_> {
     }
 
     fn route_error(&mut self, error_value: Operand, effects: &[DeclarationId], start: usize) {
+        if !self.disposing_async {
+            let scope_depth = self
+                .error_contexts
+                .last()
+                .map_or(0, |context| context.scope_depth);
+            let managed = self.active_async_disposals_from(scope_depth);
+            self.lower_async_disposals(&managed);
+        }
         if let Some(context) = self.error_contexts.last().cloned() {
             self.statement(
                 StatementKind::Assign(
@@ -4656,10 +4943,52 @@ impl OwnershipMirLowerer<'_> {
         self.lower_member_from(owner, &owner_type, member, member_type, dot)
     }
 
+    fn direct_member_access(&self, start: usize, end: usize) -> Option<(usize, usize)> {
+        if let Some(dot) = self.find_top_level(start, end, TokenKind::Dot)
+            && dot + 2 == end
+        {
+            return Some((dot, dot + 1));
+        }
+        let open = self.find_top_level(start, end, TokenKind::LeftBracket)?;
+        let close = self.matching_token(open, TokenKind::LeftBracket, TokenKind::RightBracket)?;
+        (open > start
+            && close + 1 == end
+            && close == open + 4
+            && self.tokens.get(open + 1)?.kind == TokenKind::Identifier
+            && self.tokens.get(open + 2)?.kind == TokenKind::Dot
+            && self.tokens.get(open + 3)?.kind == TokenKind::Identifier)
+            .then_some((open, open + 3))
+    }
+
+    fn lower_computed_member(
+        &mut self,
+        start: usize,
+        open: usize,
+        end: usize,
+    ) -> Option<(Operand, Type)> {
+        let expression = self.hir_expression_range(start, end)?;
+        let Some(ResolvedValue::Member(member)) = expression.resolution else {
+            return None;
+        };
+        let member_type = expression.ty.clone();
+        if self.method_receiver(member) == Some(tn_hir::ReceiverMode::Static) {
+            return Some((
+                Operand::Constant(tn_mir::Constant::Method {
+                    owner: self.method_owner(member)?,
+                    member,
+                    ty: member_type.clone(),
+                }),
+                member_type,
+            ));
+        }
+        let (owner, owner_type) = self.lower_expression_range(start, open, None)?;
+        self.lower_member_from(owner, &owner_type, member, member_type, open + 3)
+    }
+
     fn lower_string_length(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
         let dot = self.find_top_level(start, end, TokenKind::Dot)?;
         let (receiver, receiver_type) = self.lower_expression_range(start, dot, None)?;
-        let receiver = self.materialize_operand(receiver, receiver_type, &self.tokens[dot]);
+        let receiver = self.materialize_operand(receiver, receiver_type, self.tokens[dot]);
         let result_type = Type::Primitive(PrimitiveType::Usize);
         let temporary = self.temporary(result_type.clone(), self.span(self.tokens[dot + 1]));
         self.statement(
@@ -4683,7 +5012,7 @@ impl OwnershipMirLowerer<'_> {
     fn lower_string_byte_length(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
         let dot = self.find_top_level(start, end, TokenKind::Dot)?;
         let (receiver, receiver_type) = self.lower_expression_range(start, dot, None)?;
-        let receiver = self.materialize_operand(receiver, receiver_type, &self.tokens[dot]);
+        let receiver = self.materialize_operand(receiver, receiver_type, self.tokens[dot]);
         let result_type = Type::Primitive(PrimitiveType::Usize);
         let temporary = self.temporary(result_type.clone(), self.span(self.tokens[dot + 1]));
         self.statement(
@@ -4804,7 +5133,8 @@ impl OwnershipMirLowerer<'_> {
             };
             let lookup = match access_type {
                 Type::Nominal(declaration, _)
-                    if self.class_vtable_slot(*declaration, member).is_some() =>
+                    if self.class_vtable_slot(*declaration, member).is_some()
+                        && !self.method_has_decorator(*declaration, member) =>
                 {
                     Rvalue::VtableLookup {
                         object: owner,
@@ -5050,6 +5380,7 @@ impl OwnershipMirLowerer<'_> {
         self.program.definitions.iter().find_map(|definition| {
             let (DefinitionData::Struct { methods, .. }
             | DefinitionData::Enum { methods, .. }
+            | DefinitionData::Class { methods, .. }
             | DefinitionData::Implementation { methods, .. }) = &definition.data
             else {
                 return None;
@@ -5188,6 +5519,19 @@ impl OwnershipMirLowerer<'_> {
             .position(|(_, candidate)| *candidate == member)
             .and_then(|index| u32::try_from(index).ok())
             .and_then(|index| index.checked_add(1))
+    }
+
+    fn method_has_decorator(&self, declaration: DeclarationId, member: MemberId) -> bool {
+        self.program
+            .definition(declaration)
+            .is_some_and(|definition| match &definition.data {
+                DefinitionData::Class { methods, .. }
+                | DefinitionData::Struct { methods, .. }
+                | DefinitionData::Implementation { methods, .. } => methods
+                    .iter()
+                    .any(|method| method.id == member && !method.attributes.is_empty()),
+                _ => false,
+            })
     }
 
     fn class_vtable_methods(&self, declaration: DeclarationId) -> Vec<(String, MemberId)> {
@@ -6209,6 +6553,7 @@ struct ErrorContext {
     dispatch: BasicBlockId,
     payload: LocalId,
     effects: Vec<DeclarationId>,
+    scope_depth: usize,
 }
 
 struct CatchArm {
@@ -6687,7 +7032,8 @@ fn mir_cast_kind(source: &Type, target: &Type) -> CastKind {
         (Type::Reference { .. }, Type::Reference { .. }) => CastKind::Reborrow,
         (Type::RawPointer { .. }, Type::RawPointer { .. })
         | (Type::Reference { .. }, Type::RawPointer { .. })
-        | (Type::Promise { .. }, Type::RawPointer { .. }) => CastKind::RawPointer,
+        | (Type::Promise { .. }, Type::RawPointer { .. })
+        | (Type::RawPointer { .. }, Type::Promise { .. }) => CastKind::RawPointer,
         (
             Type::Nominal(_, _) | Type::Generic(_) | Type::Reference { .. },
             Type::DynamicInterface(_, _),

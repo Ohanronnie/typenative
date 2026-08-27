@@ -342,7 +342,24 @@ fn visit_terminator(
             arguments,
             ..
         } => {
-            visit_operand(function, registry, drop_implementations, discovered)?;
+            if let Operand::Constant(Constant::Method { owner, member, ty }) = function {
+                let receiver_type = receiver.as_ref().and_then(|operand| match operand {
+                    Operand::Copy(place) | Operand::Move(place) => place_type(body, place),
+                    Operand::Constant(constant) => Some(constant.ty()),
+                });
+                discover_callable(
+                    Callable {
+                        declaration: *owner,
+                        member: Some(*member),
+                    },
+                    ty,
+                    receiver_type.as_ref(),
+                    registry,
+                    discovered,
+                )?;
+            } else {
+                visit_operand(function, registry, drop_implementations, discovered)?;
+            }
             if let Some(receiver) = receiver {
                 visit_operand(receiver, registry, drop_implementations, discovered)?;
             }

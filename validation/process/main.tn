@@ -9,5 +9,5 @@ function main(): i32 throws ProcessError {
   command.arg("tab\tpath");
   command.arg("line\npath");
   const status = try command.status();
-  return status === 0i32?42i32: status;
+  return status === 0?42: status;
 }

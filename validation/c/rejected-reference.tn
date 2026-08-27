@@ -1,4 +1,4 @@
 
-@Export function rejectedReference(value: & i32): i32 {
-  return 0i32;
+@Export function rejectedReference(value: &i32): i32 {
+  return 0;
 }

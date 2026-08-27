@@ -89,6 +89,46 @@ function caller(value: string): void {
 }
 
 #[test]
+fn executable_language_spec_examples_are_type_checked_and_run() {
+    let documentation = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/language-spec.md"),
+    )
+    .expect("language specification");
+    let mut examples = Vec::new();
+    let mut current = None;
+    for line in documentation.lines() {
+        if line.trim() == "```tn-executable" {
+            assert!(current.is_none(), "nested executable documentation fence");
+            current = Some(String::new());
+        } else if line.trim() == "```" && current.is_some() {
+            examples.push(current.take().expect("example body"));
+        } else if let Some(example) = current.as_mut() {
+            example.push_str(line);
+            example.push('\n');
+        }
+    }
+    assert!(
+        !examples.is_empty(),
+        "the specification must contain an executable example"
+    );
+    for (index, example) in examples.into_iter().enumerate() {
+        let directory = tempfile::tempdir().expect("documentation example directory");
+        let source = directory.path().join(format!("example-{index}.tn"));
+        std::fs::write(&source, example).expect("documentation example source");
+        let run = Command::new(env!("CARGO_BIN_EXE_tn"))
+            .args(["run", source.to_str().expect("UTF-8 documentation path")])
+            .output()
+            .expect("documentation example runs");
+        assert_eq!(
+            run.status.code(),
+            Some(42),
+            "documentation example {index} failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+#[test]
 fn lint_runs_canonical_sources_and_reports_hygiene_warnings() {
     let canonical = Command::new(env!("CARGO_BIN_EXE_tn"))
         .args(["lint", "../../validation/generators/main.tn", "--json"])
@@ -175,6 +215,71 @@ fn build_emits_verified_native_products_and_run_preserves_exit_status() {
 }
 
 #[test]
+fn native_using_invokes_the_symbol_disposal_protocol_at_scope_exit() {
+    let directory = tempfile::tempdir().expect("temporary disposal project");
+    let source = directory.path().join("main.tn");
+    std::fs::write(
+        &source,
+        r#"import { Disposable } from "std/core";
+import { exit } from "std/process";
+class Resource implements Disposable {
+  public [Symbol.dispose](): void { exit(77); }
+}
+
+function main(): i32 {
+  {
+    using resource = new Resource();
+    resource;
+  }
+  return 1;
+}
+"#,
+    )
+    .expect("disposal source fixture");
+
+    let run = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args(["run", source.to_str().expect("UTF-8 source path")])
+        .output()
+        .expect("tn run executes disposal fixture");
+    assert_eq!(
+        run.status.code(),
+        Some(77),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
+fn native_task_group_returns_an_independent_awaitable_task_and_closes_asynchronously() {
+    let directory = tempfile::tempdir().expect("temporary structured task project");
+    let source = directory.path().join("main.tn");
+    std::fs::write(
+        &source,
+        r#"import { runI32, TaskGroup } from "std/async";
+async function child(): Promise<i32, never> { return 23; }
+async function parent(): Promise<i32, never> {
+  await using tasks = new TaskGroup();
+  const task = tasks.spawn(child());
+  return await task;
+}
+function main(): i32 { return runI32(parent()); }
+"#,
+    )
+    .expect("structured task source fixture");
+
+    let run = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args(["run", source.to_str().expect("UTF-8 source path")])
+        .output()
+        .expect("tn run executes structured task fixture");
+    assert_eq!(
+        run.status.code(),
+        Some(23),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
 fn build_timings_report_each_compiler_phase() {
     let directory = tempfile::tempdir().expect("temporary timing project");
     let source = directory.path().join("main.tn");
@@ -210,6 +315,64 @@ fn build_timings_report_each_compiler_phase() {
             "missing timing phase {phase}: {stderr}"
         );
     }
+}
+
+#[test]
+fn unchanged_native_builds_reuse_content_addressed_products() {
+    let directory = tempfile::tempdir().expect("temporary incremental build project");
+    let source = directory.path().join("main.tn");
+    let product = directory.path().join("main.ll");
+    std::fs::write(&source, "function main(): i32 { return 7; }\n")
+        .expect("incremental source fixture");
+    let build = || {
+        Command::new(env!("CARGO_BIN_EXE_tn"))
+            .args([
+                "build",
+                source.to_str().expect("UTF-8 source path"),
+                "--emit",
+                "llvm-ir",
+                "--out",
+                product.to_str().expect("UTF-8 product path"),
+                "--timings",
+            ])
+            .output()
+            .expect("incremental tn build runs")
+    };
+
+    let first = build();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&first.stderr).contains("phase=cache-hit"));
+    let first_product = std::fs::read(&product).expect("first incremental product");
+
+    let second = build();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(String::from_utf8_lossy(&second.stderr).contains("phase=cache-hit"));
+    assert_eq!(
+        std::fs::read(&product).expect("cached incremental product"),
+        first_product
+    );
+
+    std::fs::write(&source, "function main(): i32 { return 8; }\n")
+        .expect("change incremental source fixture");
+    let third = build();
+    assert!(
+        third.status.success(),
+        "{}",
+        String::from_utf8_lossy(&third.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&third.stderr).contains("phase=cache-hit"));
+    assert_ne!(
+        std::fs::read(&product).expect("rebuilt incremental product"),
+        first_product
+    );
 }
 
 #[test]

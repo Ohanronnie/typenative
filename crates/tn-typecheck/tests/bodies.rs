@@ -59,10 +59,14 @@ function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
   const decoded = try string.fromUtf8(fromStatic("value"));
   const parsed = try usize.parseAscii(fromStatic("42"));
   const upper = value.toAsciiUppercase();
+  const canonicalUpper = value.toUpperCase();
+  const starts = value.startsWith("val");
+  const contains = value.includes("alu");
+  const sliced = try value.slice(0usize, 3usize);
   const copy = value.clone();
   const view: &str = value.asStr();
   const raw: &[u8] = value.bytes();
-  return made === copy || decoded === upper || upper === view || raw[0usize] === 0u8 || parsed === 42usize;
+  return made === copy || decoded === upper || canonicalUpper === sliced || starts || contains || upper === view || raw[0usize] === 0u8 || parsed === 42usize;
 }
 "#,
     );
@@ -80,8 +84,18 @@ function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
     let expected = methods
         .iter()
         .filter(|method| {
-            ["fromUtf8", "toAsciiUppercase", "clone", "asStr", "bytes"]
-                .contains(&method.name.as_str())
+            [
+                "fromUtf8",
+                "toAsciiUppercase",
+                "toUpperCase",
+                "startsWith",
+                "includes",
+                "slice",
+                "clone",
+                "asStr",
+                "bytes",
+            ]
+            .contains(&method.name.as_str())
         })
         .map(|method| method.id)
         .collect::<std::collections::BTreeSet<_>>();
@@ -94,7 +108,7 @@ function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(expected.len(), 5);
+    assert_eq!(expected.len(), 9);
     assert!(expected.is_subset(&resolved));
     let usize_declaration = program
         .intrinsic_type_declaration(&tn_hir::Type::Primitive(tn_hir::PrimitiveType::Usize))
@@ -114,6 +128,194 @@ function canonical(value: string): bool throws Utf8Error | ParseIntegerError {
 }
 
 #[test]
+fn managed_bindings_require_the_matching_disposal_protocol() {
+    let (_, valid) = checked_with_workspace_standard_library(
+        r#"
+import { Disposable } from "std/core";
+class Managed implements Disposable {
+  public [Symbol.dispose](): void {}
+}
+
+function valid(): void {
+  using resource = new Managed();
+}
+"#,
+    );
+    assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
+
+    let (_, invalid) = checked_with_workspace_standard_library(
+        r"
+class Unmanaged {}
+function invalid(): void {
+  using resource = new Unmanaged();
+}
+",
+    );
+    assert!(
+        invalid
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.condition.as_str() == "TYPE_USING_REQUIRES_DISPOSABLE"),
+        "{:?}",
+        invalid.diagnostics
+    );
+}
+
+#[test]
+fn task_values_are_awaitable_and_async_managed_groups_close_on_return() {
+    let (program, checked) = checked_with_workspace_standard_library(
+        r#"
+import { TaskGroup } from "std/async";
+async function child(): Promise<i32, never> { return 23; }
+async function parent(): Promise<i32, never> {
+  await using tasks = new TaskGroup();
+  const task = tasks.spawn(child());
+  return await task;
+}
+"#,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let lowered = tn_typecheck::lower_mir(&program, &checked.bodies);
+    for body in &lowered {
+        tn_mir::validate(body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    }
+    assert!(lowered.iter().any(|body| {
+        body.blocks.iter().any(|block| {
+            matches!(
+                block.terminator.kind,
+                tn_mir::TerminatorKind::Suspend { .. }
+            )
+        })
+    }));
+}
+
+#[test]
+fn async_managed_bindings_cleanup_on_loop_exit_error_and_cancellation() {
+    let (program, checked) = checked_with_workspace_standard_library(
+        r#"
+import { AsyncDisposable } from "std/core";
+class Failure {}
+class Resource implements AsyncDisposable {
+  public async [Symbol.asyncDispose](): Promise<void, never> { return; }
+}
+
+async function child(): Promise<void, never> { return; }
+async function failing(): Promise<void, Failure> { throw new Failure(); }
+async function flow(flag: bool): Promise<void, never> {
+  await using resource = new Resource();
+  while (flag) { break; }
+  await child();
+  return;
+}
+
+async function errorFlow(): Promise<void, Failure> {
+  await using resource = new Resource();
+  try { try await failing(); } catch (error: Failure) { return; }
+  return;
+}
+
+"#,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let dispose_member = program
+        .definitions
+        .iter()
+        .find_map(|definition| {
+            let declaration = program.graph.declaration(definition.declaration)?;
+            (declaration.name.as_deref() == Some("Resource")).then(|| match &definition.data {
+                tn_hir::DefinitionData::Class { methods, .. } => methods
+                    .iter()
+                    .find(|method| method.name == "[Symbol.asyncDispose]")
+                    .map(|method| method.id),
+                _ => None,
+            })?
+        })
+        .expect("resource async disposal member");
+    let lowered = tn_typecheck::lower_mir(&program, &checked.bodies);
+    for function_name in ["flow", "errorFlow"] {
+        let body = lowered
+            .iter()
+            .find(|body| {
+                program
+                    .graph
+                    .declaration(body.declaration)
+                    .and_then(|declaration| declaration.name.as_deref())
+                    == Some(function_name)
+            })
+            .expect("async managed function MIR");
+        tn_mir::validate(body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+        let disposal_calls = body
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter(|statement| {
+                matches!(
+                    &statement.kind,
+                    tn_mir::StatementKind::Assign(_, value)
+                        if matches!(value.as_ref(), tn_mir::Rvalue::DirectMethod { member, .. } if *member == dispose_member)
+                )
+            })
+            .count();
+        assert!(
+            disposal_calls >= 2,
+            "{function_name} has no cleanup on every async edge: {disposal_calls}\n{body}"
+        );
+        assert!(
+            body.blocks.iter().any(|block| matches!(
+                block.terminator.kind,
+                tn_mir::TerminatorKind::Suspend { .. }
+            )),
+            "{function_name} should retain an await suspension edge"
+        );
+    }
+}
+
+#[test]
+fn class_decorated_method_lowers_as_a_direct_callable() {
+    let (program, checked) = checked_with_workspace_standard_library(
+        r#"
+import { ClassMethodDecoratorContext } from "std/core";
+function logged(method: () => i32, context: ClassMethodDecoratorContext): () => i32 {
+  return move() => method() + 1;
+}
+class Worker {
+  @logged
+  public run(): i32 { return 41; }
+}
+function main(): i32 {
+  const worker = new Worker();
+  return worker.run();
+}
+"#,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let lowered = tn_typecheck::lower_mir(&program, &checked.bodies);
+    let body = lowered
+        .iter()
+        .find(|body| {
+            program
+                .graph
+                .declaration(body.declaration)
+                .and_then(|declaration| declaration.name.as_deref())
+                == Some("main")
+        })
+        .expect("class decorator main MIR");
+    assert!(
+        body.blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .any(|statement| {
+                matches!(
+                    &statement.kind,
+                    tn_mir::StatementKind::Assign(_, value)
+                        if matches!(value.as_ref(), tn_mir::Rvalue::DirectMethod { .. })
+                )
+            }),
+        "class decorated calls should bypass the raw vtable slot\n{body}"
+    );
+}
+
+#[test]
 fn infers_literals_bidirectionally_without_numeric_widening_or_truthiness() {
     let diagnostics = conditions(
         r"
@@ -129,6 +331,23 @@ function invalid(): void {
 ",
     );
     assert_eq!(diagnostics, ["TYPE_MISMATCH", "TYPE_CONDITION_NOT_BOOL"]);
+}
+
+#[test]
+fn contextually_types_literals_after_explicit_generic_constructor_substitution() {
+    let (program, checked) = checked_with_workspace_standard_library(
+        r"
+class Box<T> {
+  private value: T;
+  public constructor(value: T) { this.value = value; }
+}
+function make(): Box<i32> { return new Box<i32>(1); }
+",
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    for body in tn_typecheck::lower_mir(&program, &checked.bodies) {
+        tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    }
 }
 
 #[test]

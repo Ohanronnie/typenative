@@ -1,4 +1,4 @@
 
 @Export function rejectedGeneric<T>(value: T): i32 {
-  return 0i32;
+  return 0;
 }

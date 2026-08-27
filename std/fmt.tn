@@ -1,23 +1,26 @@
 import { c_size } from "std/ffi";
 declare extern "C" {
-  function tn_console_write(fd: i32, bytes: * const u8, length: c_size): i32;
-  function tn_string_length(bytes: * const u8): c_size;
+  function tn_console_write(fd: i32, bytes: *const u8, length: c_size): i32;
+  function tn_string_length(bytes: *const u8): c_size;
 }
 export struct Formatter {
-  public bytes: * mut u8;
-}
-export interface Display {
-  display(out: & mut Formatter): void;
-}
-export interface Debug {
-  debug(out: & mut Formatter): void;
-}
-export function writeStatic(output: & mut Formatter, text: & static str): void {
-  unsafe {
-    tn_console_write(1i32, text as * const u8, tn_string_length(text as * const u8));
+  private bytes: *mut u8;
+  public unsafe nativePointer(): *mut u8 {
+    return this.bytes;
   }
 }
-export function boolName(value: bool): & static str {
+export interface Display {
+  display(out: &mut Formatter): void;
+}
+export interface Debug {
+  debug(out: &mut Formatter): void;
+}
+export function writeStatic(output: &mut Formatter, text: &str): void {
+  unsafe {
+    tn_console_write(1, text as *const u8, tn_string_length(text as *const u8));
+  }
+}
+export function boolName(value: bool): &str {
   if (value) {
     return "true";
   } else {

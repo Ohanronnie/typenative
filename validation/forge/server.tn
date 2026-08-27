@@ -13,13 +13,13 @@ async function serveClient(stream: TcpStream): Promise<void, RedisError> {
     return;
   }
   let output = new BytesMut({
-    capacity: 128usize
+    capacity: 128
   });
-  let consumed: usize = 0usize;
+  let consumed: usize = 0;
   {
-    const command = try connection.readBufferedCommand(0usize)!;
+    const command = try connection.readBufferedCommand(0)!;
     consumed = command.consumed;
-    const name = command.part(0usize)!;
+    const name = command.part(0)!;
     if (name.equalsAsciiIgnoreCase("PING")) {
       output.appendAscii("+PONG\r\n");
     } else if (name.equalsAsciiIgnoreCase("BUILD")) {
@@ -31,7 +31,7 @@ async function serveClient(stream: TcpStream): Promise<void, RedisError> {
     }
   }
   connection.consume(consumed);
-  try await connection.flush( & mut output);
+  try await connection.flush( &mut output);
 }
 async function serveClientTask(stream: TcpStream): Promise<void, never> {
   try {
@@ -43,12 +43,12 @@ async function serveClientTask(stream: TcpStream): Promise<void, never> {
 }
 async function serve(endpoint: Endpoint): Promise<i32, NetworkError> {
   await using listener = try new TcpListener(endpoint);
-  using clients = new TaskGroup();
+  await using clients = new TaskGroup();
   while (true) {
     const stream = try await listener.accept();
     clients.spawn(serveClientTask(move stream));
   }
-  return 0i32;
+  return 0;
 }
 async function runServer(port: u16): Promise<i32, never> {
   try {
@@ -57,9 +57,9 @@ async function runServer(port: u16): Promise<i32, never> {
     });
   } catch (error: NetworkError) {
     consoleError("Forge server failed");
-    return 1i32;
+    return 1;
   }
-  return 0i32;
+  return 0;
 }
 function serveRequested(): bool {
   let requested = false;
@@ -70,7 +70,7 @@ function serveRequested(): bool {
 }
 export function serverMain(): i32 throws ParseIntegerError {
   if (!serveRequested()) {
-    return 0i32;
+    return 0;
   }
   const port = try lookupU16("FORGE_PORT");
   return runI32(runServer(port));

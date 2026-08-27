@@ -1,13 +1,13 @@
 import { Map } from "std/collections";
 function main(): i32 {
   let map = new Map<i32, i32>({
-    capacity: 8usize,
+    capacity: 8,
   });
-  let key = 16i32;
-  map.set(key, 42i32);
-  const output = map.get( & key);
+  let key: i32 = 16;
+  map.set(key, 42);
+  const output = map.get( &key);
   if (output === undefined) {
-    return 1i32;
+    return 1;
   }
   unsafe {
     return * output!;

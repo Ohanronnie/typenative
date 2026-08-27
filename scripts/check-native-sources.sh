@@ -9,7 +9,8 @@ native_sources=$(
     while IFS= read -r path; do
       [ -e "$path" ] && printf '%s\n' "$path"
     done |
-    rg '\.(c|h|cc|cpp|cxx|m|mm|S|s|asm)$' || true
+    rg '\.(c|h|cc|cpp|cxx|m|mm|S|s|asm)$' |
+    rg -v '^benchmarks/cross-language/' || true
 )
 if [ -n "$native_sources" ]; then
   printf '%s\n' "$native_sources" >&2

@@ -2,26 +2,27 @@ import { runI32, Task, TaskGroup } from "std/async";
 import { sleep } from "std/thread";
 import { Duration, Instant } from "std/time";
 
-async function delayed(value: i32): Task<i32, never> {
-  sleep(Duration.fromMilliseconds(25u64));
+async function delayed(value: i32): Promise<i32, never> {
+  sleep(Duration.fromMilliseconds(25));
   return value;
 }
-function delayedTask(value: i32): Task<i32, never> {
-  return delayed(value);
+async function concurrentTasks(): Promise<i32, never> {
+  await using group = new TaskGroup();
+  const first: Task<i32, never > = group.spawn(delayed(1));
+  const second: Task<i32, never > = group.spawn(delayed(2));
+  const third: Task<i32, never > = group.spawn(delayed(3));
+  const fourth: Task<i32, never > = group.spawn(delayed(4));
+  const start = Instant.now();
+  const firstValue: i32 = await first;
+  const secondValue: i32 = await second;
+  const thirdValue: i32 = await third;
+  const fourthValue: i32 = await fourth;
+  const total = firstValue + secondValue + thirdValue + fourthValue;
+  if (total !== 10 || start.elapsed().milliseconds() >= 90) {
+    return 1;
+  }
+  return 0;
 }
 function main(): i32 {
-  let group = new TaskGroup();
-  const first: Promise<i32, never > = group.spawn(delayedTask(1i32));
-  const second: Promise<i32, never > = group.spawn(delayedTask(2i32));
-  const third: Promise<i32, never > = group.spawn(delayedTask(3i32));
-  const fourth: Promise<i32, never > = group.spawn(delayedTask(4i32));
-  const start = Instant.now();
-  group.close();
-  if (start.elapsed().milliseconds() >= 90u64) {
-    return 1i32;
-  }
-  if (runI32(first) !== 1i32 || runI32(second) !== 2i32 || runI32(third) !== 3i32 || runI32(fourth) !== 4i32) {
-    return 2i32;
-  }
-  return 0i32;
+  return runI32(concurrentTasks());
 }

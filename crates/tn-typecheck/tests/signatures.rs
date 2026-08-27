@@ -146,6 +146,80 @@ struct BareSync {}
 }
 
 #[test]
+fn user_decorators_are_type_checked_for_their_target() {
+    let diagnostics = semantic_conditions(
+        r"
+function compatible(target: unknown): unknown { return target; }
+function incompatible(target: i32): i32 { return target; }
+@compatible
+struct Accepted {}
+@incompatible
+struct Rejected {}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_INVALID_DECORATOR_SIGNATURE")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn declaration_level_decorators_are_rejected_instead_of_ignored() {
+    let diagnostics = semantic_conditions(
+        r"
+function annotate(target: unknown): unknown { return target; }
+@annotate
+struct Value {}
+@annotate
+function topLevel(): void {}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_UNSUPPORTED_DECORATOR_TARGET")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn class_method_decorators_must_preserve_the_exact_callable_contract() {
+    let diagnostics = semantic_conditions(
+        r"
+struct ClassMethodDecoratorContext {
+  public name: string;
+  public isStatic: bool;
+  public isPrivate: bool;
+}
+function logged(method: () => void, context: ClassMethodDecoratorContext): () => void {
+  return method;
+}
+function changed(method: (i32) => i32): (i32) => i32 { return method; }
+class Worker {
+  @logged
+  public run(): void {}
+  @changed
+  public stop(): void {}
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_INVALID_DECORATOR_SIGNATURE")
+            .count(),
+        1,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn c_abi_rejects_language_only_and_wide_types() {
     let diagnostics = semantic_conditions(
         r#"
@@ -362,6 +436,39 @@ export class Owner {
 }
 
 #[test]
+fn safe_public_apis_hide_raw_pointers_and_static_borrows() {
+    let diagnostics = semantic_conditions(
+        r"
+export function raw(pointer: *mut u8): *mut u8 { return pointer; }
+export unsafe function rawUnsafe(pointer: *mut u8): *mut u8 { return pointer; }
+export function staticText(value: &static str): &static str { return value; }
+export unsafe function staticTextUnsafe(value: &static str): &static str { return value; }
+export struct PublicState {
+  public pointer: *const u8;
+  public text: &static str;
+  private implementation: *mut u8;
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_PUBLIC_RAW_POINTER")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_PUBLIC_STATIC_BORROW")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn infers_lifetime_arguments_for_borrowed_aggregates() {
     let diagnostics = signature_conditions(
         r"
@@ -520,7 +627,7 @@ class Reviewed implements Send { public pointer: *mut i32; }
 }
 
 #[test]
-fn cleanup_is_not_declared_by_a_drop_attribute() {
+fn source_visible_drop_methods_are_rejected() {
     let diagnostics = semantic_conditions(
         r"
 class Failure {}
@@ -531,7 +638,35 @@ struct Throwing { private close(): void throws Failure {} }
 struct Async { private async close(): Promise<void, never> { return undefined; } }
 ",
     );
-    assert!(!diagnostics.contains(&"TYPE_INVALID_DROP_DESTRUCTOR".into()));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|condition| condition.as_str() == "TYPE_OBSOLETE_DROP_METHOD")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn symbol_named_disposal_methods_satisfy_interfaces() {
+    let diagnostics = signature_conditions(
+        r"
+interface Disposable {
+  [Symbol.dispose](): void;
+}
+interface AsyncDisposable {
+  async [Symbol.asyncDispose](): Promise<void, never>;
+}
+class File implements Disposable {
+  public [Symbol.dispose](): void {}
+}
+class Stream implements AsyncDisposable {
+  public async [Symbol.asyncDispose](): Promise<void, never> { return; }
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 
 #[test]

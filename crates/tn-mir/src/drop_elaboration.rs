@@ -14,7 +14,10 @@ pub struct DropSemantics {
 impl DropSemantics {
     pub fn needs_drop(&self, ty: &Type) -> bool {
         match ty {
-            Type::String | Type::Promise { .. } | Type::DynamicInterface(_, _) => true,
+            Type::String
+            | Type::Function(_)
+            | Type::Promise { .. }
+            | Type::DynamicInterface(_, _) => true,
             Type::Nominal(declaration, _) => self.nominal.contains(declaration),
             Type::ErrorUnion(effects) => effects.iter().any(|effect| self.nominal.contains(effect)),
             Type::Optional(inner) | Type::Array(inner, _) => self.needs_drop(inner),
@@ -26,7 +29,6 @@ impl DropSemantics {
             | Type::Slice(_)
             | Type::Reference { .. }
             | Type::RawPointer { .. }
-            | Type::Function(_)
             | Type::Generic(_)
             | Type::Lifetime(_)
             | Type::Error

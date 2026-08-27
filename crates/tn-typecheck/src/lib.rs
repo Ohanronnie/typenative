@@ -105,7 +105,7 @@ pub fn elaborate_drops_with_semantics(
             .graph
             .declaration(*interface)
             .and_then(|declaration| declaration.name.as_deref())
-            == Some("Drop")
+            == Some("Disposable")
     {
         // A destructor owns the receiver for the duration of its body. Automatically invoking the
         // same destructor on `self` at the method's lexical exit would recurse forever.

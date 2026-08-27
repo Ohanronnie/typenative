@@ -1,4 +1,3 @@
-
 extern struct Pair {
   left: i32;
   right: i32;
@@ -7,18 +6,18 @@ enum Kind: u8 {
   Zero, Answer = 42,
 }
 declare extern "C" {
-  function tn_add(left: i32, right: i32): i32;
-  function tn_pair_value(pair: Pair): i32;
-  function tn_kind_value(kind: Kind): i32;
+  function add(left: i32, right: i32): i32;
+  function pairValue(pair: Pair): i32;
+  function kindValue(kind: Kind): i32;
 }
 function main(): i32 {
   unsafe {
     const pair: Pair = {
-      left: 19i32, right: 23i32,
+      left: 19, right: 23,
     };
-    if (tn_add(19i32, 23i32) !== 42i32 || tn_pair_value(pair) !== 42i32 || tn_kind_value(Kind.Answer) !== 42i32) {
-      return 1i32;
+    if (add(19, 23) !== 42 || pairValue(pair) !== 42 || kindValue(Kind.Answer) !== 42) {
+      return 1;
     }
-    return 0i32;
+    return 0;
   }
 }

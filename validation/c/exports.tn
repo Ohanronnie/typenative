@@ -1,4 +1,3 @@
-
 extern struct Pair {
   public left: i32;
   public right: i32;
@@ -14,6 +13,6 @@ export function pairValue(pair: Pair): i32 {
 }
 export function kindValue(kind: Kind): i32 {
   return switch(kind) {
-    case Kind.Zero: 0i32, case Kind.Answer: 42i32,
+    case Kind.Zero: 0, case Kind.Answer: 42,
   };
 }

@@ -2,66 +2,80 @@ import { AllocError } from "std/alloc";
 import { Array, Deque, Heap, Map, OrderedMap, OrderedSet, Queue, Set } from "std/collections";
 
 function main(): i32 {
-  let key: i32 = 16i32;
-  let value: i32 = 42i32;
-  let canonicalMapOutput: i32 = 0i32;
-  let orderedMapOutput: i32 = 0i32;
-  let canonicalArrayOutput: i32 = 0i32;
-  let sliceOutput: i32 = 0i32;
-  let canonicalArrayPopOutput: i32 = 0i32;
-  let canonicalQueuePopOutput: i32 = 0i32;
-  let canonicalQueueSecondOutput: i32 = 0i32;
-  let canonicalQueueThirdOutput: i32 = 0i32;
-  let canonicalDequePopOutput: i32 = 0i32;
-  let canonicalDequeBackOutput: i32 = 0i32;
-  let canonicalHeapPopOutput: i32 = 0i32;
-  let canonicalHeapSecondOutput: i32 = 0i32;
-  let canonicalHeapThirdOutput: i32 = 0i32;
-  let legacyMapOutput: i32 = 0i32;
+  let key: i32 = 16;
+  let value: i32 = 42;
+  let canonicalMapOutput: i32 = 0;
+  let orderedMapOutput: i32 = 0;
+  let canonicalArrayOutput: i32 = 0;
+  let sliceOutput: i32 = 0;
+  let canonicalArrayPopOutput: i32 = 0;
+  let canonicalQueuePopOutput: i32 = 0;
+  let canonicalQueueSecondOutput: i32 = 0;
+  let canonicalQueueThirdOutput: i32 = 0;
+  let canonicalDequePopOutput: i32 = 0;
+  let canonicalDequeBackOutput: i32 = 0;
+  let canonicalHeapPopOutput: i32 = 0;
+  let canonicalHeapSecondOutput: i32 = 0;
+  let canonicalHeapThirdOutput: i32 = 0;
+  let legacyMapOutput: i32 = 0;
+  let emptyArray = new Array<i32>();
+  let emptyMap = new Map<i32, i32>();
+  let emptySet = new Set<i32>();
+  let emptyMapKey: i32 = 7;
+  let emptySetKey: i32 = 9;
   let array = new Array<i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
   let queue = new Queue<i32>({
-    capacity: 2usize,
+    capacity: 2,
   });
   let textQueue = new Queue<string>({
-    capacity: 1usize,
+    capacity: 1,
   });
   let deque = new Deque<i32>({
-    capacity: 2usize,
+    capacity: 2,
   });
   let textDeque = new Deque<string>({
-    capacity: 1usize,
+    capacity: 1,
   });
   let heap = new Heap<i32>({
-    capacity: 2usize,
+    capacity: 2,
   });
   let textHeap = new Heap<string>({
-    capacity: 1usize,
+    capacity: 1,
   });
   let canonical = new Map<i32, i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
   let canonicalSetValue = new Set<i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
   let textSet = new Set<string>({
-    capacity: 4usize,
+    capacity: 4,
   });
   let ordered = new OrderedMap<i32, i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
   let orderedValues = new OrderedSet<i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
   let map = new Map<i32, i32>({
-    capacity: 4usize,
+    capacity: 4,
   });
   unsafe {
+    if (emptyArray.length !== 0 || emptyMap.length !== 0 || emptySet.length !== 0) {
+      return 78;
+    }
+    emptyArray.push(7);
+    emptyMap.set(emptyMapKey, 8);
+    emptySet.add(emptySetKey);
+    if ( * emptyArray.at(0)! !== 7 || * emptyMap.get( &emptyMapKey)! !== 8 || !emptySet.has( &emptySetKey)) {
+      return 79;
+    }
     array.push(value);
-    array.reserve(8usize);
-    if (array.capacity<8usize || array.length !== 1usize) {
-      return 66i32;
+    array.reserve(8);
+    if (array.capacity<8 || array.length !== 1) {
+      return 66;
     }
     queue.enqueue(value);
     queue.enqueue(key);
@@ -69,70 +83,70 @@ function main(): i32 {
     deque.pushFront(key);
     heap.push(value);
     heap.push(key);
-    heap.push(30i32);
+    heap.push(30);
     try {
-      try canonical.reserve(64usize);
+      try canonical.reserve(64);
     } catch (error: AllocError) {
-      return 49i32;
+      return 49;
     }
-    if (canonical.capacity<64usize) {
-      return 50i32;
+    if (canonical.capacity<64) {
+      return 50;
     }
     canonical.set(key, value);
     ordered.set(key, value);
     orderedValues.add(key);
     try {
-      try canonicalSetValue.reserve(64usize);
+      try canonicalSetValue.reserve(64);
     } catch (error: AllocError) {
-      return 45i32;
+      return 45;
     }
-    if (canonicalSetValue.capacity<64usize) {
-      return 46i32;
+    if (canonicalSetValue.capacity<64) {
+      return 46;
     }
     canonicalSetValue.add(key);
-    if (!canonicalSetValue.has( & key)) {
-      return 3i32;
+    if (!canonicalSetValue.has( &key)) {
+      return 3;
     }
     textSet.add("key");
     {
       const textKey: string = "key";
-      if (!textSet.has( & textKey)) {
-        return 44i32;
+      if (!textSet.has( &textKey)) {
+        return 44;
       }
     }
     {
-      const output = canonical.get( & key);
+      const output = canonical.get( &key);
       if (output === undefined) {
-        return 4i32;
+        return 4;
       }
       canonicalMapOutput = * output!;
       if (canonicalMapOutput !== value) {
-        return 78i32;
+        return 78;
       }
     }
     {
-      const output = array.at(0usize);
+      const output = array.at(0);
       if (output === undefined) {
-        return 5i32;
+        return 5;
       }
       canonicalArrayOutput = * output!;
     }
     {
-      const output = array.at(0usize);
+      const output = array.at(0);
       if (output === undefined || * output! !== value) {
-        return 53i32;
+        return 53;
       }
     }
     {
-      const output = array.atMut(0usize);
+      const output = array.atMut(0);
       if (output === undefined) {
-        return 54i32;
+        return 54;
       }
       * output! = value;
     }
     {
       const slice = array.slice();
-      let observed: i32 = 0i32;
+      let observed: i32 = 0;
       for (const item of slice) {
         observed = observed + item;
       }
@@ -141,89 +155,89 @@ function main(): i32 {
     {
       const output = array.pop();
       if (output === undefined) {
-        return 6i32;
+        return 6;
       }
       canonicalArrayPopOutput = output!;
     }
     array.shrinkToFit();
-    if (array.capacity !== 0usize || array.length !== 0usize) {
-      return 67i32;
+    if (array.capacity !== 0 || array.length !== 0) {
+      return 67;
     }
     {
       const peeked = queue.peek();
       if (peeked === undefined || * peeked! !== value) {
-        return 54i32;
+        return 54;
       }
       const output = queue.dequeue();
       if (output === undefined) {
-        return 7i32;
+        return 7;
       }
       canonicalQueuePopOutput = output!;
     }
-    queue.enqueue(7i32);
-    queue.reserve(6usize);
-    if (queue.capacity<6usize || queue.length !== 2usize) {
-      return 22i32;
+    queue.enqueue(7);
+    queue.reserve(6);
+    if (queue.capacity<6 || queue.length !== 2) {
+      return 22;
     }
     {
       const output = queue.dequeue();
       if (output === undefined) {
-        return 12i32;
+        return 12;
       }
       canonicalQueueSecondOutput = output!;
     }
     {
       const output = queue.dequeue();
       if (output === undefined) {
-        return 23i32;
+        return 23;
       }
       canonicalQueueThirdOutput = output!;
     }
     queue.shrinkToFit();
-    if (queue.capacity !== 0usize || queue.length !== 0usize) {
-      return 24i32;
+    if (queue.capacity !== 0 || queue.length !== 0) {
+      return 24;
     }
     textQueue.enqueue("a");
     textQueue.enqueue("b");
     {
       const peeked = textQueue.peek();
       if (peeked === undefined) {
-        return 55i32;
+        return 55;
       }
       const peekedBytes = peeked!.bytes();
-      if (peekedBytes[0usize] !== 97u8) {
-        return 56i32;
+      if (peekedBytes[0] !== 97) {
+        return 56;
       }
       const output = textQueue.dequeue();
       if (output === undefined) {
-        return 25i32;
+        return 25;
       }
       const bytes = output!.bytes();
-      if (bytes[0usize] !== 97u8) {
-        return 26i32;
+      if (bytes[0] !== 97) {
+        return 26;
       }
     }
     textQueue.clear();
-    if (textQueue.length !== 0usize) {
-      return 27i32;
+    if (textQueue.length !== 0) {
+      return 27;
     }
     {
       const output = deque.popFront();
       if (output === undefined) {
-        return 8i32;
+        return 8;
       }
       canonicalDequePopOutput = output!;
     }
     {
       const output = deque.popBack();
       if (output === undefined) {
-        return 9i32;
+        return 9;
       }
       canonicalDequeBackOutput = output!;
     }
     deque.shrinkToFit();
-    if (deque.capacity !== 0usize || deque.length !== 0usize) {
-      return 28i32;
+    if (deque.capacity !== 0 || deque.length !== 0) {
+      return 28;
     }
     textDeque.pushBack("b");
     textDeque.pushFront("a");
@@ -231,43 +245,43 @@ function main(): i32 {
       const front = textDeque.peek();
       const back = textDeque.peekBack();
       if (front === undefined || back === undefined) {
-        return 57i32;
+        return 57;
       }
-      if (front!.bytes()[0usize] !== 97u8 || back!.bytes()[0usize] !== 98u8) {
-        return 58i32;
+      if (front!.bytes()[0] !== 97 || back!.bytes()[0] !== 98) {
+        return 58;
       }
       const output = textDeque.popBack();
       if (output === undefined) {
-        return 29i32;
+        return 29;
       }
       const bytes = output!.bytes();
-      if (bytes[0usize] !== 98u8) {
-        return 30i32;
+      if (bytes[0] !== 98) {
+        return 30;
       }
     }
     textDeque.clear();
     {
       const peeked = heap.peek();
       if (peeked === undefined || * peeked! !== key) {
-        return 59i32;
+        return 59;
       }
       const output = heap.pop();
       if (output === undefined) {
-        return 13i32;
+        return 13;
       }
       canonicalHeapPopOutput = output!;
     }
     {
       const output = heap.pop();
       if (output === undefined) {
-        return 14i32;
+        return 14;
       }
       canonicalHeapSecondOutput = output!;
     }
     {
       const output = heap.pop();
       if (output === undefined) {
-        return 60i32;
+        return 60;
       }
       canonicalHeapThirdOutput = output!;
     }
@@ -275,262 +289,262 @@ function main(): i32 {
     textHeap.push("a");
     {
       const peeked = textHeap.peek();
-      if (peeked === undefined || peeked!.bytes()[0usize] !== 97u8) {
-        return 62i32;
+      if (peeked === undefined || peeked!.bytes()[0] !== 97) {
+        return 62;
       }
       const first = textHeap.pop();
       const second = textHeap.pop();
       if (first === undefined || second === undefined) {
-        return 63i32;
+        return 63;
       }
-      if (first!.bytes()[0usize] !== 97u8 || second!.bytes()[0usize] !== 98u8) {
-        return 64i32;
+      if (first!.bytes()[0] !== 97 || second!.bytes()[0] !== 98) {
+        return 64;
       }
     }
     textHeap.shrinkToFit();
-    if (textHeap.capacity !== 0usize || textHeap.length !== 0usize) {
-      return 65i32;
+    if (textHeap.capacity !== 0 || textHeap.length !== 0) {
+      return 65;
     }
     {
-      if (!canonical.has( & key)) {
-        return 15i32;
+      if (!canonical.has( &key)) {
+        return 15;
       }
     }
     {
-      if (canonical.length !== 1usize) {
-        return 15i32;
+      if (canonical.length !== 1) {
+        return 15;
       }
     }
     {
-      const removed = canonical.delete( & key);
+      const removed = canonical.delete( &key);
       if (removed === undefined) {
-        return 16i32;
+        return 16;
       }
     }
     {
-      if (canonical.length !== 0usize) {
-        return 16i32;
+      if (canonical.length !== 0) {
+        return 16;
       }
     }
     try {
       try canonical.shrinkToFit();
     } catch (error: AllocError) {
-      return 51i32;
+      return 51;
     }
-    if (canonical.capacity !== 8usize) {
-      return 52i32;
+    if (canonical.capacity !== 8) {
+      return 52;
     }
     {
-      if (!ordered.has( & key)) {
-        return 20i32;
+      if (!ordered.has( &key)) {
+        return 20;
       }
-      const output = ordered.get( & key);
+      const output = ordered.get( &key);
       if (output === undefined) {
-        return 20i32;
+        return 20;
       }
       orderedMapOutput = * output!;
-      if (!orderedValues.has( & key)) {
-        return 21i32;
+      if (!orderedValues.has( &key)) {
+        return 21;
       }
     }
     {
-      if (!canonicalSetValue.delete( & key)) {
-        return 17i32;
+      if (!canonicalSetValue.delete( &key)) {
+        return 17;
       }
     }
     {
-      if (canonicalSetValue.length !== 0usize) {
-        return 17i32;
+      if (canonicalSetValue.length !== 0) {
+        return 17;
       }
     }
     try {
       try canonicalSetValue.shrinkToFit();
     } catch (error: AllocError) {
-      return 47i32;
+      return 47;
     }
-    if (canonicalSetValue.capacity !== 8usize) {
-      return 48i32;
+    if (canonicalSetValue.capacity !== 8) {
+      return 48;
     }
     map.set(key, value);
     {
-      if (!map.has( & key)) {
-        return 1i32;
+      if (!map.has( &key)) {
+        return 1;
       }
     }
     {
-      const output = map.get( & key);
+      const output = map.get( &key);
       if (output === undefined) {
-        return 2i32;
+        return 2;
       }
       legacyMapOutput = * output!;
     }
-    map.delete( & key);
+    map.delete( &key);
   }
   if (canonicalMapOutput !== value) {
-    return 31i32;
+    return 31;
   }
   if (orderedMapOutput !== value) {
-    return 32i32;
+    return 32;
   }
   if (canonicalArrayOutput !== value) {
-    return 33i32;
+    return 33;
   }
   if (sliceOutput !== value) {
-    return 34i32;
+    return 34;
   }
   if (canonicalArrayPopOutput !== value) {
-    return 35i32;
+    return 35;
   }
   if (canonicalQueuePopOutput !== value) {
-    return 36i32;
+    return 36;
   }
   if (canonicalQueueSecondOutput !== key) {
-    return 37i32;
+    return 37;
   }
-  if (canonicalQueueThirdOutput !== 7i32) {
-    return 43i32;
+  if (canonicalQueueThirdOutput !== 7) {
+    return 43;
   }
   if (canonicalDequePopOutput !== key) {
-    return 38i32;
+    return 38;
   }
   if (canonicalDequeBackOutput !== value) {
-    return 39i32;
+    return 39;
   }
   if (canonicalHeapPopOutput !== key) {
-    return 40i32;
+    return 40;
   }
-  if (canonicalHeapSecondOutput !== 30i32) {
-    return 41i32;
+  if (canonicalHeapSecondOutput !== 30) {
+    return 41;
   }
   if (canonicalHeapThirdOutput !== value) {
-    return 61i32;
+    return 61;
   }
   if (legacyMapOutput !== value) {
-    return 42i32;
+    return 42;
   }
   let iterable = new Array<i32>({
-    capacity: 2usize,
+    capacity: 2,
   });
-  iterable.push(16i32);
-  iterable.push(26i32);
-  let iterated: i32 = 0i32;
+  iterable.push(16);
+  iterable.push(26);
+  let iterated: i32 = 0;
   for (const item of move iterable) {
     iterated = iterated + item;
   }
   if (iterated !== value) {
-    return 68i32;
+    return 68;
   }
   let iterableQueue = new Queue<i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableQueue.enqueue(16i32);
-  iterableQueue.enqueue(26i32);
-  let queueIterated: i32 = 0i32;
+  iterableQueue.enqueue(16);
+  iterableQueue.enqueue(26);
+  let queueIterated: i32 = 0;
   for (const item of move iterableQueue) {
     queueIterated = queueIterated + item;
   }
   if (queueIterated !== value) {
-    return 69i32;
+    return 69;
   }
   let iterableDeque = new Deque<i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableDeque.pushBack(26i32);
-  iterableDeque.pushFront(16i32);
-  let dequeIterated: i32 = 0i32;
+  iterableDeque.pushBack(26);
+  iterableDeque.pushFront(16);
+  let dequeIterated: i32 = 0;
   for (const item of move iterableDeque) {
     dequeIterated = dequeIterated + item;
   }
   if (dequeIterated !== value) {
-    return 70i32;
+    return 70;
   }
   let iterableHeap = new Heap<i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableHeap.push(26i32);
-  iterableHeap.push(16i32);
-  let heapIterated: i32 = 0i32;
+  iterableHeap.push(26);
+  iterableHeap.push(16);
+  let heapIterated: i32 = 0;
   for (const item of move iterableHeap) {
-    heapIterated = heapIterated * 100i32 + item;
+    heapIterated = heapIterated * 100 + item;
   }
-  if (heapIterated !== 1626i32) {
-    return 71i32;
+  if (heapIterated !== 1626) {
+    return 71;
   }
   let iterableMap = new Map<i32, i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableMap.set(16i32, 10i32);
-  iterableMap.set(26i32, 32i32);
-  let mapIterated: i32 = 0i32;
+  iterableMap.set(16, 10);
+  iterableMap.set(26, 32);
+  let mapIterated: i32 = 0;
   for (const entry of iterableMap) {
     mapIterated = mapIterated + entry.key + entry.value;
   }
-  if (mapIterated !== 84i32) {
-    return 72i32;
+  if (mapIterated !== 84) {
+    return 72;
   }
   let iterableSet = new Set<i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableSet.add(16i32);
-  iterableSet.add(26i32);
-  let setIterated: i32 = 0i32;
+  iterableSet.add(16);
+  iterableSet.add(26);
+  let setIterated: i32 = 0;
   for (const item of move iterableSet) {
     setIterated = setIterated + item;
   }
   if (setIterated !== value) {
-    return 73i32;
+    return 73;
   }
   let iterableOrderedMap = new OrderedMap<i32, i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableOrderedMap.set(26i32, 2i32);
-  iterableOrderedMap.set(16i32, 1i32);
-  let orderedMapIterated: i32 = 0i32;
+  iterableOrderedMap.set(26, 2);
+  iterableOrderedMap.set(16, 1);
+  let orderedMapIterated: i32 = 0;
   for (const entry of iterableOrderedMap) {
-    orderedMapIterated = orderedMapIterated * 100i32 + entry.key;
+    orderedMapIterated = orderedMapIterated * 100 + entry.key;
   }
-  if (orderedMapIterated !== 2616i32) {
-    return 74i32;
+  if (orderedMapIterated !== 2616) {
+    return 74;
   }
   let iterableOrderedSet = new OrderedSet<i32>({
-    capacity: 2usize
+    capacity: 2
   });
-  iterableOrderedSet.add(26i32);
-  iterableOrderedSet.add(16i32);
-  let orderedSetIterated: i32 = 0i32;
+  iterableOrderedSet.add(26);
+  iterableOrderedSet.add(16);
+  let orderedSetIterated: i32 = 0;
   for (const item of move iterableOrderedSet) {
-    orderedSetIterated = orderedSetIterated * 100i32 + item;
+    orderedSetIterated = orderedSetIterated * 100 + item;
   }
-  if (orderedSetIterated !== 2616i32) {
-    return 75i32;
+  if (orderedSetIterated !== 2616) {
+    return 75;
   }
   let iterableTextMap = new Map<string, string>({
-    capacity: 1usize
+    capacity: 1
   });
   iterableTextMap.set("a", "b");
-  let textMapIterated: i32 = 0i32;
+  let textMapIterated: i32 = 0;
   for (const entry of iterableTextMap) {
-    if (entry.key.bytes()[0usize] !== 97u8 || entry.value.bytes()[0usize] !== 98u8) {
-      return 76i32;
+    if (entry.key.bytes()[0] !== 97 || entry.value.bytes()[0] !== 98) {
+      return 76;
     }
-    textMapIterated = 1i32;
+    textMapIterated = 1;
   }
-  if (textMapIterated !== 1i32) {
-    return 76i32;
+  if (textMapIterated !== 1) {
+    return 76;
   }
   let iterableTextSet = new Set<string>({
-    capacity: 1usize
+    capacity: 1
   });
   iterableTextSet.add("a");
-  let textSetIterated: i32 = 0i32;
+  let textSetIterated: i32 = 0;
   for (const item of iterableTextSet) {
-    if (item.bytes()[0usize] !== 97u8) {
-      return 77i32;
+    if (item.bytes()[0] !== 97) {
+      return 77;
     }
-    textSetIterated = 1i32;
+    textSetIterated = 1;
   }
-  if (textSetIterated !== 1i32) {
-    return 77i32;
+  if (textSetIterated !== 1) {
+    return 77;
   }
   return value;
 }

@@ -4,17 +4,17 @@ struct Failure {
 }
 function failure(): Failure {
   return {
-    rawCode: 23i32,
+    rawCode: 23,
   };
 }
 export async function immediate(value: i32): Promise<i32, never> {
-  return value + 1i32;
+  return value + 1;
 }
 export async function asyncEcho(value: Bytes): Promise<Bytes, never> {
   return value;
 }
 export async function asyncFail(value: i32): Promise<i32, Failure> {
-  if (value >= 0i32) {
+  if (value >= 0) {
     throw failure();
   }
   return value;

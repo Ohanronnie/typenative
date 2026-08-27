@@ -1,0 +1,9 @@
+import { Thread, ThreadError } from "std/thread";
+function main(): i32 throws ThreadError {
+  let direct = Thread.spawn<i32>(() => 40);
+  const base: i32 = 40;
+  let captured = Thread.spawn<i32>(move() => base + 2);
+  const directValue = try direct.join();
+  const capturedValue = try captured.join();
+  return directValue === 40 && capturedValue === 42?42: 1;
+}

@@ -1,21 +1,14 @@
-function audit(target: unknown): unknown {
-  return target;
+import { ClassMethodDecoratorContext } from "std/core";
+function logged(method:() => i32, context: ClassMethodDecoratorContext):() => i32 {
+  return move() => method() + 1;
 }
-
-@audit
-struct Copyable {
-  public value: i32;
-}
-
-@audit
-struct Cloneable {
-  public value: string;
-}
-
-@audit
-export function answer(): i32 {
-  return 42i32;
+struct Worker {
+  @logged public answer(): i32 {
+    return 41;
+  }
 }
 function main(): i32 {
-  return answer();
+  const worker: Worker = {
+  };
+  return worker.answer();
 }

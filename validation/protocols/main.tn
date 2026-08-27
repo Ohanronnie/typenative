@@ -1,25 +1,25 @@
 import { Equal, Hash } from "std/core";
-function intHash<T extends Hash>(value: & T): u64 {
+function intHash<T extends Hash>(value: &T): u64 {
   unsafe {
     const protocol =( * value)as Hash;
     return protocol.hash();
   }
 }
-function intEqual<T extends Equal<T> >(left: & T, right: & T): bool {
+function intEqual<T extends Equal<T> >(left: &T, right: &T): bool {
   unsafe {
     const protocol =( * left)as Equal<T>;
     return protocol.equals(right);
   }
 }
 function main(): i32 {
-  let first: i32 = 17i32;
-  let same: i32 = 17i32;
-  let different: i32 = 18i32;
-  if (intHash( & first) !== intHash( & same)) {
-    return 1i32;
+  let first: i32 = 17;
+  let same: i32 = 17;
+  let different: i32 = 18;
+  if (intHash( &first) !== intHash( &same)) {
+    return 1;
   }
-  if (!intEqual( & first, & same) || intEqual( & first, & different)) {
-    return 2i32;
+  if (!intEqual( &first, &same) || intEqual( &first, &different)) {
+    return 2;
   }
-  return 42i32;
+  return 42;
 }

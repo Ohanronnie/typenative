@@ -1,13 +1,13 @@
 declare extern "C" {
-  function tn_library_open(path: * const u8): * mut u8;
-  function tn_library_symbol(handle: * mut u8, name: * const u8): * mut u8;
-  function tn_library_close(handle: * mut u8): i32;
-  function tn_string_length(bytes: * const u8): c_size;
-  function tn_cstring_alloc(bytes: * const u8, length: c_size): * mut u8;
-  function tn_cstring_first_nul(bytes: * const u8, length: c_size): c_size;
-  function tn_cstring_validate(bytes: * const u8, length: c_size): i32;
-  function tn_string_free(pointer: * mut u8): void;
-  function tn_pointer_is_null(pointer: * const u8): i32;
+  function tn_library_open(path: *const u8): *mut u8;
+  function tn_library_symbol(handle: *mut u8, name: *const u8): *mut u8;
+  function tn_library_close(handle: *mut u8): i32;
+  function tn_string_length(bytes: *const u8): c_size;
+  function tn_cstring_alloc(bytes: *const u8, length: c_size): *mut u8;
+  function tn_cstring_first_nul(bytes: *const u8, length: c_size): c_size;
+  function tn_cstring_validate(bytes: *const u8, length: c_size): i32;
+  function tn_string_free(pointer: *mut u8): void;
+  function tn_pointer_is_null(pointer: *const u8): i32;
 }
 export type c_char = i8;
 export type c_int = i32;
@@ -15,11 +15,11 @@ export type c_uint = u32;
 export type c_size = usize;
 export type c_ssize = isize;
 export struct CString {
-  private pointer: * mut u8;
+  private pointer: *mut u8;
   private freed: bool;
-  public asPtr(): * const u8 {
+  public unsafe asPtr(): *const u8 {
     unsafe {
-      return this.pointer as * const u8;
+      return this.pointer as *const u8;
     }
   }
   public isFreed(): bool {
@@ -33,11 +33,12 @@ export struct CString {
       this.freed = true;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.freed) {
       unsafe {
         tn_string_free(this.pointer);
       }
+      this.freed = true;
     }
   }
 }
@@ -48,21 +49,21 @@ export struct FfiError {
   public rawCode: i32;
 }
 export struct Library {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private closed: bool;
   public isOpen(): bool {
     unsafe {
-      return !this.closed && tn_pointer_is_null(this.handle as * const u8) === 0i32;
+      return !this.closed && tn_pointer_is_null(this.handle as *const u8) === 0;
     }
   }
-  public symbol(name: & str): * mut u8 {
+  public unsafe symbol(name: &str): *mut u8 {
     unsafe {
-      return tn_library_symbol(this.handle, name as * const u8);
+      return tn_library_symbol(this.handle, name as *const u8);
     }
   }
   public close(): i32 {
     if (this.closed) {
-      return 0i32;
+      return 0;
     }
     unsafe {
       const status = tn_library_close(this.handle);
@@ -70,7 +71,7 @@ export struct Library {
       return status;
     }
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.closed) {
       unsafe {
         tn_library_close(this.handle);
@@ -78,14 +79,14 @@ export struct Library {
     }
   }
 }
-function openLibrary(path: & str): Library {
+function openLibrary(path: &str): Library {
   unsafe {
     return {
-      handle: tn_library_open(path as * const u8), closed: false
+      handle: tn_library_open(path as *const u8), closed: false
     };
   }
 }
-unsafe function openLibraryPointer(path: * const u8): Library {
+unsafe function openLibraryPointer(path: *const u8): Library {
   unsafe {
     return {
       handle: tn_library_open(path), closed: false
@@ -97,15 +98,15 @@ function interiorNul(offset: usize): InteriorNulError {
     offset: offset
   };
 }
-export function fromStr(text: & static str): CString throws InteriorNulError {
+export function fromStr(text: &str): CString throws InteriorNulError {
   unsafe {
-    const length = tn_string_length(text as * const u8);
-    const firstNul = tn_cstring_first_nul(text as * const u8, length);
+    const length = tn_string_length(text as *const u8);
+    const firstNul = tn_cstring_first_nul(text as *const u8, length);
     if (firstNul !== length) {
       throw interiorNul(firstNul);
     }
-    const pointer = tn_cstring_alloc(text as * const u8, length);
-    if (tn_pointer_is_null(pointer as * const u8) !== 0i32) {
+    const pointer = tn_cstring_alloc(text as *const u8, length);
+    if (tn_pointer_is_null(pointer as *const u8) !== 0) {
       throw interiorNul(length);
     }
     return {
@@ -113,36 +114,21 @@ export function fromStr(text: & static str): CString throws InteriorNulError {
     };
   }
 }
-export function tryOpenLibrary(path: & str): Library throws FfiError {
+export function tryOpenLibrary(path: &str): Library throws FfiError {
   const library = openLibrary(path);
   if (!library.isOpen()) {
-    throw ffiError( - 1i32);
+    throw ffiError( - 1);
   }
   return library;
 }
-export unsafe function tryOpenLibraryPointer(path: * const u8): Library throws FfiError {
+export unsafe function tryOpenLibraryPointer(path: *const u8): Library throws FfiError {
   unsafe {
     const library = openLibraryPointer(path);
     if (!library.isOpen()) {
-      throw ffiError( - 1i32);
+      throw ffiError( - 1);
     }
     return library;
   }
-}
-export function asPtr(text: & CString): * const u8 {
-  return text.asPtr();
-}
-export function isOpen(library: & Library): bool {
-  return library.isOpen();
-}
-export function freeCString(text: & mut CString): void {
-  text.free();
-}
-export function symbol(library: & Library, name: & str): * mut u8 {
-  return library.symbol(name);
-}
-export function closeLibrary(library: & mut Library): i32 {
-  return library.close();
 }
 function ffiError(code: i32): FfiError {
   return {

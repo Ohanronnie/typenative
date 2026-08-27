@@ -1,5 +1,6 @@
 import { Bytes } from "std/bytes";
 import { Array } from "std/collections";
+
 export function optional(value: i32 | undefined): i32 | undefined {
   return value;
 }
@@ -9,16 +10,16 @@ export function bytesLength(value: Bytes): usize {
 export function echoString(value: string): string {
   return value;
 }
-export function vectorLength(value: & Array<i32 >): usize {
+export function vectorLength(value: &Array<i32 >): usize {
   return value.length;
 }
 export function makeVector(): Array<i32> {
   let values = new Array<i32>({
-    capacity: 3usize,
+    capacity: 3,
   });
-  values.push(7i32);
-  values.push(8i32);
-  values.push(9i32);
+  values.push(7);
+  values.push(8);
+  values.push(9);
   return move values;
 }
 export function fixedMiddle(value:[i32;

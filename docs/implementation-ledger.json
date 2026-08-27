@@ -177,7 +177,7 @@
       "verification_command": "cargo test -p tn-codegen-llvm --test atomic && scripts/verify-llvm-atomics.sh",
       "evidence": {
         "source": "std/core.tn exposes private AtomicI32, AtomicU64, and AtomicUsize storage with explicit MemoryOrder methods; std/thread.tn routes the unsafe worker entry through the pointer-preserving pthread bridge. The Rust LLVM backend maps the intrinsic operations to validated atomic load/store, atomicrmw add, cmpxchg, and fence builders with order checks.",
-        "llvm": "cargo test -p tn-codegen-llvm --test lowering lowers_atomic_load_store_rmw_cmpxchg_and_fence_to_llvm passes and asserts load atomic, store atomic, atomicrmw add, cmpxchg, and fence seq_cst. The guarded validation/sync/atomics.tn product contains load atomic i32, store atomic i32, atomicrmw add, cmpxchg, !dbg source locations, and a direct tn_thread_spawn_raw_pointer declaration.",
+        "llvm": "cargo test -p tn-codegen-llvm --test lowering lowers_atomic_load_store_rmw_cmpxchg_and_fence_to_llvm passes and asserts load atomic, store atomic, atomicrmw add, cmpxchg, and fence seq_cst. The guarded validation/sync/atomics.tn product contains load atomic i32, store atomic i32, atomicrmw add, cmpxchg, !dbg source locations, and the typed tn_thread_spawn_task bridge.",
         "behavioral": "scripts/verify-llvm-atomics.sh passes a four-worker regression with 250000 fetchAdd operations per worker, verifies the final value is 1000000, then checks store, load, compareExchange, and SeqCst behavior."
       },
       "disposition": "implemented"
@@ -232,7 +232,7 @@
       "verification_command": "scripts/verify-hostile-paths.sh",
       "evidence": {
         "source": "std/process.tn now stores owned argv elements in private Command state, keeps Child process/waited state private, makes Child.drop inert, and exposes explicit kill; runtime/runtime.tn copies argv pointers and calls fork/execvp without a shell.",
-        "llvm": "The guarded build emits a direct call to tn_process_spawn_argv(ptr, i64); the active process path contains no tn_process_spawn(, system(, or popen( call.",
+        "llvm": "The guarded build emits a direct call to tn_process_spawn_array(ptr, i64), whose private runtime helper copies the argv pointers before fork/execvp; the active process path contains no tn_process_spawn(, system(, or popen( call.",
         "behavioral": "scripts/verify-hostile-paths.sh exits 0 and compares exact output for spaces, apostrophes, semicolons, dollar signs, tabs, and embedded newlines; the executable returns 42 after wait and drop cleanup."
       },
       "disposition": "implemented"

@@ -5,7 +5,7 @@ import { fromRaw } from "std/string";
 declare extern "C" {
   function tn_clock_monotonic_nanoseconds(): u64;
   function tn_clock_wall_nanoseconds(): i64;
-  function tn_string_from_bytes(bytes: * const u8, length: c_size): * mut u8;
+  function tn_string_from_bytes(bytes: *const u8, length: c_size): *mut u8;
 }
 // Duration stores elapsed nanoseconds and all scaled constructors saturate at
 // the largest representable value. Arithmetic never wraps into a short delay.
@@ -17,30 +17,30 @@ export struct Duration {
     };
   }
   public static fromMicroseconds(value: u64): Duration {
-    return fromScaled(value, 1000u64);
+    return fromScaled(value, 1000);
   }
   public static fromMilliseconds(value: u64): Duration {
-    return fromScaled(value, 1000000u64);
+    return fromScaled(value, 1000000);
   }
   public static fromSeconds(value: u64): Duration {
-    return fromScaled(value, 1000000000u64);
+    return fromScaled(value, 1000000000);
   }
   public nanoseconds(): u64 {
     return this.totalNanoseconds;
   }
   public microseconds(): u64 {
-    return this.totalNanoseconds / 1000u64;
+    return this.totalNanoseconds / 1000;
   }
   public milliseconds(): u64 {
-    return this.totalNanoseconds / 1000000u64;
+    return this.totalNanoseconds / 1000000;
   }
   public seconds(): u64 {
-    return this.totalNanoseconds / 1000000000u64;
+    return this.totalNanoseconds / 1000000000;
   }
   public saturatingAdd(other: Duration): Duration {
-    if (other.totalNanoseconds > ~0u64 - this.totalNanoseconds) {
+    if (other.totalNanoseconds > ~0 - this.totalNanoseconds) {
       return {
-        totalNanoseconds: ~0u64,
+        totalNanoseconds: ~0,
       };
     }
     return {
@@ -50,7 +50,7 @@ export struct Duration {
   public saturatingSub(other: Duration): Duration {
     if (other.totalNanoseconds > this.totalNanoseconds) {
       return {
-        totalNanoseconds: 0u64,
+        totalNanoseconds: 0,
       };
     }
     return {
@@ -59,9 +59,9 @@ export struct Duration {
   }
 }
 function fromScaled(value: u64, scale: u64): Duration {
-  if (value > ~0u64 / scale) {
+  if (value > ~0 / scale) {
     return {
-      totalNanoseconds: ~0u64,
+      totalNanoseconds: ~0,
     };
   }
   return {
@@ -77,16 +77,16 @@ export struct Instant {
       };
     }
   }
-  public durationSince(start: & Instant): Duration {
+  public durationSince(start: &Instant): Duration {
     if (this.timestampNanoseconds<start.timestampNanoseconds) {
-      return Duration.fromNanoseconds(0u64);
+      return Duration.fromNanoseconds(0);
     }
     return Duration.fromNanoseconds(this.timestampNanoseconds - start.timestampNanoseconds);
   }
   public elapsed(): Duration {
     const finish = Instant.now();
     if (finish.timestampNanoseconds<this.timestampNanoseconds) {
-      return Duration.fromNanoseconds(0u64);
+      return Duration.fromNanoseconds(0);
     }
     return Duration.fromNanoseconds(finish.timestampNanoseconds - this.timestampNanoseconds);
   }
@@ -107,7 +107,7 @@ export class Date {
   }
   public static now(): i64 {
     unsafe {
-      return floorDivide(tn_clock_wall_nanoseconds(), 1000000i64);
+      return floorDivide(tn_clock_wall_nanoseconds(), 1000000);
     }
   }
   public static fromEpochMilliseconds(value: i64): Date {
@@ -120,7 +120,7 @@ export class Date {
     return partsFor(this.epochMilliseconds).year;
   }
   public getUTCMonth(): i64 {
-    return partsFor(this.epochMilliseconds).month - 1i64;
+    return partsFor(this.epochMilliseconds).month - 1;
   }
   public getUTCDate(): i64 {
     return partsFor(this.epochMilliseconds).day;
@@ -140,24 +140,24 @@ export class Date {
   public toISOString(): string {
     const parts = partsFor(this.epochMilliseconds);
     let buffer = new BytesMut({
-      capacity: 32usize,
+      capacity: 32,
     });
-    appendYear( & mut buffer, parts.year);
+    appendYear( &mut buffer, parts.year);
     buffer.appendAscii("-");
-    appendUnsignedNumber( & mut buffer, parts.month, 2usize);
+    appendUnsignedNumber( &mut buffer, parts.month, 2);
     buffer.appendAscii("-");
-    appendUnsignedNumber( & mut buffer, parts.day, 2usize);
+    appendUnsignedNumber( &mut buffer, parts.day, 2);
     buffer.appendAscii("T");
-    appendUnsignedNumber( & mut buffer, parts.hour, 2usize);
+    appendUnsignedNumber( &mut buffer, parts.hour, 2);
     buffer.appendAscii(":");
-    appendUnsignedNumber( & mut buffer, parts.minute, 2usize);
+    appendUnsignedNumber( &mut buffer, parts.minute, 2);
     buffer.appendAscii(":");
-    appendUnsignedNumber( & mut buffer, parts.second, 2usize);
+    appendUnsignedNumber( &mut buffer, parts.second, 2);
     buffer.appendAscii(".");
-    appendUnsignedNumber( & mut buffer, parts.millisecond, 3usize);
+    appendUnsignedNumber( &mut buffer, parts.millisecond, 3);
     buffer.appendAscii("Z");
     unsafe {
-      return fromRaw(tn_string_from_bytes(buffer.pointer as * const u8, buffer.length), buffer.length);
+      return fromRaw(tn_string_from_bytes(buffer.nativePointer()as *const u8, buffer.length), buffer.length);
     }
   }
 }
@@ -169,23 +169,23 @@ function dateWithEpochMilliseconds(value: i64): Date {
 function floorDivide(value: i64, divisor: i64): i64 {
   const quotient = value / divisor;
   const remainder = value % divisor;
-  if (remainder<0i64) {
-    return quotient - 1i64;
+  if (remainder<0) {
+    return quotient - 1;
   }
   return quotient;
 }
 function partsFor(epochMilliseconds: i64): DateParts {
-  const millisecondsPerDay = 86400000i64;
+  const millisecondsPerDay: i64 = 86400000;
   const days = floorDivide(epochMilliseconds, millisecondsPerDay);
   const dayMilliseconds = epochMilliseconds - days * millisecondsPerDay;
   const civil = civilFromDays(days);
-  const hour = dayMilliseconds / 3600000i64;
-  const afterHour = dayMilliseconds % 3600000i64;
-  const minute = afterHour / 60000i64;
-  const afterMinute = afterHour % 60000i64;
-  const second = afterMinute / 1000i64;
+  const hour = dayMilliseconds / 3600000;
+  const afterHour = dayMilliseconds % 3600000;
+  const minute = afterHour / 60000;
+  const afterMinute = afterHour % 60000;
+  const second = afterMinute / 1000;
   return {
-    year: civil.year, month: civil.month, day: civil.day, hour: hour, minute: minute, second: second, millisecond: afterMinute % 1000i64,
+    year: civil.year, month: civil.month, day: civil.day, hour: hour, minute: minute, second: second, millisecond: afterMinute % 1000,
   };
 }
 struct CivilDate {
@@ -194,102 +194,102 @@ struct CivilDate {
   public day: i64;
 }
 function civilFromDays(days: i64): CivilDate {
-  let shifted = days + 719468i64;
-  let era: i64 = 0i64;
-  if (shifted >= 0i64) {
-    era = shifted / 146097i64;
+  let shifted = days + 719468;
+  let era: i64 = 0;
+  if (shifted >= 0) {
+    era = shifted / 146097;
   } else {
-    era =(shifted - 146096i64) / 146097i64;
+    era =(shifted - 146096) / 146097;
   }
-  const dayOfEra = shifted - era * 146097i64;
-  const yearOfEra =(dayOfEra - dayOfEra / 1460i64 + dayOfEra / 36524i64 - dayOfEra / 146096i64) / 365i64;
-  let year = yearOfEra + era * 400i64;
-  const dayOfYear = dayOfEra -(365i64 * yearOfEra + yearOfEra / 4i64 - yearOfEra / 100i64);
-  const monthPart =(5i64 * dayOfYear + 2i64) / 153i64;
-  const day = dayOfYear -(153i64 * monthPart + 2i64) / 5i64 + 1i64;
-  let month: i64 = 0i64;
-  if (monthPart<10i64) {
-    month = monthPart + 3i64;
+  const dayOfEra = shifted - era * 146097;
+  const yearOfEra =(dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365;
+  let year = yearOfEra + era * 400;
+  const dayOfYear = dayOfEra -(365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100);
+  const monthPart: i64 =(5 * dayOfYear + 2) / 153;
+  const day = dayOfYear -(153 * monthPart + 2) / 5 + 1;
+  let month: i64 = 0;
+  if (monthPart<10) {
+    month = monthPart + 3;
   } else {
-    month = monthPart - 9i64;
+    month = monthPart - 9;
   }
-  if (month <= 2i64) {
-    year += 1i64;
+  if (month <= 2) {
+    year += 1;
   }
   return {
     year: year, month: month, day: day,
   };
 }
-function appendYear(buffer: & mut BytesMut, year: i64): void {
-  if (year >= 0i64 && year <= 9999i64) {
-    appendUnsignedNumber(buffer, year, 4usize);
+function appendYear(buffer: &mut BytesMut, year: i64): void {
+  if (year >= 0 && year <= 9999) {
+    appendUnsignedNumber(buffer, year, 4);
     return;
   }
-  if (year > 9999i64) {
-    buffer.push(43u8);
-    appendUnsignedNumber(buffer, year, 6usize);
+  if (year > 9999) {
+    buffer.push(43);
+    appendUnsignedNumber(buffer, year, 6);
     return;
   }
-  appendSignedNumber(buffer, year, 6usize);
+  appendSignedNumber(buffer, year, 6);
 }
-function appendUnsignedNumber(buffer: & mut BytesMut, value: i64, minimumDigits: usize): void {
-  let divisor = 1i64;
-  let digits = 1usize;
-  while (value / divisor >= 10i64 && divisor <= 1000000000000000000i64) {
-    divisor *= 10i64;
-    digits += 1usize;
+function appendUnsignedNumber(buffer: &mut BytesMut, value: i64, minimumDigits: usize): void {
+  let divisor: i64 = 1;
+  let digits: usize = 1;
+  while (value / divisor >= 10 && divisor <= 1000000000000000000) {
+    divisor *= 10;
+    digits += 1;
   }
   while (digits<minimumDigits) {
-    buffer.push(48u8);
-    digits += 1usize;
+    buffer.push(48);
+    digits += 1;
   }
   let remaining = value;
-  while (divisor > 0i64) {
+  while (divisor > 0) {
     let digit = remaining / divisor;
-    if (digit<0i64) {
+    if (digit<0) {
       digit = - digit;
     }
     buffer.push(asciiDigit(digit));
     remaining = remaining % divisor;
-    divisor /= 10i64;
+    divisor /= 10;
   }
 }
-function appendSignedNumber(buffer: & mut BytesMut, value: i64, minimumDigits: usize): void {
-  if (value >= 0i64) {
+function appendSignedNumber(buffer: &mut BytesMut, value: i64, minimumDigits: usize): void {
+  if (value >= 0) {
     appendUnsignedNumber(buffer, value, minimumDigits);
     return;
   }
-  buffer.push(45u8);
-  let divisor = 1i64;
-  let digits = 1usize;
-  while (value / divisor <= - 10i64 && divisor <= 1000000000000000000i64) {
-    divisor *= 10i64;
-    digits += 1usize;
+  buffer.push(45);
+  let divisor: i64 = 1;
+  let digits: usize = 1;
+  while (value / divisor <= - 10 && divisor <= 1000000000000000000) {
+    divisor *= 10;
+    digits += 1;
   }
   while (digits<minimumDigits) {
-    buffer.push(48u8);
-    digits += 1usize;
+    buffer.push(48);
+    digits += 1;
   }
   let remaining = value;
-  while (divisor > 0i64) {
+  while (divisor > 0) {
     let digit = remaining / divisor;
-    if (digit<0i64) {
+    if (digit<0) {
       digit = - digit;
     }
     buffer.push(asciiDigit(digit));
     remaining = remaining % divisor;
-    divisor /= 10i64;
+    divisor /= 10;
   }
 }
 function asciiDigit(value: i64): u8 {
-  if (value === 0i64)return 48u8;
-  if (value === 1i64)return 49u8;
-  if (value === 2i64)return 50u8;
-  if (value === 3i64)return 51u8;
-  if (value === 4i64)return 52u8;
-  if (value === 5i64)return 53u8;
-  if (value === 6i64)return 54u8;
-  if (value === 7i64)return 55u8;
-  if (value === 8i64)return 56u8;
-  return 57u8;
+  if (value === 0)return 48;
+  if (value === 1)return 49;
+  if (value === 2)return 50;
+  if (value === 3)return 51;
+  if (value === 4)return 52;
+  if (value === 5)return 53;
+  if (value === 6)return 54;
+  if (value === 7)return 55;
+  if (value === 8)return 56;
+  return 57;
 }

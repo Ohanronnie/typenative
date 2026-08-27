@@ -393,8 +393,8 @@ fn lower_function(
         cursor.eat(TokenKind::Function);
     }
     let is_generator = !method && cursor.eat(TokenKind::Star);
-    if method && cursor.eat(TokenKind::From) {
-        // `from` is a contextual method name even though it is reserved in imports.
+    if method {
+        parse_method_name(cursor, diagnostics)?;
     } else {
         cursor.name(diagnostics)?;
     }
@@ -447,6 +447,48 @@ fn lower_function(
         body_start,
         body_end,
     })
+}
+
+fn peek_method_name(cursor: &Cursor<'_, '_>) -> Option<(String, usize, SourceSpan)> {
+    match cursor.kind()? {
+        TokenKind::Identifier | TokenKind::From => {
+            Some((cursor.text()?.to_owned(), 1, cursor.span()))
+        }
+        TokenKind::LeftBracket
+            if cursor.nth(1) == Some(TokenKind::Identifier)
+                && cursor.nth(2) == Some(TokenKind::Dot)
+                && cursor.nth(3) == Some(TokenKind::Identifier)
+                && cursor.nth(4) == Some(TokenKind::RightBracket) =>
+        {
+            let root = cursor
+                .tokens
+                .get(cursor.index + 1)
+                .map(|token| &cursor.source[token.range.clone()])?;
+            let member = cursor
+                .tokens
+                .get(cursor.index + 3)
+                .map(|token| &cursor.source[token.range.clone()])?;
+            Some((format!("[{root}.{member}]"), 5, cursor.span()))
+        }
+        _ => None,
+    }
+}
+
+fn parse_method_name(
+    cursor: &mut Cursor<'_, '_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(String, SourceSpan)> {
+    let (name, width, span) = peek_method_name(cursor)?;
+    if width == 5 && !matches!(name.as_str(), "[Symbol.dispose]" | "[Symbol.asyncDispose]") {
+        diagnostics.push(diag(
+            "TYPE_UNSUPPORTED_COMPUTED_METHOD_NAME",
+            "computed method names are reserved for standard disposal symbols",
+            &span,
+            "use `Symbol.dispose`, `Symbol.asyncDispose`, or an ordinary method name",
+        ));
+    }
+    cursor.index += width;
+    Some((name, span))
 }
 
 fn parse_generic_parameters(
@@ -944,11 +986,12 @@ fn lower_struct(
     let mut fields = Vec::new();
     let mut methods = Vec::new();
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
-        skip_attributes(cursor);
+        let attributes = parse_attributes(cursor);
         let checkpoint = cursor.index;
-        if let Some(method) =
+        if let Some(mut method) =
             parse_method(cursor, owner, resolver, diagnostics, false, methods.len())
         {
+            method.attributes = attributes;
             methods.push(method);
             continue;
         }
@@ -1208,8 +1251,9 @@ fn lower_class(
     let mut constructor = None;
     let mut methods = Vec::new();
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
-        skip_attributes(cursor);
-        if let Some(parsed) = parse_constructor(cursor, owner, resolver, diagnostics) {
+        let attributes = parse_attributes(cursor);
+        if let Some(mut parsed) = parse_constructor(cursor, owner, resolver, diagnostics) {
+            parsed.attributes = attributes;
             if constructor.replace(parsed).is_some() {
                 diagnostics.push(diag(
                     "TYPE_MULTIPLE_CONSTRUCTORS",
@@ -1221,9 +1265,10 @@ fn lower_class(
             continue;
         }
         let checkpoint = cursor.index;
-        if let Some(method) =
+        if let Some(mut method) =
             parse_method(cursor, owner, resolver, diagnostics, false, methods.len())
         {
+            method.attributes = attributes;
             methods.push(method);
             continue;
         }
@@ -1263,10 +1308,11 @@ fn lower_impl(
     cursor.eat(TokenKind::LeftBrace);
     let mut methods = Vec::new();
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
-        skip_attributes(cursor);
-        if let Some(method) =
+        let attributes = parse_attributes(cursor);
+        if let Some(mut method) =
             parse_method(cursor, owner, resolver, diagnostics, false, methods.len())
         {
+            method.attributes = attributes;
             methods.push(method);
         } else {
             cursor.bump();
@@ -1382,13 +1428,14 @@ fn parse_method(
     let is_unsafe = cursor.eat(TokenKind::Unsafe);
     let is_async = cursor.eat(TokenKind::Async);
     cursor.eat(TokenKind::Function);
-    if !matches!(cursor.kind(), Some(TokenKind::Identifier | TokenKind::From)) {
+    let Some((name, width, span)) = peek_method_name(cursor) else {
         cursor.index = start;
         return None;
-    }
-    let span = cursor.span();
-    let name = cursor.text()?.to_owned();
-    if !matches!(cursor.nth(1), Some(TokenKind::Less | TokenKind::LeftParen)) {
+    };
+    if !matches!(
+        cursor.nth(width),
+        Some(TokenKind::Less | TokenKind::LeftParen)
+    ) {
         cursor.index = start;
         return None;
     }
@@ -1424,6 +1471,7 @@ fn parse_method(
     Some(Method {
         id: member_id(owner, &name, ordinal),
         name,
+        attributes: Vec::new(),
         function,
         visibility,
         receiver,
@@ -1518,6 +1566,7 @@ fn parse_constructor(
     Some(Method {
         id: member_id(owner, "constructor", 0),
         name: "constructor".into(),
+        attributes: Vec::new(),
         function: Function {
             parameters,
             result: Type::Primitive(PrimitiveType::Void),
@@ -1553,6 +1602,52 @@ fn skip_attributes(cursor: &mut Cursor<'_, '_>) {
         cursor.bump();
         cursor.skip_balanced(TokenKind::LeftParen, TokenKind::RightParen);
     }
+}
+
+fn parse_attributes(cursor: &mut Cursor<'_, '_>) -> Vec<crate::Attribute> {
+    let mut attributes = Vec::new();
+    while cursor.kind() == Some(TokenKind::At) {
+        let start = cursor.token().map_or(0, |token| token.range.start);
+        cursor.bump();
+        let Some(name_token) = cursor.token().cloned() else {
+            break;
+        };
+        let name = cursor.source[name_token.range.clone()].to_owned();
+        cursor.bump();
+        let mut arguments = Vec::new();
+        if cursor.kind() == Some(TokenKind::LeftParen) {
+            let open = cursor.index;
+            let end = cursor
+                .balanced_end(TokenKind::LeftParen, TokenKind::RightParen)
+                .map_or_else(
+                    || name_token.range.end,
+                    |end| usize::try_from(end).unwrap_or(usize::MAX),
+                );
+            arguments.extend(
+                cursor.tokens[open + 1..]
+                    .iter()
+                    .take_while(|token| token.range.start < end)
+                    .filter(|token| {
+                        !matches!(
+                            token.kind,
+                            TokenKind::Comma | TokenKind::LeftParen | TokenKind::RightParen
+                        )
+                    })
+                    .map(|token| {
+                        cursor.source[token.range.clone()]
+                            .trim_matches('"')
+                            .to_owned()
+                    }),
+            );
+            cursor.skip_balanced(TokenKind::LeftParen, TokenKind::RightParen);
+        }
+        attributes.push(crate::Attribute {
+            name,
+            arguments,
+            span: SourceSpan::new(&cursor.file, start..name_token.range.end, cursor.source),
+        });
+    }
+    attributes
 }
 
 fn skip_expression_until(cursor: &mut Cursor<'_, '_>, end: &[TokenKind]) {
@@ -1613,11 +1708,11 @@ fn validate_coherence_and_inheritance(
                 | DefinitionData::Class { .. }
         );
         if is_nominal && let Some(declaration) = graph.declaration(definition.declaration) {
-            let interfaces = match &definition.data {
-                DefinitionData::Struct { interfaces, .. }
-                | DefinitionData::Enum { interfaces, .. }
-                | DefinitionData::Class { interfaces, .. } => interfaces,
-                _ => unreachable!("nominal definition has no interface list"),
+            let (DefinitionData::Struct { interfaces, .. }
+            | DefinitionData::Enum { interfaces, .. }
+            | DefinitionData::Class { interfaces, .. }) = &definition.data
+            else {
+                unreachable!("nominal definition has no interface list")
             };
             let mut conformances = BTreeSet::new();
             for interface in interfaces {

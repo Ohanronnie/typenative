@@ -4,7 +4,7 @@ import { servePort } from "./redis-server";
 
 async function runAlternate(): Promise<i32, never> {
   try {
-    try await servePort(6389u16, 4096);
+    try await servePort(6389, 4096);
   } catch (error: NetworkError) {
     return 1;
   }

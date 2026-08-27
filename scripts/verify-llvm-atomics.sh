@@ -28,7 +28,7 @@ if rg -n 'ChannelI32|atomicI32\(|atomicU64\(|atomicUsize\(' \
   echo 'free-function or i32-specific atomic shortcut is still present' >&2
   exit 1
 fi
-rg -q 'iterations: 250000usize' "$root/validation/sync/atomics.tn"
+rg -q 'index !== 250000' "$root/validation/sync/atomics.tn"
 rg -q 'let first = startWorker' "$root/validation/sync/atomics.tn"
 rg -q 'let fourth = startWorker' "$root/validation/sync/atomics.tn"
 
@@ -51,7 +51,7 @@ rg -q 'load atomic i32' "$work/atomics.ll"
 rg -q 'store atomic i32' "$work/atomics.ll"
 rg -q 'atomicrmw add' "$work/atomics.ll"
 rg -q 'cmpxchg ' "$work/atomics.ll"
-rg -q 'tn_thread_spawn_raw_pointer' "$work/atomics.ll"
+rg -q 'tn_thread_spawn_task' "$work/atomics.ll"
 rg -q '!dbg !' "$work/atomics.ll"
 
 printf '%s\n' 'llvm-atomics=pass increments=1000000 workers=4'

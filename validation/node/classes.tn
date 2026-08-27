@@ -16,6 +16,6 @@ export class Counter {
     this.value = this.value + delta;
     return this.value;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
   }
 }

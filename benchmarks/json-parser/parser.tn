@@ -3,8 +3,8 @@ import { c_size } from "std/ffi";
 import { argument, argumentCount } from "std/process";
 
 declare extern "C" {
-  function tn_cstring_length(bytes: * const u8): c_size;
-  function atoi(bytes: * const u8): i32;
+  function tn_cstring_length(bytes: *const u8): c_size;
+  function atoi(bytes: *const u8): i32;
 }
 class JsonParser {
   private input: Bytes;
@@ -12,66 +12,66 @@ class JsonParser {
   private checksum: usize;
   public constructor(input: Bytes) {
     this.input = input;
-    this.offset = 0usize;
-    this.checksum = 0usize;
+    this.offset = 0;
+    this.checksum = 0;
   }
   private current(): u8 {
     return this.input.get(this.offset)!;
   }
   private isDigit(value: u8): bool {
-    return value >= 48u8 && value <= 57u8;
+    return value >= 48 && value <= 57;
   }
   private isHexDigit(value: u8): bool {
-    return this.isDigit(value) ||(value >= 65u8 && value <= 70u8) ||(value >= 97u8 && value <= 102u8);
+    return this.isDigit(value) ||(value >= 65 && value <= 70) ||(value >= 97 && value <= 102);
   }
   private skipWhitespace(): void {
     while (this.offset<this.input.length) {
       const value = this.current();
-      if (value !== 32u8 && value !== 10u8 && value !== 13u8 && value !== 9u8) {
+      if (value !== 32 && value !== 10 && value !== 13 && value !== 9) {
         return;
       }
-      this.offset += 1usize;
+      this.offset += 1;
     }
   }
   private consume(expected: u8): bool {
     if (this.offset >= this.input.length || this.current() !== expected) {
       return false;
     }
-    this.offset += 1usize;
+    this.offset += 1;
     return true;
   }
   private parseString(): bool {
-    if (!this.consume(34u8)) {
+    if (!this.consume(34)) {
       return false;
     }
     while (this.offset<this.input.length) {
       const value = this.current();
-      this.offset += 1usize;
-      if (value === 34u8) {
+      this.offset += 1;
+      if (value === 34) {
         return true;
       }
-      if (value<32u8) {
+      if (value<32) {
         return false;
       }
-      this.checksum += 1usize;
-      if (value === 92u8) {
+      this.checksum += 1;
+      if (value === 92) {
         if (this.offset >= this.input.length) {
           return false;
         }
         const escaped = this.current();
-        this.offset += 1usize;
-        this.checksum += 1usize;
-        if (escaped === 117u8) {
-          let digits: usize = 0usize;
-          while (digits<4usize) {
+        this.offset += 1;
+        this.checksum += 1;
+        if (escaped === 117) {
+          let digits: usize = 0;
+          while (digits<4) {
             if (this.offset >= this.input.length || !this.isHexDigit(this.current())) {
               return false;
             }
-            this.checksum += 1usize;
-            this.offset += 1usize;
-            digits += 1usize;
+            this.checksum += 1;
+            this.offset += 1;
+            digits += 1;
           }
-        } else if (escaped !== 34u8 && escaped !== 92u8 && escaped !== 47u8 && escaped !== 98u8 && escaped !== 102u8 && escaped !== 110u8 && escaped !== 114u8 && escaped !== 116u8) {
+        } else if (escaped !== 34 && escaped !== 92 && escaped !== 47 && escaped !== 98 && escaped !== 102 && escaped !== 110 && escaped !== 114 && escaped !== 116) {
           return false;
         }
       }
@@ -79,77 +79,77 @@ class JsonParser {
     return false;
   }
   private parseTrue(): bool {
-    if (this.consume(116u8) && this.consume(114u8) && this.consume(117u8) && this.consume(101u8)) {
-      this.checksum += 4usize;
+    if (this.consume(116) && this.consume(114) && this.consume(117) && this.consume(101)) {
+      this.checksum += 4;
       return true;
     }
     return false;
   }
   private parseFalse(): bool {
-    if (this.consume(102u8) && this.consume(97u8) && this.consume(108u8) && this.consume(115u8) && this.consume(101u8)) {
-      this.checksum += 5usize;
+    if (this.consume(102) && this.consume(97) && this.consume(108) && this.consume(115) && this.consume(101)) {
+      this.checksum += 5;
       return true;
     }
     return false;
   }
   private parseNull(): bool {
-    if (this.consume(110u8) && this.consume(117u8) && this.consume(108u8) && this.consume(108u8)) {
-      this.checksum += 4usize;
+    if (this.consume(110) && this.consume(117) && this.consume(108) && this.consume(108)) {
+      this.checksum += 4;
       return true;
     }
     return false;
   }
   private parseNumber(): bool {
     const start = this.offset;
-    if (this.offset<this.input.length && this.current() === 45u8) {
-      this.offset += 1usize;
+    if (this.offset<this.input.length && this.current() === 45) {
+      this.offset += 1;
     }
     if (this.offset >= this.input.length) {
       return false;
     }
-    if (this.current() === 48u8) {
-      this.checksum += 1usize;
-      this.offset += 1usize;
+    if (this.current() === 48) {
+      this.checksum += 1;
+      this.offset += 1;
     } else {
-      if (this.current() < 49u8 || this.current() > 57u8) {
+      if (this.current() < 49 || this.current() > 57) {
         return false;
       }
       while (this.offset<this.input.length && this.isDigit(this.current())) {
-        this.checksum += 1usize;
-        this.offset += 1usize;
+        this.checksum += 1;
+        this.offset += 1;
       }
     }
-    if (this.offset<this.input.length && this.current() === 46u8) {
-      this.offset += 1usize;
+    if (this.offset<this.input.length && this.current() === 46) {
+      this.offset += 1;
       if (this.offset >= this.input.length || !this.isDigit(this.current())) {
         return false;
       }
       while (this.offset<this.input.length && this.isDigit(this.current())) {
-        this.checksum += 1usize;
-        this.offset += 1usize;
+        this.checksum += 1;
+        this.offset += 1;
       }
     }
-    if (this.offset<this.input.length &&(this.current() === 101u8 || this.current() === 69u8)) {
-      this.offset += 1usize;
-      if (this.offset<this.input.length &&(this.current() === 43u8 || this.current() === 45u8)) {
-        this.offset += 1usize;
+    if (this.offset<this.input.length &&(this.current() === 101 || this.current() === 69)) {
+      this.offset += 1;
+      if (this.offset<this.input.length &&(this.current() === 43 || this.current() === 45)) {
+        this.offset += 1;
       }
       if (this.offset >= this.input.length || !this.isDigit(this.current())) {
         return false;
       }
       while (this.offset<this.input.length && this.isDigit(this.current())) {
-        this.checksum += 1usize;
-        this.offset += 1usize;
+        this.checksum += 1;
+        this.offset += 1;
       }
     }
     return this.offset > start;
   }
   private parseArray(): bool {
-    if (!this.consume(91u8)) {
+    if (!this.consume(91)) {
       return false;
     }
     this.skipWhitespace();
-    if (this.consume(93u8)) {
+    if (this.consume(93)) {
       return true;
     }
     while (true) {
@@ -157,10 +157,10 @@ class JsonParser {
         return false;
       }
       this.skipWhitespace();
-      if (this.consume(93u8)) {
+      if (this.consume(93)) {
         return true;
       }
-      if (!this.consume(44u8)) {
+      if (!this.consume(44)) {
         return false;
       }
       this.skipWhitespace();
@@ -168,11 +168,11 @@ class JsonParser {
     return false;
   }
   private parseObject(): bool {
-    if (!this.consume(123u8)) {
+    if (!this.consume(123)) {
       return false;
     }
     this.skipWhitespace();
-    if (this.consume(125u8)) {
+    if (this.consume(125)) {
       return true;
     }
     while (true) {
@@ -180,7 +180,7 @@ class JsonParser {
         return false;
       }
       this.skipWhitespace();
-      if (!this.consume(58u8)) {
+      if (!this.consume(58)) {
         return false;
       }
       this.skipWhitespace();
@@ -188,10 +188,10 @@ class JsonParser {
         return false;
       }
       this.skipWhitespace();
-      if (this.consume(125u8)) {
+      if (this.consume(125)) {
         return true;
       }
-      if (!this.consume(44u8)) {
+      if (!this.consume(44)) {
         return false;
       }
       this.skipWhitespace();
@@ -204,39 +204,39 @@ class JsonParser {
       return false;
     }
     const value = this.current();
-    if (value === 34u8) {
+    if (value === 34) {
       return this.parseString();
     }
-    if (value === 123u8) {
+    if (value === 123) {
       return this.parseObject();
     }
-    if (value === 91u8) {
+    if (value === 91) {
       return this.parseArray();
     }
-    if (value === 116u8) {
+    if (value === 116) {
       return this.parseTrue();
     }
-    if (value === 102u8) {
+    if (value === 102) {
       return this.parseFalse();
     }
-    if (value === 110u8) {
+    if (value === 110) {
       return this.parseNull();
     }
     return this.parseNumber();
   }
   public parseMany(iterations: i32): usize {
-    let iteration: i32 = 0i32;
-    let total: usize = 0usize;
+    let iteration: i32 = 0;
+    let total: usize = 0;
     while (iteration<iterations) {
-      this.offset = 0usize;
-      this.checksum = 0usize;
+      this.offset = 0;
+      this.checksum = 0;
       const valid = this.parseValue();
       this.skipWhitespace();
       if (!valid || this.offset !== this.input.length) {
-        return 0usize;
+        return 0;
       }
       total += this.checksum + this.offset;
-      iteration += 1i32;
+      iteration += 1;
     }
     return total;
   }
@@ -246,22 +246,20 @@ export function parseMany(input: Bytes, iterations: i32): usize {
   return parser.parseMany(iterations);
 }
 function main(): i32 {
-  if (argumentCount() < 3i32) {
-    return 2i32;
+  if (argumentCount() < 3) {
+    return 2;
   }
   unsafe {
-    const inputPointer = argument(1i32);
-    const iterationPointer = argument(2i32);
-    const input: Bytes = {
-      pointer: inputPointer, length: tn_cstring_length(inputPointer),
-    };
+    const inputPointer = argument(1);
+    const iterationPointer = argument(2);
+    const input = Bytes.fromRaw(inputPointer, tn_cstring_length(inputPointer));
     const iterations = atoi(iterationPointer);
-    if (iterations <= 0i32) {
-      return 3i32;
+    if (iterations <= 0) {
+      return 3;
     }
-    if (parseMany(input, iterations) === 0usize) {
-      return 4i32;
+    if (parseMany(input, iterations) === 0) {
+      return 4;
     }
   }
-  return 0i32;
+  return 0;
 }

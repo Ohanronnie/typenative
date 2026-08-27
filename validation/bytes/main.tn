@@ -4,83 +4,83 @@ import { Utf8Error } from "std/string";
 
 function main(): i32 throws Utf8Error | SliceError {
   let bytes = new BytesMut({
-    capacity: 4usize
+    capacity: 4
   });
-  bytes.push(97u8);
-  bytes.push(98u8);
-  bytes.push(99u8);
+  bytes.push(97);
+  bytes.push(98);
+  bytes.push(99);
   {
     const root = bytes.asBytes();
-    if (root.length !== 3usize || root.get(0usize)! !== 97u8) {
-      return 1i32;
+    if (root.length !== 3 || root.get(0)! !== 97) {
+      return 1;
     }
-    if (root.get(3usize) !== undefined) {
-      return 2i32;
+    if (root.get(3) !== undefined) {
+      return 2;
     }
-    const empty = try root.slice(1usize, 1usize);
-    if (empty.length !== 0usize || empty.get(0usize) !== undefined) {
-      return 3i32;
+    const empty = try root.slice(1, 1);
+    if (empty.length !== 0 || empty.get(0) !== undefined) {
+      return 3;
     }
-    const tail = try root.slice(1usize, 3usize);
-    const nested = try tail.slice(0usize, 1usize);
-    const repeated = try root.slice(1usize, 2usize);
-    if (nested.get(0usize)! !== 98u8 || repeated.get(0usize)! !== 98u8) {
-      return 4i32;
+    const tail = try root.slice(1, 3);
+    const nested = try tail.slice(0, 1);
+    const repeated = try root.slice(1, 2);
+    if (nested.get(0)! !== 98 || repeated.get(0)! !== 98) {
+      return 4;
     }
     const text = try String.fromUtf8(tail);
     if (text !== "bc") {
-      return 6i32;
+      return 6;
     }
     const owned: string = text.clone();
     if (owned !== "bc") {
-      return 7i32;
+      return 7;
     }
     let values = new Map<string, string>({
-      capacity: 8usize
+      capacity: 8
     });
     values.set(text.clone(), String("found"));
-    const found = values.get( & text);
-    if (found === undefined || found!.byteLength !== 5usize) {
-      return 8i32;
+    const found = values.get( &text);
+    if (found === undefined || found!.byteLength !== 5) {
+      return 8;
     }
   }
-  bytes.discardPrefix(1usize);
-  if (bytes.length !== 2usize || bytes.get(0usize)! !== 98u8) {
-    return 9i32;
+  bytes.discardPrefix(1);
+  if (bytes.length !== 2 || bytes.get(0)! !== 98) {
+    return 9;
   }
   let invalid = new BytesMut({
-    capacity: 1usize
+    capacity: 1
   });
-  invalid.push(255u8);
+  invalid.push(255);
   try {
     const ignored = try String.fromUtf8(invalid.asBytes());
-    return 10i32;
+    return 10;
   } catch (error: Utf8Error) {
   }
   let multibyte = new BytesMut({
-    capacity: 2usize
+    capacity: 2
   });
-  multibyte.push(195u8);
-  multibyte.push(169u8);
+  multibyte.push(195);
+  multibyte.push(169);
   const multibyteText = try String.fromUtf8(multibyte.asBytes());
   if (multibyteText !== "é") {
-    return 20i32;
+    return 20;
   }
   try {
-    const valid = try bytes.slice(0usize, 2usize);
-    if (valid[0usize] !== 98u8 || valid[1usize] !== 99u8) {
-      return 11i32;
+    const valid = try bytes.slice(0, 2);
+    if (valid[0] !== 98 || valid[1] !== 99) {
+      return 11;
     }
   } catch (error: SliceError) {
-    return 12i32;
+    return 12;
   }
   try {
-    const invalidSlice = try bytes.slice(1usize, 3usize);
-    return 13i32;
+    const invalidSlice = try bytes.slice(1, 3);
+    return 13;
   } catch (error: SliceError) {
-    if (error.start !== 1usize || error.end !== 3usize || error.length !== 2usize) {
-      return 14i32;
+    if (error.start !== 1 || error.end !== 3 || error.length !== 2) {
+      return 14;
     }
   }
-  return 42i32;
+  return 42;
 }

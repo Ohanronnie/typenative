@@ -856,6 +856,7 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tn-codegen-llvm",

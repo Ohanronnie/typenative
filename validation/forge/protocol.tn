@@ -1,4 +1,4 @@
-import { BytesMut, cursor, fromStatic, readU8, SliceError } from "std/bytes";
+import { BytesMut, cursor, fromStatic, SliceError } from "std/bytes";
 import { Error } from "std/core";
 
 export enum ProtocolError implements Error {
@@ -13,69 +13,71 @@ export struct Request {
 }
 function encode(request: Request): BytesMut {
   let output = new BytesMut({
-    capacity: 8usize,
+    capacity: 8,
   });
-  const marker = switch(request.command) {
-    case Command.Ping: 1u8, case Command.Build: 2u8, case Command.Shutdown: 3u8,
+  const marker: u8 = switch(request.command) {
+    case Command.Ping: 1, case Command.Build: 2, case Command.Shutdown: 3,
   };
   output.push(marker);
   output.push(request.id);
   return output;
 }
-function decode(input: & BytesMut): Request throws ProtocolError | SliceError {
-  let view = try input.slice(0usize, input.length);
+function decode(input: &BytesMut): Request throws ProtocolError | SliceError {
+  let view = try input.slice(0, input.length);
   let inputCursor = cursor(view);
-  let marker: u8 = 0u8;
-  let id: u8 = 0u8;
-  if (!readU8( & mut inputCursor, & mut marker) || !readU8( & mut inputCursor, & mut id)) {
+  const marker = inputCursor.readU8();
+  const id = inputCursor.readU8();
+  if (marker === undefined || id === undefined) {
     throw ProtocolError.Truncated;
   }
+  const markerValue: u8 = marker!;
+  const idValue: u8 = id!;
   let command = Command.Ping;
-  if (marker === 2u8) {
+  if (markerValue === 2) {
     command = Command.Build;
-  } else if (marker === 3u8) {
+  } else if (markerValue === 3) {
     command = Command.Shutdown;
-  } else if (marker !== 1u8) {
+  } else if (markerValue !== 1) {
     throw ProtocolError.Invalid;
   }
   return {
-    command: command, id: id,
+    command: command, id: idValue,
   };
 }
 export function protocolProbe(): i32 {
   const request: Request = {
-    command: Command.Build, id: 42u8,
+    command: Command.Build, id: 42,
   };
   let encoded = encode(request);
   try {
-    const decoded = try decode( & encoded);
+    const decoded = try decode( &encoded);
     const commandMatches = switch(decoded.command) {
       case Command.Build: true, default: false,
     };
-    if (!commandMatches || decoded.id !== 42u8) {
-      return 1i32;
+    if (!commandMatches || decoded.id !== 42) {
+      return 1;
     }
   } catch (error: ProtocolError) {
-    return 2i32;
+    return 2;
   } catch (error: SliceError) {
-    return 2i32;
+    return 2;
   }
   let malformed = new BytesMut({
-    capacity: 1usize,
+    capacity: 1,
   });
-  malformed.push(1u8);
+  malformed.push(1);
   try {
-    const ignored = try decode( & malformed);
-    return 3i32;
+    const ignored = try decode( &malformed);
+    return 3;
   } catch (error: ProtocolError) {
     return switch(error) {
-      case ProtocolError.Truncated: 0i32, default: 4i32,
+      case ProtocolError.Truncated: 0, default: 4,
     };
   } catch (error: SliceError) {
-    return 4i32;
+    return 4;
   }
 }
 export function staticProtocolProbe(): i32 {
   const bytes = fromStatic("forge");
-  return bytes.length === 5usize?0i32: 1i32;
+  return bytes.length === 5?0: 1;
 }

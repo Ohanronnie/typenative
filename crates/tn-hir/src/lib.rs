@@ -53,14 +53,15 @@ pub enum DeclarationKind {
 impl DeclarationKind {
     pub const fn namespace(self) -> Option<Namespace> {
         match self {
-            Self::Const | Self::Static | Self::Function => Some(Namespace::Value),
+            Self::Const | Self::Static | Self::Function | Self::ExternFunction => {
+                Some(Namespace::Value)
+            }
             Self::TypeAlias
             | Self::Struct
             | Self::Class
             | Self::Interface
             | Self::Enum
             | Self::ExternStruct => Some(Namespace::Type),
-            Self::ExternFunction => Some(Namespace::Value),
             Self::Impl | Self::ExternBlock => None,
         }
     }
@@ -213,7 +214,6 @@ pub enum Type {
 pub fn promise_effects(error: &Type, prior: &[DeclarationId]) -> Vec<DeclarationId> {
     match error {
         Type::Nominal(id, _) => vec![*id],
-        Type::Primitive(PrimitiveType::Never) => Vec::new(),
         Type::Generic(_) | Type::Error => prior.to_vec(),
         _ => Vec::new(),
     }
@@ -302,6 +302,7 @@ pub enum ReceiverMode {
 pub struct Method {
     pub id: MemberId,
     pub name: String,
+    pub attributes: Vec<Attribute>,
     pub function: Function,
     pub visibility: Visibility,
     pub receiver: ReceiverMode,
@@ -652,11 +653,11 @@ impl Program {
         let Some(definition) = self.definition(declaration) else {
             return Vec::new();
         };
-        let interfaces = match &definition.data {
-            DefinitionData::Struct { interfaces, .. }
-            | DefinitionData::Enum { interfaces, .. }
-            | DefinitionData::Class { interfaces, .. } => interfaces,
-            _ => return Vec::new(),
+        let (DefinitionData::Struct { interfaces, .. }
+        | DefinitionData::Enum { interfaces, .. }
+        | DefinitionData::Class { interfaces, .. }) = &definition.data
+        else {
+            return Vec::new();
         };
         let mut result = interfaces
             .iter()
@@ -727,6 +728,9 @@ impl Program {
         }
         if bundled("alloc.tn") {
             return alloc_intrinsic(name);
+        }
+        if bundled("thread.tn") {
+            return (name == "spawnTask").then_some("thread_spawn");
         }
         None
     }
@@ -848,7 +852,6 @@ fn runtime_export_name(name: &str) -> String {
         name if name.starts_with("taskGroup") => {
             format!("task_group_{}", snake_case(&name[9..]))
         }
-        "threadSpawnRawPointerExport" => "thread_spawn_raw_pointer".into(),
         "conditionCreate" => "cond_create".into(),
         "conditionWait" => "cond_wait".into(),
         "conditionSignal" => "cond_signal".into(),

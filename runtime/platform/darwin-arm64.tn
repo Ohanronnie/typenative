@@ -2,29 +2,29 @@ import { c_size } from "std/ffi";
 import { runtimeAbort, runtimeAlloc, runtimeFree } from "../runtime";
 
 declare extern "C" {
-  function clock_gettime(clockId: i32, value: * mut u8): i32;
-  function stat(path: * const u8, output: * mut u8): i32;
-  function __error(): * mut i32;
-  function opendir(path: * const u8): * mut u8;
-  function readdir(directory: * mut u8): * mut u8;
-  function closedir(directory: * mut u8): i32;
-  function memcpy(destination: * mut u8, source: * const u8, length: c_size): * mut u8;
+  function clock_gettime(clockId: i32, value: *mut u8): i32;
+  function stat(path: *const u8, output: *mut u8): i32;
+  function __error(): *mut i32;
+  function opendir(path: *const u8): *mut u8;
+  function readdir(directory: *mut u8): *mut u8;
+  function closedir(directory: *mut u8): i32;
+  function memcpy(destination: *mut u8, source: *const u8, length: c_size): *mut u8;
   function kqueue(): i32;
-  function kevent(queue: i32, changes: * const u8, changeCount: i32, events: * mut u8, eventCount: i32, timeout: * const u8,): i32;
+  function kevent(queue: i32, changes: *const u8, changeCount: i32, events: *mut u8, eventCount: i32, timeout: *const u8,): i32;
   function close(handle: i32): i32;
 }
-export function platformIsNull<T>(pointer: * const T): bool {
+export function platformIsNull<T>(pointer: *const T): bool {
   return false;
 }
 export function platformSizeOf<T>(): usize {
-  return 0usize;
+  return 0;
 }
-export function platformStoreRaw<T>(pointer: * mut T, value: T): bool {
+export function platformStoreRaw<T>(pointer: *mut T, value: T): bool {
   return false;
 }
-function platformByteAddress(pointer: * const u8, offset: usize): * mut u8 {
+function platformByteAddress(pointer: *const u8, offset: usize): *mut u8 {
   unsafe {
-    return pointer as * mut u8;
+    return pointer as *mut u8;
   }
 }
 struct DarwinReactor {
@@ -36,15 +36,15 @@ struct DarwinKevent {
   public flags: u16;
   public filterFlags: u32;
   public data: i64;
-  public userData: * mut u8;
+  public userData: *mut u8;
 }
 struct DarwinTimespec {
   public seconds: u64;
   public nanoseconds: u64;
 }
-function darwinNullPointer<T>(): * mut T {
+function darwinNullPointer<T>(): *mut T {
   unsafe {
-    return 0usize as * mut T;
+    return 0usize as *mut T;
   }
 }
 function darwinEvent(queue: i32, descriptor: i32, filter: i16, flags: u16): i32 {
@@ -52,30 +52,30 @@ function darwinEvent(queue: i32, descriptor: i32, filter: i16, flags: u16): i32 
     let change: DarwinKevent = {
       identifier: 0usize, filter: filter, flags: flags, filterFlags: 0u32, data: 0i64, userData: darwinNullPointer<u8>(),
     };
-    platformStoreRaw<i32>(( & mut change)as * mut i32, descriptor);
-    const result = kevent(queue,( & change)as * const u8, 1i32, darwinNullPointer<u8>()as * mut u8, 0i32, darwinNullPointer<u8>()as * const u8,);
+    platformStoreRaw<i32>(( &mut change)as *mut i32, descriptor);
+    const result = kevent(queue,( &change)as *const u8, 1i32, darwinNullPointer<u8>()as *mut u8, 0i32, darwinNullPointer<u8>()as *const u8,);
     return result === 0i32?0i32: - platformLastError();
   }
 }
-export function platformReactorCreate(): * mut u8 {
+export function platformReactorCreate(): *mut u8 {
   unsafe {
     const queue = kqueue();
     if (queue<0i32) {
       return darwinNullPointer<u8>();
     }
     const handle = runtimeAlloc(8usize);
-    platformStoreRaw<DarwinReactor>(handle as * mut DarwinReactor, {
+    platformStoreRaw<DarwinReactor>(handle as *mut DarwinReactor, {
       queue: queue,
     });
     return handle;
   }
 }
-export function platformReactorWatch(handle: * mut u8, descriptor: i32, events: i32): i32 {
+export function platformReactorWatch(handle: *mut u8, descriptor: i32, events: i32): i32 {
   unsafe {
-    if (platformIsNull<u8>(handle as * const u8)) {
-      return 22i32;
+    if (platformIsNull<u8>(handle as *const u8)) {
+      return 22;
     }
-    const reactor = *(handle as * const DarwinReactor);
+    const reactor = *(handle as *const DarwinReactor);
     const flags = 1u16 | 4u16 | 32u16;
     if ((events & 1i32) !== 0i32 && darwinEvent(reactor.queue, descriptor, - 1i16, flags) !== 0i32) {
       return - platformLastError();
@@ -83,41 +83,41 @@ export function platformReactorWatch(handle: * mut u8, descriptor: i32, events: 
     if ((events & 4i32) !== 0i32 && darwinEvent(reactor.queue, descriptor, - 2i16, flags) !== 0i32) {
       return - platformLastError();
     }
-    return 0i32;
+    return 0;
   }
 }
-export function platformReactorUnwatch(handle: * mut u8, descriptor: i32): i32 {
+export function platformReactorUnwatch(handle: *mut u8, descriptor: i32): i32 {
   unsafe {
-    if (platformIsNull<u8>(handle as * const u8)) {
-      return 22i32;
+    if (platformIsNull<u8>(handle as *const u8)) {
+      return 22;
     }
-    const reactor = *(handle as * const DarwinReactor);
+    const reactor = *(handle as *const DarwinReactor);
     darwinEvent(reactor.queue, descriptor, - 1i16, 2u16);
     darwinEvent(reactor.queue, descriptor, - 2i16, 2u16);
-    return 0i32;
+    return 0;
   }
 }
-export function platformReactorWait(handle: * mut u8, timeout: u64, ready: * mut i32, events: * mut i32): i32 {
+export function platformReactorWait(handle: *mut u8, timeout: u64, ready: *mut i32, events: *mut i32): i32 {
   unsafe {
-    if (platformIsNull<u8>(handle as * const u8)) {
+    if (platformIsNull<u8>(handle as *const u8)) {
       return - 22i32;
     }
-    const reactor = *(handle as * const DarwinReactor);
+    const reactor = *(handle as *const DarwinReactor);
     const event: DarwinKevent = {
       identifier: 0usize, filter: 0i16, flags: 0u16, filterFlags: 0u32, data: 0i64, userData: darwinNullPointer<u8>(),
     };
     let wait: DarwinTimespec = {
       seconds: timeout / 1000u64, nanoseconds:(timeout % 1000u64) * 1000000u64,
     };
-    const result = kevent(reactor.queue, darwinNullPointer<u8>()as * const u8, 0i32,( & event)as * mut u8, 1i32,( & wait)as * const u8,);
+    const result = kevent(reactor.queue, darwinNullPointer<u8>()as *const u8, 0i32,( &event)as *mut u8, 1i32,( &wait)as *const u8,);
     if (result <= 0i32) {
       return result === 0i32?0i32: - platformLastError();
     }
-    if (!platformIsNull<i32>(ready as * const i32)) {
-      const identifier = *(platformByteAddress(( & event)as * const u8, 0usize)as * const i32);
+    if (!platformIsNull<i32>(ready as *const i32)) {
+      const identifier = *(platformByteAddress(( &event)as *const u8, 0usize)as *const i32);
       platformStoreRaw<i32>(ready, identifier);
     }
-    if (!platformIsNull<i32>(events as * const i32)) {
+    if (!platformIsNull<i32>(events as *const i32)) {
       let mask = 0i32;
       if (event.filter === - 1i16) {
         mask = 1i32;
@@ -136,34 +136,34 @@ export function platformReactorWait(handle: * mut u8, timeout: u64, ready: * mut
     return result;
   }
 }
-export function platformReactorDestroy(handle: * mut u8): i32 {
+export function platformReactorDestroy(handle: *mut u8): i32 {
   unsafe {
-    if (!platformIsNull<u8>(handle as * const u8)) {
-      const reactor = *(handle as * const DarwinReactor);
+    if (!platformIsNull<u8>(handle as *const u8)) {
+      const reactor = *(handle as *const DarwinReactor);
       close(reactor.queue);
       runtimeFree(handle);
     }
-    return 0i32;
+    return 0;
   }
 }
-function platformDirentByte(pointer: * const u8, index: usize): & u8 {
+function platformDirentByte(pointer: *const u8, index: usize): &u8 {
   unsafe {
     return & * pointer;
   }
 }
-function direntByte(pointer: * const u8, index: usize): u8 {
+function direntByte(pointer: *const u8, index: usize): u8 {
   unsafe {
     return * platformDirentByte(pointer, index);
   }
 }
-function direntAddress(pointer: * const u8, index: usize): * mut u8 {
+function direntAddress(pointer: *const u8, index: usize): *mut u8 {
   unsafe {
-    return platformDirentByte(pointer, index)as * mut u8;
+    return platformDirentByte(pointer, index)as *mut u8;
   }
 }
-function direntU16(pointer: * const u8, index: usize): usize {
+function direntU16(pointer: *const u8, index: usize): usize {
   unsafe {
-    return *(direntAddress(pointer, index)as * const usize) & 65535usize;
+    return *(direntAddress(pointer, index)as *const usize) & 65535usize;
   }
 }
 // Darwin ARM64: dev_t is 32-bit, mode_t/nlink_t are 16-bit, and st_size is
@@ -204,14 +204,14 @@ struct DarwinStatLayout {
 }
 function clockFailure(): i64 {
   runtimeAbort(1u32);
-  return 0i64;
+  return 0;
 }
 function clockWallNanosecondsValue(): i64 {
   unsafe {
     let value: DarwinSignedTimespec = {
       seconds: 0i64, nanoseconds: 0i64
     };
-    if (clock_gettime(0i32,( & mut value)as * mut u8) !== 0i32) {
+    if (clock_gettime(0i32,( &mut value)as *mut u8) !== 0i32) {
       return clockFailure();
     }
     const seconds = value.seconds;
@@ -228,13 +228,13 @@ function clockMonotonicNanosecondsValue(): u64 {
     let value: DarwinMonotonicTimespec = {
       seconds: 0u64, nanoseconds: 0u64
     };
-    if (clock_gettime(6i32,( & mut value)as * mut u8) !== 0i32) {
+    if (clock_gettime(6i32,( &mut value)as *mut u8) !== 0i32) {
       runtimeAbort(1u32);
-      return 0u64;
+      return 0;
     }
     if (value.nanoseconds >= 1000000000u64) {
       runtimeAbort(1u32);
-      return 0u64;
+      return 0;
     }
     const wholeSeconds = value.seconds * 1000000000u64;
     return wholeSeconds + value.nanoseconds;
@@ -249,29 +249,29 @@ export function clockWallNanoseconds(): i64 {
 function statError(): i32 {
   unsafe {
     const pointer = __error();
-    if (platformIsNull<i32>(pointer as * const i32)) {
-      return 5i32;
+    if (platformIsNull<i32>(pointer as *const i32)) {
+      return 5;
     }
-    const code = *(pointer as * const i32);
+    const code = *(pointer as *const i32);
     return code > 0i32?code: 5i32;
   }
 }
 export function platformLastError(): i32 {
   unsafe {
     const pointer = __error();
-    if (platformIsNull<i32>(pointer as * const i32)) {
-      return 5i32;
+    if (platformIsNull<i32>(pointer as *const i32)) {
+      return 5;
     }
-    const code = *(pointer as * const i32);
+    const code = *(pointer as *const i32);
     return code > 0i32?code: 5i32;
   }
 }
-function modifiedNanoseconds(value: & DarwinStatLayout): i64 {
+function modifiedNanoseconds(value: &DarwinStatLayout): i64 {
   const seconds = value.modifySeconds;
   const nanoseconds = value.modifyNanoseconds;
   return seconds * 1000000000i64 + nanoseconds;
 }
-export function fileStat(path: * const u8, size: * mut usize, modified: * mut i64, mode: * mut u32): i32 {
+export function fileStat(path: *const u8, size: *mut usize, modified: *mut i64, mode: *mut u32): i32 {
   unsafe {
     if (platformIsNull<u8>(path)) {
       return - 22i32;
@@ -282,52 +282,52 @@ export function fileStat(path: * const u8, size: * mut usize, modified: * mut i6
       runtimeFree(output);
       return - error;
     }
-    const value = *(output as * const DarwinStatLayout);
-    if (!platformIsNull<usize>(size as * const usize)) {
+    const value = *(output as *const DarwinStatLayout);
+    if (!platformIsNull<usize>(size as *const usize)) {
       platformStoreRaw<usize>(size, value.size);
     }
-    if (!platformIsNull<i64>(modified as * const i64)) {
-      platformStoreRaw<i64>(modified, modifiedNanoseconds( & value));
+    if (!platformIsNull<i64>(modified as *const i64)) {
+      platformStoreRaw<i64>(modified, modifiedNanoseconds( &value));
     }
-    if (!platformIsNull<u32>(mode as * const u32)) {
-      platformStoreRaw<u16>(mode as * mut u16, value.mode);
+    if (!platformIsNull<u32>(mode as *const u32)) {
+      platformStoreRaw<u16>(mode as *mut u16, value.mode);
     }
     runtimeFree(output);
-    return 0i32;
+    return 0;
   }
 }
-export function directoryOpen(path: * const u8): * mut u8 {
+export function directoryOpen(path: *const u8): *mut u8 {
   unsafe {
     return opendir(path);
   }
 }
-export function directoryNext(handle: * mut u8, name: * mut u8, capacity: usize, kind: * mut u32): i32 {
+export function directoryNext(handle: *mut u8, name: *mut u8, capacity: usize, kind: *mut u32): i32 {
   unsafe {
-    if (platformIsNull<u8>(handle as * const u8) || platformIsNull<u8>(name as * const u8) || capacity === 0usize) {
+    if (platformIsNull<u8>(handle as *const u8) || platformIsNull<u8>(name as *const u8) || capacity === 0usize) {
       return - 22i32;
     }
     const entry = readdir(handle);
-    if (platformIsNull<u8>(entry as * const u8)) {
-      return 0i32;
+    if (platformIsNull<u8>(entry as *const u8)) {
+      return 0;
     }
-    const nameLength = direntU16(entry as * const u8, 18usize);
+    const nameLength = direntU16(entry as *const u8, 18usize);
     if (nameLength + 1usize > capacity) {
       return - 36i32;
     }
-    const namePointer = direntAddress(entry as * const u8, 21usize)as * const u8;
+    const namePointer = direntAddress(entry as *const u8, 21usize)as *const u8;
     memcpy(name, namePointer, nameLength);
-    const terminator: u8 = 0u8;
-    memcpy(direntAddress(name as * const u8, nameLength),( & terminator)as * const u8, 1usize);
-    if (!platformIsNull<u32>(kind as * const u32)) {
+    const terminator: u8 = 0;
+    memcpy(direntAddress(name as *const u8, nameLength),( &terminator)as *const u8, 1usize);
+    if (!platformIsNull<u32>(kind as *const u32)) {
       platformStoreRaw<u32>(kind, 0u32);
-      const kindByte = direntByte(entry as * const u8, 20usize);
-      memcpy(kind as * mut u8,( & kindByte)as * const u8, 1usize);
+      const kindByte = direntByte(entry as *const u8, 20usize);
+      memcpy(kind as *mut u8,( &kindByte)as *const u8, 1usize);
     }
-    return 1i32;
+    return 1;
   }
 }
-export function directoryClose(handle: * mut u8): i32 {
+export function directoryClose(handle: *mut u8): i32 {
   unsafe {
-    return platformIsNull<u8>(handle as * const u8)?0i32: closedir(handle);
+    return platformIsNull<u8>(handle as *const u8)?0i32: closedir(handle);
   }
 }

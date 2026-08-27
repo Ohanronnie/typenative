@@ -4,15 +4,15 @@ import { resolveIpv4, tryUdpBind, NetworkError } from "std/net";
 export function metricsProbe(): i32 {
   try {
     const address = try resolveIpv4("127.0.0.1");
-    if (address === 0u32) {
-      return 1i32;
+    if (address === 0) {
+      return 1;
     }
-    let socket = try tryUdpBind("127.0.0.1", 0u16);
+    let socket = try tryUdpBind("127.0.0.1", 0);
     const packet = fromStatic("forge.metrics\n");
-    try socket.send( & packet, "127.0.0.1", 9u16);
+    try socket.send( &packet, "127.0.0.1", 9);
     socket.close();
-    return 0i32;
+    return 0;
   } catch (error: NetworkError) {
-    return 2i32;
+    return 2;
   }
 }

@@ -1,54 +1,59 @@
+import { Disposable } from "std/core";
 import { c_size } from "std/ffi";
+
 declare extern "C" {
-  function tn_mutex_create(): * mut u8;
-  function tn_mutex_lock(handle: * mut u8): i32;
-  function tn_mutex_unlock(handle: * mut u8): i32;
-  function tn_mutex_destroy(handle: * mut u8): i32;
-  function tn_rwlock_create(): * mut u8;
-  function tn_rwlock_read_lock(handle: * mut u8): i32;
-  function tn_rwlock_write_lock(handle: * mut u8): i32;
-  function tn_rwlock_unlock(handle: * mut u8): i32;
-  function tn_rwlock_destroy(handle: * mut u8): i32;
-  function tn_barrier_create(threshold: c_size): * mut u8;
-  function tn_barrier_wait(handle: * mut u8): i32;
-  function tn_barrier_destroy(handle: * mut u8): i32;
-  function tn_cond_create(): * mut u8;
-  function tn_cond_wait(condition: * mut u8, mutex: * mut u8): i32;
-  function tn_cond_signal(condition: * mut u8): i32;
-  function tn_cond_broadcast(condition: * mut u8): i32;
-  function tn_cond_destroy(condition: * mut u8): i32;
-  function tn_channel_create(elementSize: c_size, capacity: c_size): * mut u8;
-  function tn_channel_storage(handle: * mut u8): * mut u8;
-  function tn_channel_initialized(handle: * mut u8): * mut u8;
-  function tn_channel_capacity(handle: * mut u8): c_size;
-  function tn_channel_send_index_begin(handle: * mut u8): c_size;
-  function tn_channel_send_index_commit(handle: * mut u8): i32;
-  function tn_channel_receive_index_begin(handle: * mut u8): c_size;
-  function tn_channel_receive_index_commit(handle: * mut u8): i32;
-  function tn_channel_close(handle: * mut u8): i32;
-  function tn_channel_destroy(handle: * mut u8): i32;
+  function tn_mutex_create(): *mut u8;
+  function tn_mutex_lock(handle: *mut u8): i32;
+  function tn_mutex_unlock(handle: *mut u8): i32;
+  function tn_mutex_destroy(handle: *mut u8): i32;
+  function tn_rwlock_create(): *mut u8;
+  function tn_rwlock_read_lock(handle: *mut u8): i32;
+  function tn_rwlock_write_lock(handle: *mut u8): i32;
+  function tn_rwlock_unlock(handle: *mut u8): i32;
+  function tn_rwlock_destroy(handle: *mut u8): i32;
+  function tn_barrier_create(threshold: c_size): *mut u8;
+  function tn_barrier_wait(handle: *mut u8): i32;
+  function tn_barrier_destroy(handle: *mut u8): i32;
+  function tn_cond_create(): *mut u8;
+  function tn_cond_wait(condition: *mut u8, mutex: *mut u8): i32;
+  function tn_cond_signal(condition: *mut u8): i32;
+  function tn_cond_broadcast(condition: *mut u8): i32;
+  function tn_cond_destroy(condition: *mut u8): i32;
+  function tn_channel_create(elementSize: c_size, capacity: c_size): *mut u8;
+  function tn_channel_storage(handle: *mut u8): *mut u8;
+  function tn_channel_initialized(handle: *mut u8): *mut u8;
+  function tn_channel_capacity(handle: *mut u8): c_size;
+  function tn_channel_send_index_begin(handle: *mut u8): c_size;
+  function tn_channel_send_index_commit(handle: *mut u8): i32;
+  function tn_channel_receive_index_begin(handle: *mut u8): c_size;
+  function tn_channel_receive_index_commit(handle: *mut u8): i32;
+  function tn_channel_close(handle: *mut u8): i32;
+  function tn_channel_destroy(handle: *mut u8): i32;
 }
-function borrowMut<T>(pointer: * mut T): & mut T {
+function borrowMut<T>(pointer: *mut T): &mut T {
   unsafe {
-    return & mut * pointer;
+    return &mut * pointer;
   }
 }
-function moveElement<T>(pointer: * mut T, index: usize, initialized: * mut u8): T {
+function moveElement<T>(pointer: *mut T, index: usize, initialized: *mut u8): T {
   unsafe {
     return * pointer;
   }
 }
-function storeElement<T>(pointer: * mut T, index: usize, initialized: * mut u8, value: T): bool {
+function storeElement<T>(pointer: *mut T, index: usize, initialized: *mut u8, value: T): bool {
   return false;
 }
-function dropInitializedElements<T>(pointer: * mut T, length: usize, initialized: * mut u8): bool {
+function dropInitializedElements<T>(pointer: *mut T, length: usize, initialized: *mut u8): bool {
   return false;
 }
-export struct MutexGuard<T> {
-  private handle: * mut u8;
-  private value: & mut T;
+export struct MutexGuard<T > implements Disposable {
+  private handle: *mut u8;
+  private pointer: *mut T;
   private locked: bool;
-  drop(): void {
+  public [Symbol.dispose](): void {
+    this.release();
+  }
+  private release(): void {
     if (this.locked) {
       unsafe {
         tn_mutex_unlock(this.handle);
@@ -56,14 +61,14 @@ export struct MutexGuard<T> {
       this.locked = false;
     }
   }
-  public getMut(): & mut T {
+  public getMut(): &mut T {
     unsafe {
-      return & mut * this.value;
+      return &mut * this.pointer;
     }
   }
 }
 export class Mutex<T> {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private value: T;
   private closed: bool;
   public constructor(value: T) {
@@ -73,7 +78,7 @@ export class Mutex<T> {
     this.value = move value;
     this.closed = false;
   }
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.closed) {
       unsafe {
         tn_mutex_destroy(this.handle);
@@ -85,9 +90,9 @@ export class Mutex<T> {
       tn_mutex_lock(this.handle);
     }
     unsafe {
-      const pointer =( & this.value)as * mut T;
+      const pointer =( &this.value)as *mut T;
       return {
-        handle: this.handle, value: borrowMut<T>(pointer), locked: true
+        handle: this.handle, pointer: pointer, locked: true
       };
     }
   }
@@ -101,10 +106,10 @@ export class Mutex<T> {
   }
 }
 struct RwLock<T> {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private value: T;
   private closed: bool;
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.closed) {
       unsafe {
         tn_rwlock_destroy(this.handle);
@@ -128,7 +133,7 @@ struct RwLock<T> {
   }
   public destroy(): i32 {
     if (this.closed) {
-      return 0i32;
+      return 0;
     }
     unsafe {
       const status = tn_rwlock_destroy(this.handle);
@@ -138,16 +143,16 @@ struct RwLock<T> {
   }
 }
 export struct Channel<T> {
-  private handle: * mut u8;
-  private storage: * mut u8;
-  private initialized: * mut u8;
+  private handle: *mut u8;
+  private storage: *mut u8;
+  private initialized: *mut u8;
   private capacity: usize;
   private closed: bool;
   private destroyed: bool;
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.destroyed) {
       unsafe {
-        dropInitializedElements<T>(this.storage as * mut T, this.capacity, this.initialized);
+        dropInitializedElements<T>(this.storage as *mut T, this.capacity, this.initialized);
         tn_channel_destroy(this.handle);
       }
       this.destroyed = true;
@@ -155,14 +160,14 @@ export struct Channel<T> {
   }
   public send(value: T): i32 {
     if (this.closed || this.destroyed) {
-      return 32i32;
+      return 32;
     }
     unsafe {
       const index = tn_channel_send_index_begin(this.handle);
-      if (index === ~0usize) {
-        return 32i32;
+      if (index === ~0) {
+        return 32;
       }
-      storeElement<T>(this.storage as * mut T, index as usize, this.initialized, move value);
+      storeElement<T>(this.storage as *mut T, index as usize, this.initialized, move value);
       return tn_channel_send_index_commit(this.handle);
     }
   }
@@ -172,21 +177,21 @@ export struct Channel<T> {
     }
     unsafe {
       const index = tn_channel_receive_index_begin(this.handle);
-      if (index === ~0usize) {
+      if (index === ~0) {
         return undefined;
       }
-      const value = moveElement<T>(this.storage as * mut T, index as usize, this.initialized);
+      const value = moveElement<T>(this.storage as *mut T, index as usize, this.initialized);
       tn_channel_receive_index_commit(this.handle);
       return value;
     }
   }
   public close(): i32 {
     if (this.closed || this.destroyed) {
-      return 0i32;
+      return 0;
     }
     unsafe {
       const status = tn_channel_close(this.handle);
-      if (status === 0i32) {
+      if (status === 0) {
         this.closed = true;
       }
       return status;
@@ -194,12 +199,12 @@ export struct Channel<T> {
   }
   public destroy(): i32 {
     if (this.destroyed) {
-      return 0i32;
+      return 0;
     }
     unsafe {
-      dropInitializedElements<T>(this.storage as * mut T, this.capacity, this.initialized);
+      dropInitializedElements<T>(this.storage as *mut T, this.capacity, this.initialized);
       const status = tn_channel_destroy(this.handle);
-      if (status === 0i32) {
+      if (status === 0) {
         this.destroyed = true;
       }
       return status;
@@ -207,18 +212,18 @@ export struct Channel<T> {
   }
 }
 export struct Condition {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private closed: bool;
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.closed) {
       unsafe {
         tn_cond_destroy(this.handle);
       }
     }
   }
-  public wait(mutex: & mut u8): i32 {
+  public unsafe wait(mutex: &mut u8): i32 {
     unsafe {
-      return tn_cond_wait(this.handle, mutex as * mut u8);
+      return tn_cond_wait(this.handle, mutex as *mut u8);
     }
   }
   public signal(): i32 {
@@ -233,7 +238,7 @@ export struct Condition {
   }
   public destroy(): i32 {
     if (this.closed) {
-      return 0i32;
+      return 0;
     }
     unsafe {
       const status = tn_cond_destroy(this.handle);
@@ -243,9 +248,9 @@ export struct Condition {
   }
 }
 export struct Barrier {
-  private handle: * mut u8;
+  private handle: *mut u8;
   private closed: bool;
-  drop(): void {
+  [Symbol.dispose](): void {
     if (!this.closed) {
       unsafe {
         tn_barrier_destroy(this.handle);
@@ -259,7 +264,7 @@ export struct Barrier {
   }
   public destroy(): i32 {
     if (this.closed) {
-      return 0i32;
+      return 0;
     }
     unsafe {
       const status = tn_barrier_destroy(this.handle);
@@ -268,27 +273,12 @@ export struct Barrier {
     }
   }
 }
-function destroy<T>(mutex: & mut Mutex<T >): void {
-  mutex.destroy();
-}
 function rwlock<T>(value: T): RwLock<T> {
   unsafe {
     return {
       handle: tn_rwlock_create(), value: value, closed: false
     };
   }
-}
-function readLock<T>(lock: & mut RwLock<T >): i32 {
-  return lock.readLock();
-}
-function writeLock<T>(lock: & mut RwLock<T >): i32 {
-  return lock.writeLock();
-}
-function unlockReadWrite<T>(lock: & mut RwLock<T >): i32 {
-  return lock.unlock();
-}
-function destroyRwLock<T>(lock: & mut RwLock<T >): i32 {
-  return lock.destroy();
 }
 export function condition(): Condition {
   unsafe {
@@ -297,30 +287,12 @@ export function condition(): Condition {
     };
   }
 }
-export function wait(condition: & mut Condition, mutex: & mut u8): i32 {
-  return condition.wait(mutex);
-}
-export function signal(condition: & Condition): i32 {
-  return condition.signal();
-}
-export function broadcast(condition: & Condition): i32 {
-  return condition.broadcast();
-}
-export function destroyCondition(condition: & mut Condition): i32 {
-  return condition.destroy();
-}
 export function barrier(threshold: usize): Barrier {
   unsafe {
     return {
       handle: tn_barrier_create(threshold), closed: false
     };
   }
-}
-export function barrierWait(barrier: & mut Barrier): i32 {
-  return barrier.wait();
-}
-export function destroyBarrier(barrier: & mut Barrier): i32 {
-  return barrier.destroy();
 }
 export function channel<T>(elementSize: usize, capacity: usize): Channel<T> {
   unsafe {
@@ -329,16 +301,4 @@ export function channel<T>(elementSize: usize, capacity: usize): Channel<T> {
       handle: handle, storage: tn_channel_storage(handle), initialized: tn_channel_initialized(handle), capacity: tn_channel_capacity(handle), closed: false, destroyed: false
     };
   }
-}
-export function send<T>(channel: & mut Channel<T>, value: T): i32 {
-  return channel.send(move value);
-}
-export function receive<T>(channel: & mut Channel<T >): T | undefined {
-  return channel.receive();
-}
-export function close<T>(channel: & mut Channel<T >): i32 {
-  return channel.close();
-}
-export function destroyChannel<T>(channel: & mut Channel<T >): i32 {
-  return channel.destroy();
 }

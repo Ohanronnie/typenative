@@ -9,23 +9,23 @@ function main(): i32 {
   }
   {
     let values = new Array<string>({
-      capacity: 2usize,
+      capacity: 2,
     });
     values.push(String("first"));
     values.push(String("second"));
-    const borrowed = values.at(0usize);
+    const borrowed = values.at(0);
     if (borrowed === undefined || borrowed! !== "first") {
-      return 1i32;
+      return 1;
     }
-    const removed = values.removeAt(0usize);
-    if (removed === undefined || removed! !== "first" || values.length !== 1usize) {
-      return 2i32;
+    const removed = values.removeAt(0);
+    if (removed === undefined || removed! !== "first" || values.length !== 1) {
+      return 2;
     }
   }
   unsafe {
-    if (tn_runtime_free_count() !== 5u64) {
-      return 3i32;
+    if (tn_runtime_free_count() !== 5) {
+      return 3;
     }
   }
-  return 42i32;
+  return 42;
 }

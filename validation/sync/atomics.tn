@@ -1,70 +1,53 @@
-import { nullPointer } from "std/alloc";
-import { AtomicI32, MemoryOrder } from "std/core";
-import { JoinHandle, join, spawnRaw } from "std/thread";
+import { MemoryOrder, atomicCompareExchangeI32, atomicFetchAddI32, atomicLoadI32, atomicStoreI32 } from "std/core";
+import { JoinHandle, Thread, ThreadError } from "std/thread";
 
-struct WorkerArgs {
-  public counter: * mut u8;
-  public iterations: usize;
-}
-function worker(argument: * mut u8): * mut u8 {
+static mut counter: i32 = 0;
+function worker(): i32 {
   unsafe {
-    const args = *(argument as * const WorkerArgs);
-    let index: usize = 0usize;
-    while (index !== args.iterations) {
-      const counter = & mut *(args.counter as * mut AtomicI32);
-      counter.fetchAdd(1i32, MemoryOrder.Relaxed);
-      index = index + 1usize;
+    let index: usize = 0;
+    while (index !== 250000) {
+      atomicFetchAddI32(( &mut counter)as *mut i32, 1, MemoryOrder.Relaxed);
+      index = index + 1;
     }
   }
-  return nullPointer<u8>();
+  return 0;
 }
-function startWorker(argument: & mut WorkerArgs): JoinHandle<u8> {
+function startWorker(): JoinHandle<i32> {
+  return Thread.spawn<i32>(move() => worker());
+}
+function joinWorker(handle: &mut JoinHandle<i32 >): i32 throws ThreadError {
+  const result = try handle.join();
+  return result;
+}
+function main(): i32 throws ThreadError {
+  let first = startWorker();
+  let second = startWorker();
+  let third = startWorker();
+  let fourth = startWorker();
+  if (try joinWorker( &mut first) !== 0) {
+    return 1;
+  }
+  if (try joinWorker( &mut second) !== 0) {
+    return 2;
+  }
+  if (try joinWorker( &mut third) !== 0) {
+    return 3;
+  }
+  if (try joinWorker( &mut fourth) !== 0) {
+    return 4;
+  }
   unsafe {
-    return spawnRaw(worker as * mut u8,(argument as * mut WorkerArgs)as * mut u8);
+    if (atomicLoadI32(( &counter)as *const i32, MemoryOrder.Acquire) !== 1000000) {
+      return 5;
+    }
+    atomicStoreI32(( &mut counter)as *mut i32, 7, MemoryOrder.Release);
+    let expected = atomicLoadI32(( &counter)as *const i32, MemoryOrder.Acquire);
+    if (!atomicCompareExchangeI32(( &mut counter)as *mut i32,( &mut expected)as *mut i32, 9, MemoryOrder.AcquireRelease, MemoryOrder.Acquire)) {
+      return 6;
+    }
+    if (atomicLoadI32(( &counter)as *const i32, MemoryOrder.SeqCst) !== 9) {
+      return 7;
+    }
   }
-}
-function joinWorker(handle: & mut JoinHandle<u8>, result: & mut * mut u8): i32 {
-  unsafe {
-    return join(handle, result as * mut u8);
-  }
-}
-function makeArguments(counter: & mut AtomicI32): WorkerArgs {
-  unsafe {
-    return {
-      counter:(counter as * mut AtomicI32)as * mut u8, iterations: 250000usize,
-    };
-  }
-}
-function main(): i32 {
-  let counter = new AtomicI32(0i32);
-  let arguments = makeArguments( & mut counter);
-  let first = startWorker( & mut arguments);
-  let second = startWorker( & mut arguments);
-  let third = startWorker( & mut arguments);
-  let fourth = startWorker( & mut arguments);
-  let result: * mut u8 = nullPointer<u8>();
-  if (joinWorker( & mut first, & mut result) !== 0i32) {
-    return 1i32;
-  }
-  if (joinWorker( & mut second, & mut result) !== 0i32) {
-    return 2i32;
-  }
-  if (joinWorker( & mut third, & mut result) !== 0i32) {
-    return 3i32;
-  }
-  if (joinWorker( & mut fourth, & mut result) !== 0i32) {
-    return 4i32;
-  }
-  if (counter.load(MemoryOrder.Acquire) !== 1000000i32) {
-    return 5i32;
-  }
-  counter.store(7i32, MemoryOrder.Release);
-  let expected = counter.load(MemoryOrder.Acquire);
-  if (!counter.compareExchange(expected, 9i32, MemoryOrder.AcquireRelease, MemoryOrder.Acquire)) {
-    return 6i32;
-  }
-  if (counter.load(MemoryOrder.SeqCst) !== 9i32) {
-    return 7i32;
-  }
-  return 42i32;
+  return 42;
 }

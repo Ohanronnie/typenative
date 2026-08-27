@@ -100,7 +100,7 @@ pub fn check_static_requirements(program: &Program, facts: &OwnershipFacts) -> C
 impl OwnershipFacts {
     pub fn is_copy(&self, ty: &Type) -> bool {
         match ty {
-            Type::Primitive(_) | Type::RawPointer { .. } | Type::Function(_) => true,
+            Type::Primitive(_) | Type::RawPointer { .. } => true,
             Type::Reference { mutable, .. } => !mutable,
             Type::Optional(inner) | Type::Array(inner, _) => self.is_copy(inner),
             Type::Tuple(elements) | Type::Template(elements) => {
@@ -111,6 +111,7 @@ impl OwnershipFacts {
             Type::Promise { .. }
             | Type::String
             | Type::Str
+            | Type::Function(_)
             | Type::Slice(_)
             | Type::DynamicInterface(_, _)
             | Type::Generic(_)
@@ -122,7 +123,7 @@ impl OwnershipFacts {
 
     pub fn has_drop(&self, ty: &Type) -> bool {
         match ty {
-            Type::String => true,
+            Type::String | Type::Function(_) => true,
             Type::Nominal(id, _) => self.drop.contains(id),
             Type::Optional(inner) | Type::Array(inner, _) => self.has_drop(inner),
             Type::Promise {
@@ -243,9 +244,9 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
         let has_destructor = match &definition.data {
             DefinitionData::Struct { methods, .. }
             | DefinitionData::Enum { methods, .. }
-            | DefinitionData::Class { methods, .. } => {
-                methods.iter().any(|method| method.name == "drop")
-            }
+            | DefinitionData::Class { methods, .. } => methods
+                .iter()
+                .any(|method| method.name == "[Symbol.dispose]"),
             _ => false,
         };
         if has_destructor {
@@ -258,11 +259,12 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
     // not prove itself Copy, Send, or Sync.
     for definition in &program.definitions {
         let empty = match &definition.data {
-            DefinitionData::Struct { fields, .. } => fields.is_empty(),
+            DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => {
+                fields.is_empty()
+            }
             DefinitionData::Enum { variants, .. } => {
                 variants.iter().all(|variant| variant.fields.is_empty())
             }
-            DefinitionData::Class { fields, .. } => fields.is_empty(),
             _ => false,
         };
         if empty {
@@ -296,9 +298,9 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
             let has_destructor = match &definition.data {
                 DefinitionData::Struct { methods, .. }
                 | DefinitionData::Enum { methods, .. }
-                | DefinitionData::Class { methods, .. } => {
-                    methods.iter().any(|method| method.name == "drop")
-                }
+                | DefinitionData::Class { methods, .. } => methods
+                    .iter()
+                    .any(|method| method.name == "[Symbol.dispose]"),
                 _ => false,
             };
             let copyable = matches!(

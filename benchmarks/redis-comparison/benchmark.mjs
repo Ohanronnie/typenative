@@ -245,6 +245,8 @@ function buildTiming(name) {
     /^tn-timing phase=([^ ]+) micros=([0-9]+)$/gm,
   ))
     phaseMicroseconds[phase[1]] = Number.parseInt(phase[2], 10);
+  if (phaseMicroseconds["cache-hit"] !== undefined)
+    return { realSeconds, phaseMicroseconds, cacheHit: true };
   for (const required of [
     "module-check",
     "ownership",
