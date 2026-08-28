@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use tn_hir::{DefinitionData, GenericBound, Type, lower_program};
-use tn_hir::{ImportClause, load_module_graph};
+use tn_hir::{ImportClause, load_module_graph, load_module_graph_with_jsx_runtime};
 
 fn write(path: &Path, source: &str) {
     if let Some(parent) = path.parent() {
@@ -31,6 +31,46 @@ fn loads_the_intrinsic_string_prelude_without_an_import() {
     );
     let program = lower_program(graph).expect("lowered string prelude");
     assert!(program.intrinsic_type_declaration(&Type::String).is_some());
+}
+
+#[test]
+fn loads_tnx_modules_and_retains_the_configured_jsx_runtime() {
+    let directory = tempfile::tempdir().expect("temporary JSX module graph");
+    let root = directory.path();
+    let standard_library = root.join("std");
+    std::fs::create_dir(&standard_library).expect("standard-library directory");
+    write(
+        &root.join("main.tnx"),
+        "import { helper } from \"./helper\";\nfunction main(): void { helper(); }\n",
+    );
+    write(
+        &root.join("helper.tnx"),
+        "export function helper(): void {}\n",
+    );
+
+    let graph = load_module_graph_with_jsx_runtime(
+        root,
+        &root.join("main.tnx"),
+        &standard_library,
+        Some("@typenative/ui/jsx-runtime".into()),
+    )
+    .expect(".tnx module graph");
+    assert_eq!(
+        graph.jsx_runtime.as_deref(),
+        Some("@typenative/ui/jsx-runtime")
+    );
+    assert!(
+        graph
+            .modules
+            .iter()
+            .any(|module| module.path.ends_with("main.tnx"))
+    );
+    assert!(
+        graph
+            .modules
+            .iter()
+            .any(|module| module.path.ends_with("helper.tnx"))
+    );
 }
 
 #[test]

@@ -1,8 +1,8 @@
 use crate::{
-    Declaration, DeclarationId, DeclarationKind, Definition, DefinitionData, EnumField,
-    EnumVariant, Field, Function, GenericBound, GenericParameter, MemberId, Method, Module,
-    ModuleGraph, ModuleId, Namespace, Parameter, PrimitiveType, Program, ReceiverMode, Type,
-    Visibility,
+    BindingPattern, BindingPatternKind, BindingProperty, Declaration, DeclarationId,
+    DeclarationKind, Definition, DefinitionData, EnumField, EnumVariant, Field, Function,
+    GenericBound, GenericParameter, MemberId, Method, Module, ModuleGraph, ModuleId, Namespace,
+    Parameter, PrimitiveType, Program, ReceiverMode, Type, Visibility,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -568,22 +568,222 @@ fn parse_parameters(
         return parameters;
     }
     while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightParen) {
-        if cursor.kind() == Some(TokenKind::Ellipsis) {
-            cursor.bump();
-            break;
-        }
-        let Some((name, span)) = cursor.name(diagnostics) else {
+        cursor.eat(TokenKind::Ellipsis);
+        let Some(pattern) = parse_binding_pattern(cursor, diagnostics) else {
             break;
         };
         cursor.eat(TokenKind::Colon);
         let ty = parse_type(cursor, resolver, diagnostics);
-        parameters.push(Parameter { name, ty, span });
+        let default = if cursor.eat(TokenKind::Equal) {
+            skip_binding_default(cursor, &[TokenKind::Comma, TokenKind::RightParen])
+        } else {
+            pattern.default.clone()
+        };
+        let name = pattern
+            .primary_name()
+            .map_or_else(|| format!("$parameter{}", parameters.len()), str::to_owned);
+        let span = pattern.span.clone();
+        parameters.push(Parameter {
+            name,
+            ty,
+            pattern,
+            default,
+            span,
+        });
         if !cursor.eat(TokenKind::Comma) {
             break;
         }
     }
     cursor.eat(TokenKind::RightParen);
     parameters
+}
+
+fn parse_binding_pattern(
+    cursor: &mut Cursor<'_, '_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<BindingPattern> {
+    let start = cursor.token()?.range.start;
+    let mutable = cursor.eat(TokenKind::Mut);
+    let mut pattern = match cursor.kind()? {
+        TokenKind::Identifier => {
+            let (name, span) = cursor.name(diagnostics)?;
+            BindingPattern::identifier(name, false, span)
+        }
+        TokenKind::LeftBracket => {
+            cursor.bump();
+            let mut elements = Vec::new();
+            let mut rest = None;
+            while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBracket) {
+                if cursor.eat(TokenKind::Comma) {
+                    elements.push(None);
+                    continue;
+                }
+                if cursor.eat(TokenKind::Ellipsis) {
+                    rest = parse_binding_pattern(cursor, diagnostics).map(Box::new);
+                    if cursor.eat(TokenKind::Comma)
+                        && cursor.kind() != Some(TokenKind::RightBracket)
+                    {
+                        diagnostics.push(diag(
+                            "SEMANTIC_BINDING_REST_NOT_LAST",
+                            "rest binding must be last",
+                            &cursor.span(),
+                            "move the rest binding to the end of the pattern",
+                        ));
+                    }
+                    break;
+                }
+                let Some(mut element) = parse_binding_pattern(cursor, diagnostics) else {
+                    break;
+                };
+                if cursor.eat(TokenKind::Equal) {
+                    element.default =
+                        skip_binding_default(cursor, &[TokenKind::Comma, TokenKind::RightBracket]);
+                }
+                elements.push(Some(element));
+                if !cursor.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            cursor.eat(TokenKind::RightBracket);
+            BindingPattern {
+                kind: BindingPatternKind::Array { elements, rest },
+                default: None,
+                span: span_from_start(cursor, start),
+            }
+        }
+        TokenKind::LeftBrace => {
+            cursor.bump();
+            let mut properties = Vec::new();
+            let mut rest = None;
+            while cursor.kind().is_some() && cursor.kind() != Some(TokenKind::RightBrace) {
+                if cursor.eat(TokenKind::Ellipsis) {
+                    rest = parse_binding_pattern(cursor, diagnostics).map(Box::new);
+                    if cursor.eat(TokenKind::Comma) && cursor.kind() != Some(TokenKind::RightBrace)
+                    {
+                        diagnostics.push(diag(
+                            "SEMANTIC_BINDING_REST_NOT_LAST",
+                            "rest binding must be last",
+                            &cursor.span(),
+                            "move the rest binding to the end of the pattern",
+                        ));
+                    }
+                    break;
+                }
+                let property_start = cursor.token()?.range.start;
+                let (key, key_span) = cursor.name(diagnostics)?;
+                let mut property_pattern = if cursor.eat(TokenKind::Colon) {
+                    parse_binding_pattern(cursor, diagnostics)?
+                } else {
+                    BindingPattern::identifier(key.clone(), false, key_span.clone())
+                };
+                if cursor.eat(TokenKind::Equal) {
+                    property_pattern.default =
+                        skip_binding_default(cursor, &[TokenKind::Comma, TokenKind::RightBrace]);
+                }
+                let property_span = SourceSpan::new(
+                    &cursor.file,
+                    property_start..last_consumed_end(cursor).max(property_start),
+                    cursor.source,
+                );
+                properties.push(BindingProperty {
+                    key,
+                    pattern: property_pattern,
+                    span: property_span,
+                });
+                if !cursor.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            cursor.eat(TokenKind::RightBrace);
+            BindingPattern {
+                kind: BindingPatternKind::Object { properties, rest },
+                default: None,
+                span: span_from_start(cursor, start),
+            }
+        }
+        _ => {
+            diagnostics.push(diag(
+                "SEMANTIC_EXPECTED_BINDING_PATTERN",
+                "expected a binding pattern",
+                &cursor.span(),
+                "use an identifier, array pattern, or object pattern",
+            ));
+            return None;
+        }
+    };
+    if mutable {
+        make_pattern_mutable(&mut pattern);
+        pattern.span = SourceSpan::new(
+            &cursor.file,
+            start..pattern.span.byte_end as usize,
+            cursor.source,
+        );
+    }
+    Some(pattern)
+}
+
+fn make_pattern_mutable(pattern: &mut BindingPattern) {
+    match &mut pattern.kind {
+        BindingPatternKind::Identifier { mutable, .. } => *mutable = true,
+        BindingPatternKind::Array { elements, rest } => {
+            for element in elements.iter_mut().flatten() {
+                make_pattern_mutable(element);
+            }
+            if let Some(rest) = rest {
+                make_pattern_mutable(rest);
+            }
+        }
+        BindingPatternKind::Object { properties, rest } => {
+            for property in properties {
+                make_pattern_mutable(&mut property.pattern);
+            }
+            if let Some(rest) = rest {
+                make_pattern_mutable(rest);
+            }
+        }
+    }
+}
+
+fn skip_binding_default(cursor: &mut Cursor<'_, '_>, stops: &[TokenKind]) -> Option<SourceSpan> {
+    let start = cursor.token()?.range.start;
+    let mut delimiters = Vec::new();
+    let mut end = start;
+    while let Some(token) = cursor.token() {
+        if delimiters.is_empty() && stops.contains(&token.kind) {
+            break;
+        }
+        match token.kind {
+            TokenKind::LeftParen => delimiters.push(TokenKind::RightParen),
+            TokenKind::LeftBracket => delimiters.push(TokenKind::RightBracket),
+            TokenKind::LeftBrace => delimiters.push(TokenKind::RightBrace),
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                if delimiters.last() == Some(&token.kind) {
+                    delimiters.pop();
+                } else if delimiters.is_empty() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        end = token.range.end;
+        cursor.bump();
+    }
+    Some(SourceSpan::new(&cursor.file, start..end, cursor.source))
+}
+
+fn last_consumed_end(cursor: &Cursor<'_, '_>) -> usize {
+    cursor
+        .tokens
+        .get(cursor.index.saturating_sub(1))
+        .map_or(0, |token| token.range.end)
+}
+
+fn span_from_start(cursor: &Cursor<'_, '_>, start: usize) -> SourceSpan {
+    SourceSpan::new(
+        &cursor.file,
+        start..last_consumed_end(cursor).max(start),
+        cursor.source,
+    )
 }
 
 fn parse_effects(

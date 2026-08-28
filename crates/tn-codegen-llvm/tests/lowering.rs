@@ -97,6 +97,119 @@ fn verifies_checked_integer_control_flow_before_emission() {
 }
 
 #[test]
+fn emits_configured_external_runtime_calls_as_ordinary_calls() {
+    let integer = Type::Primitive(PrimitiveType::I32);
+    let signature = FunctionType {
+        parameters: vec![integer.clone()],
+        result: Box::new(integer.clone()),
+        effects: Vec::new(),
+        generics: Vec::new(),
+        is_async: false,
+        is_unsafe: false,
+    };
+    let body = Body {
+        declaration: DeclarationId(2),
+        member: None,
+        locals: vec![
+            local("value", integer.clone(), true),
+            local("result", integer, false),
+        ],
+        blocks: vec![
+            BasicBlock {
+                statements: vec![Statement {
+                    kind: StatementKind::StorageLive(LocalId(1)),
+                    span: span(),
+                }],
+                terminator: Terminator {
+                    kind: TerminatorKind::Call {
+                        function: Operand::Constant(Constant::ExternalFunction {
+                            symbol: "tn_test_runtime".into(),
+                            ty: Type::Function(signature.clone()),
+                        }),
+                        receiver: None,
+                        arguments: vec![Operand::Copy(Place::local(LocalId(0)))],
+                        destination: Some(Place::local(LocalId(1))),
+                        error_destination: None,
+                        success: BasicBlockId(1),
+                        error: None,
+                    },
+                    span: span(),
+                },
+            },
+            BasicBlock {
+                statements: vec![],
+                terminator: Terminator {
+                    kind: TerminatorKind::Return(Some(Operand::Move(Place::local(LocalId(1))))),
+                    span: span(),
+                },
+            },
+        ],
+        return_type: signature.result.as_ref().clone(),
+        effects: Vec::new(),
+    };
+    validate(&body).expect("external runtime call MIR");
+    let ir = tn_codegen_llvm::compile_to_llvm_ir(
+        "external-runtime",
+        &[lower_typed_errors(&body)],
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("external runtime call lowers to LLVM");
+    assert!(ir.contains("tn_test_runtime"));
+    assert!(ir.contains("call i32 @tn_test_runtime"));
+}
+
+#[test]
+fn lowers_array_binding_rest_to_a_slice_view() {
+    let integer = Type::Primitive(PrimitiveType::I32);
+    let source = Type::Array(Box::new(integer.clone()), 3);
+    let rest = Type::Slice(Box::new(integer.clone()));
+    let body = Body {
+        declaration: DeclarationId(3),
+        member: None,
+        locals: vec![
+            local("values", source, true),
+            local("rest", rest.clone(), false),
+        ],
+        blocks: vec![BasicBlock {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    Place::local(LocalId(1)),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "binding_rest".into(),
+                        operands: vec![
+                            Operand::Copy(Place::local(LocalId(0))),
+                            Operand::Constant(Constant::Integer {
+                                value: 1,
+                                ty: Type::Primitive(PrimitiveType::Usize),
+                            }),
+                        ],
+                        ty: rest.clone(),
+                    }),
+                ),
+                span: span(),
+            }],
+            terminator: Terminator {
+                kind: TerminatorKind::Return(Some(Operand::Move(Place::local(LocalId(1))))),
+                span: span(),
+            },
+        }],
+        return_type: rest,
+        effects: Vec::new(),
+    };
+    validate(&body).expect("array binding rest MIR");
+    let ir = tn_codegen_llvm::compile_to_llvm_ir(
+        "binding_rest",
+        &[lower_typed_errors(&body)],
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("array binding rest emits valid LLVM");
+    assert!(ir.contains("binding.rest.array.data"), "{ir}");
+    assert!(ir.contains("binding.rest.length"), "{ir}");
+}
+
+#[test]
 fn carries_inline_attribute_to_direct_llvm_function() {
     let body = Body {
         declaration: DeclarationId(77),

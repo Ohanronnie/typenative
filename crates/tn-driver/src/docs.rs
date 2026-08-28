@@ -12,10 +12,11 @@ use tn_hir::{Declaration, DefinitionData, Function, Method, Program, Type, Visib
 /// Returns diagnostics when the project cannot be loaded or semantically lowered, and a driver
 /// error if a resolved declaration is unexpectedly missing.
 pub fn generate_docs(project: &Project) -> Result<String, BuildError> {
-    let graph = tn_hir::load_module_graph(
+    let graph = tn_hir::load_module_graph_with_jsx_runtime(
         &project.root,
         &project.entry,
         &super::standard_library_path(),
+        project.config.jsx.as_ref().map(|jsx| jsx.runtime.clone()),
     )
     .map_err(|error| {
         if error.diagnostics().is_empty() {
@@ -25,6 +26,10 @@ pub fn generate_docs(project: &Project) -> Result<String, BuildError> {
         }
     })?;
     let program = tn_hir::lower_program(graph).map_err(BuildError::Diagnostics)?;
+    let jsx_diagnostics = crate::validate_jsx_runtime(&program);
+    if !jsx_diagnostics.is_empty() {
+        return Err(BuildError::Diagnostics(jsx_diagnostics));
+    }
     render_program(&program)
 }
 
@@ -382,6 +387,12 @@ fn type_display(program: &Program, ty: &Type) -> String {
                     .map(|(index, ty)| tn_hir::Parameter {
                         name: format!("arg{index}"),
                         ty: ty.clone(),
+                        pattern: tn_hir::BindingPattern::identifier(
+                            format!("arg{index}"),
+                            false,
+                            tn_diagnostics::SourceSpan::new("<doc>", 0..0, ""),
+                        ),
+                        default: None,
                         span: tn_diagnostics::SourceSpan::new("<doc>", 0..0, ""),
                     })
                     .collect(),

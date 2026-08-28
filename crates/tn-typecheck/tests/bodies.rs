@@ -10,12 +10,658 @@ fn checked(source: &str) -> tn_typecheck::BodyCheckResult {
     tn_typecheck::check_bodies(&program)
 }
 
+fn checked_tnx(source: &str) -> (tn_hir::Program, tn_typecheck::BodyCheckResult) {
+    let directory = tempfile::tempdir().expect("temporary JSX fixture");
+    let path = directory.path().join("main.tnx");
+    let standard_library = directory.path().join("std");
+    std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
+    std::fs::write(&path, source).expect("write JSX fixture");
+    let graph = tn_hir::load_module_graph_with_jsx_runtime(
+        directory.path(),
+        &path,
+        &standard_library,
+        Some("@typenative/ui/jsx-runtime".into()),
+    )
+    .expect("load JSX fixture graph");
+    let program = tn_hir::lower_program(graph).expect("lower JSX fixture declarations");
+    let checked = tn_typecheck::check_bodies(&program);
+    (program, checked)
+}
+
 fn conditions(source: &str) -> Vec<String> {
     checked(source)
         .diagnostics
         .into_iter()
         .map(|diagnostic| diagnostic.condition.as_str().to_owned())
         .collect()
+}
+
+fn conditions_tnx(source: &str) -> Vec<String> {
+    checked_tnx(source)
+        .1
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.condition.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn supports_general_destructured_parameter_bindings() {
+    let source = r#"
+struct ProfileProps {
+  public name: &str;
+  public enabled: bool;
+}
+function profile({ name, enabled = true, ...rest }: ProfileProps): void {
+  name;
+  enabled;
+  rest;
+}
+function nested([first, [second, third]]: (i32, (i32, i32))): void {
+  first;
+  second;
+  third;
+}
+"#;
+    let result = checked(source);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let profile = result
+        .bodies
+        .iter()
+        .find(|body| body.locals.iter().any(|local| local.name == "name"))
+        .expect("profile body");
+    assert!(profile.locals.iter().any(|local| local.name == "enabled"));
+    assert!(profile.locals.iter().any(|local| local.name == "rest"));
+    assert_eq!(profile.binding_patterns.len(), 1);
+    assert!(profile.binding_patterns[0].bindings.iter().any(|binding| {
+        binding
+            .projection
+            .iter()
+            .any(|projection| matches!(projection, tn_hir::HirPatternProjection::Rest { .. }))
+    }));
+    assert!(
+        profile.binding_patterns[0]
+            .bindings
+            .iter()
+            .any(|binding| binding.default.is_some())
+    );
+    let default_start = source.find("true").expect("parameter default");
+    assert!(profile.expressions.iter().any(|expression| {
+        expression.origin.byte_start == default_start as u32
+            && expression.origin.byte_end == (default_start + 4) as u32
+    }));
+    let nested = result
+        .bodies
+        .iter()
+        .find(|body| body.locals.iter().any(|local| local.name == "second"))
+        .expect("nested body");
+    assert_eq!(nested.binding_patterns.len(), 1);
+    assert!(
+        nested.binding_patterns[0]
+            .bindings
+            .iter()
+            .any(|binding| binding.projection.len() == 2)
+    );
+}
+
+#[test]
+fn supports_destructured_local_bindings() {
+    let result = checked(
+        r#"
+struct Pair {
+  public first: i32;
+  public second: i32;
+}
+
+function object_local(input: Pair): i32 {
+  const { first, second: alias } = input;
+  return first + alias;
+}
+function array_local(input: (i32, i32)): i32 {
+  let [left, right] = input;
+  return left + right;
+}
+function mutable_array_local(input: (i32, i32)): i32 {
+  const mut [left, right] = input;
+  left = right;
+  return left;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.bodies.iter().any(|body| {
+        body.binding_patterns.iter().any(|pattern| {
+            pattern.bindings.iter().any(|binding| {
+                binding
+                    .projection
+                    .contains(&tn_hir::HirPatternProjection::Field(1))
+            })
+        })
+    }));
+    assert!(result.bodies.iter().any(|body| {
+        body.binding_patterns.iter().any(|pattern| {
+            pattern.bindings.iter().any(|binding| {
+                binding
+                    .projection
+                    .contains(&tn_hir::HirPatternProjection::Index(1))
+            })
+        })
+    }));
+}
+
+#[test]
+fn checks_destructuring_defaults_and_tracks_their_spans() {
+    let result = checked(
+        r#"
+function defaults(input: (i32, bool)): i32 {
+  const [number = 1, flag = 2] = input;
+  return number;
+}
+"#,
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.condition.as_str() == "TYPE_MISMATCH")
+    );
+    let body = result
+        .bodies
+        .iter()
+        .find(|body| body.locals.iter().any(|local| local.name == "number"))
+        .expect("destructuring default body");
+    assert!(
+        body.binding_patterns[0]
+            .bindings
+            .iter()
+            .any(|binding| binding.default.is_some())
+    );
+}
+
+#[test]
+fn lowers_optional_destructuring_defaults_through_control_flow() {
+    let (program, result) = {
+        let directory = tempfile::tempdir().expect("temporary optional default fixture");
+        let path = directory.path().join("main.tn");
+        let standard_library = directory.path().join("std");
+        std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
+        std::fs::write(
+            &path,
+            r#"
+struct Config {
+  public enabled?: bool;
+}
+function main(input: Config): bool {
+  const { enabled = true } = input;
+  return enabled;
+}
+"#,
+        )
+        .expect("write optional default fixture");
+        let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+            .expect("load optional default graph");
+        let program = tn_hir::lower_program(graph).expect("lower optional default declarations");
+        let result = tn_typecheck::check_bodies(&program);
+        (program, result)
+    };
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let bodies = tn_typecheck::lower_mir(&program, &result.bodies);
+    let body = bodies
+        .iter()
+        .find(|body| body.return_type == tn_hir::Type::Primitive(tn_hir::PrimitiveType::Bool))
+        .expect("optional default body");
+    assert!(
+        body.blocks.iter().any(|block| {
+            matches!(block.terminator.kind, tn_mir::TerminatorKind::Switch { .. })
+        })
+    );
+    tn_mir::validate(body).expect("optional default MIR");
+}
+
+#[test]
+fn lowers_parameter_destructuring_defaults_from_the_function_header() {
+    let (program, result) = {
+        let directory = tempfile::tempdir().expect("temporary parameter default fixture");
+        let path = directory.path().join("main.tn");
+        let standard_library = directory.path().join("std");
+        std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
+        std::fs::write(
+            &path,
+            r#"
+struct Config {
+  public enabled?: bool;
+}
+function main({ enabled = true }: Config): bool {
+  return enabled;
+}
+"#,
+        )
+        .expect("write parameter default fixture");
+        let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+            .expect("load parameter default graph");
+        let program = tn_hir::lower_program(graph).expect("lower parameter default declarations");
+        let result = tn_typecheck::check_bodies(&program);
+        (program, result)
+    };
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let main = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("main"))
+        .expect("main declaration")
+        .id;
+    let body = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == main)
+        .expect("parameter default MIR");
+    assert!(
+        body.blocks
+            .iter()
+            .any(|block| matches!(block.terminator.kind, tn_mir::TerminatorKind::Switch { .. }))
+    );
+    assert!(body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                tn_mir::StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), tn_mir::Rvalue::Use(tn_mir::Operand::Constant(tn_mir::Constant::Bool(true))))
+            )
+        })
+    }));
+    tn_mir::validate(&body).expect("parameter default MIR validates");
+}
+
+#[test]
+fn preserves_parameter_roots_when_patterns_are_mixed_with_plain_parameters() {
+    let (program, result) = {
+        let directory = tempfile::tempdir().expect("temporary parameter fixture");
+        let path = directory.path().join("main.tn");
+        let standard_library = directory.path().join("std");
+        std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
+        std::fs::write(
+            &path,
+            r#"
+struct Pair {
+  public first: i32;
+}
+function mixed({ first }: Pair, value: i32): i32 {
+  return first + value;
+}
+"#,
+        )
+        .expect("write parameter fixture");
+        let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+            .expect("load parameter fixture graph");
+        let program = tn_hir::lower_program(graph).expect("lower parameter fixture declarations");
+        let result = tn_typecheck::check_bodies(&program);
+        (program, result)
+    };
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let body = result
+        .bodies
+        .iter()
+        .find(|body| body.parameter_roots.len() == 2)
+        .expect("mixed parameter body");
+    let mixed = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("mixed"))
+        .expect("mixed declaration")
+        .id;
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies);
+    let lowered = lowered
+        .iter()
+        .find(|body| body.declaration == mixed)
+        .expect("mixed parameter MIR");
+    let arguments = lowered.locals.iter().filter(|local| local.argument).count();
+    assert_eq!(arguments, body.parameter_roots.len());
+}
+
+#[test]
+fn supports_destructured_for_bindings_in_hir_and_mir() {
+    let (program, result) = {
+        let directory = tempfile::tempdir().expect("temporary loop fixture");
+        let path = directory.path().join("main.tn");
+        let standard_library = directory.path().join("std");
+        std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
+        std::fs::write(
+            &path,
+            r#"
+struct Pair {
+  public first: i32;
+  public second: i32;
+}
+function main(values: [Pair; 1usize]): i32 {
+  for (const { first, second: alias } of values) {
+    first;
+    alias;
+  }
+  return 0;
+}
+"#,
+        )
+        .expect("write loop fixture");
+        let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+            .expect("load loop fixture graph");
+        let program = tn_hir::lower_program(graph).expect("lower loop fixture declarations");
+        let result = tn_typecheck::check_bodies(&program);
+        (program, result)
+    };
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.bodies.iter().any(|body| {
+        body.binding_patterns.iter().any(|pattern| {
+            pattern.bindings.iter().any(|binding| {
+                binding
+                    .projection
+                    .contains(&tn_hir::HirPatternProjection::Field(1))
+            })
+        })
+    }));
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies);
+    for body in lowered {
+        tn_mir::validate(&body).unwrap_or_else(|errors| panic!("{errors:?}\n{body}"));
+    }
+}
+
+#[test]
+fn typechecks_typed_jsx_and_retains_dedicated_hir() {
+    let (program, result) = checked_tnx(
+        r#"
+struct TextProps {
+  public value: &str;
+}
+struct Element {}
+function Text(props: TextProps): Element { return new Element(); }
+function App(): Element {
+  return <Text value="Hello" key="greeting" />;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let body = result
+        .bodies
+        .iter()
+        .find(|body| body.owner == tn_hir::BodyOwner::Declaration(app))
+        .expect("App body");
+    assert_eq!(body.jsx_elements.len(), 1);
+    let element = &body.jsx_elements[0];
+    assert!(!element.fragment);
+    assert!(element.component.is_some());
+    assert!(element.key.is_some());
+    assert!(
+        element
+            .properties
+            .iter()
+            .any(|property| property.name.as_deref() == Some("value"))
+    );
+    assert!(
+        body.expressions
+            .iter()
+            .any(|expression| matches!(expression.kind, tn_hir::HirExpressionKind::Jsx(_)))
+    );
+    let value = element
+        .properties
+        .iter()
+        .find(|property| property.name.as_deref() == Some("value"))
+        .expect("value property");
+    assert!(matches!(
+        &value.value,
+        tn_hir::HirJsxValue::Expression(expression)
+            if body
+                .expressions
+                .iter()
+                .find(|candidate| candidate.id == *expression)
+                .is_some_and(|candidate| candidate.origin.byte_end > candidate.origin.byte_start)
+    ));
+}
+
+#[test]
+fn validates_jsx_ref_targets_against_the_produced_element_type() {
+    let valid = conditions_tnx(
+        r#"
+struct Element {}
+struct Ref<T> { public current: T; }
+struct Props {}
+function Text(props: Props): Element { return new Element(); }
+function valid(reference: Ref<Element>): Element {
+  return <Text ref={reference} />;
+}
+"#,
+    );
+    assert!(valid.is_empty(), "{valid:?}");
+
+    let invalid = conditions_tnx(
+        r#"
+struct Element {}
+struct Props {}
+function Text(props: Props): Element { return new Element(); }
+function invalid(): Element {
+  return <Text ref={1} />;
+}
+"#,
+    );
+    assert!(
+        invalid.contains(&"TYPE_JSX_INVALID_REF".into()),
+        "{invalid:?}"
+    );
+}
+
+#[test]
+fn resolves_component_member_expressions_for_jsx() {
+    let (program, result) = checked_tnx(
+        r#"
+struct TextProps {
+  public value: &str;
+}
+struct Element {}
+class Components {
+  public static Text(props: TextProps): Element { return new Element(); }
+}
+function App(): Element {
+  return <Components.Text value="Hello" />;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let body = result
+        .bodies
+        .iter()
+        .find(|body| body.owner == tn_hir::BodyOwner::Declaration(app))
+        .expect("App body");
+    let component_id = body.jsx_elements[0]
+        .component
+        .expect("component expression");
+    assert!(body.expressions.iter().any(|expression| {
+        expression.id == component_id
+            && matches!(
+                expression.resolution,
+                Some(tn_hir::ResolvedValue::Member(_))
+            )
+    }));
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies);
+    let lowered = lowered
+        .iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    tn_mir::validate(lowered).expect("member JSX lowers to valid MIR");
+}
+
+#[test]
+fn lowers_typed_jsx_spreads_in_source_order() {
+    let (program, result) = checked_tnx(
+        r#"
+struct Props {
+  public first: i32;
+  public second: i32;
+}
+struct Element {}
+function Text(props: Props): Element { return new Element(); }
+function App(base: Props): Element {
+  return <Text {...base} first={1} />;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    tn_mir::validate(&lowered).expect("spread JSX lowers to valid MIR");
+    assert!(lowered.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                tn_mir::StatementKind::Assign(
+                    _,
+                    value,
+                ) if matches!(value.as_ref(), tn_mir::Rvalue::Aggregate { fields, .. } if fields.len() == 2)
+            )
+        })
+    }));
+}
+
+#[test]
+fn diagnoses_jsx_property_type_at_the_attribute_value() {
+    let source = r#"
+struct TextProps {
+  public enabled: bool;
+}
+struct Element {}
+function Text(props: TextProps): Element { return new Element(); }
+function App(): Element {
+  return <Text enabled="yes" />;
+}
+"#;
+    let (_, result) = checked_tnx(source);
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.condition.as_str() == "TYPE_MISMATCH")
+        .expect("JSX property type diagnostic");
+    let value_start = source.find("\"yes\"").expect("attribute value");
+    assert_eq!(diagnostic.primary.span.byte_start, value_start as u32);
+    assert_eq!(diagnostic.primary.span.byte_end, (value_start + 5) as u32);
+}
+
+#[test]
+fn lowers_jsx_to_an_ordinary_configured_runtime_call() {
+    let (program, result) = checked_tnx(
+        r#"
+struct TextProps {
+  public value: &str;
+}
+struct Element {}
+function Text(props: TextProps): Element { return new Element(); }
+function App(): Element {
+  return <Text value="Hello" />;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let bodies = tn_typecheck::lower_mir(&program, &result.bodies);
+    let body = bodies
+        .iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    assert!(body.blocks.iter().any(|block| {
+        matches!(
+            &block.terminator.kind,
+            tn_mir::TerminatorKind::Call {
+                function: tn_mir::Operand::Constant(tn_mir::Constant::ExternalFunction { symbol, .. }),
+                ..
+            } if symbol.ends_with("_jsx")
+        )
+    }));
+    assert!(!body.blocks.iter().flat_map(|block| &block.statements).any(|statement| {
+        matches!(
+            &statement.kind,
+            tn_mir::StatementKind::Assign(_, value)
+                if matches!(value.as_ref(), tn_mir::Rvalue::RawOperation { operation, .. } if operation.contains("jsx"))
+        )
+    }));
+    tn_mir::validate(body).expect("JSX lowers to valid ordinary MIR");
+}
+
+#[test]
+fn lowers_destructured_bindings_to_ordinary_mir_projections() {
+    let directory = tempfile::tempdir().expect("temporary MIR fixture");
+    let path = directory.path().join("main.tn");
+    let standard_library = directory.path().join("std");
+    std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
+    std::fs::write(
+        &path,
+        r#"
+struct Pair {
+  public first: i32;
+  public second: i32;
+}
+function main(input: Pair): i32 {
+  const { first, second: alias } = input;
+  return first + alias;
+}
+"#,
+    )
+    .expect("write MIR fixture");
+    let graph = tn_hir::load_module_graph(directory.path(), &path, &standard_library)
+        .expect("load MIR fixture graph");
+    let program = tn_hir::lower_program(graph).expect("lower MIR fixture declarations");
+    let checked = tn_typecheck::check_bodies(&program);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let bodies = tn_typecheck::lower_mir(&program, &checked.bodies);
+    let body = bodies.first().expect("lowered main body");
+    assert!(
+        body.blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .any(|statement| {
+                matches!(
+                    statement.kind,
+                    tn_mir::StatementKind::Assign(_, ref rvalue)
+                        if matches!(**rvalue, tn_mir::Rvalue::Use(tn_mir::Operand::Move(ref place))
+                            if place.projection.iter().any(|projection| matches!(
+                                projection,
+                                tn_mir::Projection::Field { .. }
+                            )))
+                )
+            })
+    );
+    tn_mir::validate(body).expect("destructuring MIR validates");
 }
 
 fn checked_with_workspace_standard_library(

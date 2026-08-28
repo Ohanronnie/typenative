@@ -344,7 +344,7 @@ fn source_files(path: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
                 pending.push(entry_path);
             } else if entry_path
                 .extension()
-                .is_some_and(|extension| extension == "tn")
+                .is_some_and(|extension| matches!(extension.to_str(), Some("tn" | "tnx")))
             {
                 files.push(entry_path);
             }

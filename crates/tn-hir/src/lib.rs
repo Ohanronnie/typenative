@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tn_diagnostics::SourceSpan;
 
-pub use module_graph::{ModuleGraphError, load_module_graph};
+pub use module_graph::{ModuleGraphError, load_module_graph, load_module_graph_with_jsx_runtime};
 pub use semantic::lower_program;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -123,6 +123,7 @@ pub struct ModuleGraph {
     pub root: PathBuf,
     pub standard_library: PathBuf,
     pub runtime_root: Option<PathBuf>,
+    pub jsx_runtime: Option<String>,
     pub entry: ModuleId,
     pub modules: Vec<Module>,
 }
@@ -259,9 +260,71 @@ pub enum GenericBound {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BindingPattern {
+    pub kind: BindingPatternKind,
+    pub default: Option<SourceSpan>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum BindingPatternKind {
+    Identifier {
+        name: String,
+        mutable: bool,
+    },
+    Array {
+        elements: Vec<Option<BindingPattern>>,
+        rest: Option<Box<BindingPattern>>,
+    },
+    Object {
+        properties: Vec<BindingProperty>,
+        rest: Option<Box<BindingPattern>>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BindingProperty {
+    pub key: String,
+    pub pattern: BindingPattern,
+    pub span: SourceSpan,
+}
+
+impl BindingPattern {
+    pub fn identifier(name: String, mutable: bool, span: SourceSpan) -> Self {
+        Self {
+            kind: BindingPatternKind::Identifier { name, mutable },
+            default: None,
+            span,
+        }
+    }
+
+    pub fn primary_name(&self) -> Option<&str> {
+        match &self.kind {
+            BindingPatternKind::Identifier { name, .. } if name != "_" => Some(name),
+            BindingPatternKind::Array { elements, rest } => elements
+                .iter()
+                .flatten()
+                .find_map(Self::primary_name)
+                .or_else(|| rest.as_deref().and_then(Self::primary_name)),
+            BindingPatternKind::Object { properties, rest } => properties
+                .iter()
+                .find_map(|property| property.pattern.primary_name())
+                .or_else(|| rest.as_deref().and_then(Self::primary_name)),
+            BindingPatternKind::Identifier { .. } => None,
+        }
+    }
+
+    pub fn is_simple_identifier(&self) -> bool {
+        matches!(self.kind, BindingPatternKind::Identifier { .. })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Parameter {
     pub name: String,
     pub ty: Type,
+    pub pattern: BindingPattern,
+    pub default: Option<SourceSpan>,
     pub span: SourceSpan,
 }
 
@@ -413,6 +476,57 @@ pub struct HirClosureId(pub u32);
 pub struct HirTemplateId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirBindingPatternId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct HirJsxId(pub u32);
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirBindingPattern {
+    pub id: HirBindingPatternId,
+    pub root: HirLocalId,
+    pub bindings: Vec<HirPatternBinding>,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirJsxElement {
+    pub id: HirJsxId,
+    pub component: Option<HirExpressionId>,
+    pub properties: Vec<HirJsxProperty>,
+    pub children: Vec<HirJsxChild>,
+    pub properties_type: Type,
+    pub element_type: Type,
+    pub key: Option<HirExpressionId>,
+    pub reference: Option<HirExpressionId>,
+    pub fragment: bool,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HirJsxProperty {
+    pub name: Option<String>,
+    pub value: HirJsxValue,
+    pub spread: bool,
+    pub origin: SourceSpan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HirJsxValue {
+    Expression(HirExpressionId),
+    Boolean(bool),
+    String(String),
+    Children(Vec<HirJsxChild>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HirJsxChild {
+    Element(HirJsxId),
+    Expression(HirExpressionId),
+    Text { value: String, origin: SourceSpan },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum ResolvedValue {
     Local(HirLocalId),
     Declaration(DeclarationId),
@@ -492,6 +606,7 @@ pub enum HirExpressionKind {
     Cast,
     Switch,
     Await,
+    Jsx(HirJsxId),
     Error,
 }
 
@@ -568,12 +683,15 @@ pub struct HirPatternBinding {
     pub local: HirLocalId,
     pub ty: Type,
     pub projection: Vec<HirPatternProjection>,
+    pub default: Option<SourceSpan>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum HirPatternProjection {
     Variant(MemberId),
     Field(u32),
+    Index(u32),
+    Rest { start: u32 },
     OptionalPayload,
 }
 
@@ -590,8 +708,11 @@ pub struct HirPattern {
 pub struct BodyHir {
     pub owner: BodyOwner,
     pub locals: Vec<HirLocal>,
+    pub parameter_roots: Vec<HirLocalId>,
     pub expressions: Vec<HirExpression>,
     pub patterns: Vec<HirPattern>,
+    pub binding_patterns: Vec<HirBindingPattern>,
+    pub jsx_elements: Vec<HirJsxElement>,
     pub statements: Vec<HirStatement>,
     pub closures: Vec<HirClosure>,
     pub templates: Vec<HirTemplate>,

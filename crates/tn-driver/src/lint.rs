@@ -8,7 +8,12 @@ use tn_syntax::lex;
 pub fn lint_project(project: &Project) -> CheckOutput {
     let mut output = crate::check_project(project);
     let standard_library = super::standard_library_path();
-    let graph = match tn_hir::load_module_graph(&project.root, &project.entry, &standard_library) {
+    let graph = match tn_hir::load_module_graph_with_jsx_runtime(
+        &project.root,
+        &project.entry,
+        &standard_library,
+        project.config.jsx.as_ref().map(|jsx| jsx.runtime.clone()),
+    ) {
         Ok(graph) => graph,
         Err(error) => {
             output.diagnostics.extend_from_slice(error.diagnostics());

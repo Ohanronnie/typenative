@@ -39,6 +39,17 @@ impl SyntaxKind {
     pub const ENUM_VARIANT: Self = Self(1_028);
     pub const SWITCH_ARM: Self = Self(1_029);
     pub const TEST_REGISTRATION: Self = Self(1_030);
+    pub const BINDING_PATTERN: Self = Self(1_031);
+    pub const BINDING_PROPERTY: Self = Self(1_032);
+    pub const JSX_ELEMENT: Self = Self(1_033);
+    pub const JSX_FRAGMENT: Self = Self(1_034);
+    pub const JSX_OPENING_ELEMENT: Self = Self(1_035);
+    pub const JSX_CLOSING_ELEMENT: Self = Self(1_036);
+    pub const JSX_NAME: Self = Self(1_037);
+    pub const JSX_ATTRIBUTE: Self = Self(1_038);
+    pub const JSX_SPREAD_ATTRIBUTE: Self = Self(1_039);
+    pub const JSX_EXPRESSION_CONTAINER: Self = Self(1_040);
+    pub const JSX_TEXT: Self = Self(1_041);
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -96,6 +107,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Parse {
         cursor: 0,
         eof_offset: lexed.source.len(),
         recursion_depth: 0,
+        jsx_enabled: file.ends_with(".tnx"),
         builder: GreenNodeBuilder::new(),
         diagnostics: lexed.diagnostics,
     };
@@ -113,6 +125,7 @@ struct Parser<'source, 'tokens> {
     cursor: usize,
     eof_offset: usize,
     recursion_depth: u16,
+    jsx_enabled: bool,
     builder: GreenNodeBuilder<'static>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -802,9 +815,12 @@ impl Parser<'_, '_> {
         self.expect(TokenKind::LeftParen);
         if !self.at(TokenKind::RightParen) {
             loop {
-                self.expect(TokenKind::Identifier);
+                self.binding_pattern();
                 self.expect(TokenKind::Colon);
                 self.ty();
+                if self.eat(TokenKind::Equal) {
+                    self.expression();
+                }
                 if !self.eat(TokenKind::Comma) || self.at(TokenKind::RightParen) {
                     break;
                 }
@@ -1009,7 +1025,7 @@ impl Parser<'_, '_> {
             Some(TokenKind::LeftBrace) => self.block(),
             Some(TokenKind::Const | TokenKind::Let) => {
                 self.bump();
-                self.expect(TokenKind::Identifier);
+                self.binding_pattern();
                 if self.eat(TokenKind::Colon) {
                     self.ty();
                 }
@@ -1049,7 +1065,7 @@ impl Parser<'_, '_> {
                 if !self.eat(TokenKind::Const) {
                     self.expect(TokenKind::Let);
                 }
-                self.expect(TokenKind::Identifier);
+                self.binding_pattern();
                 self.expect(TokenKind::Of);
                 self.expression();
                 self.expect(TokenKind::RightParen);
@@ -1180,6 +1196,10 @@ impl Parser<'_, '_> {
     fn primary_expression(&mut self) {
         if self.at(TokenKind::TemplateLiteral) {
             self.template_literal();
+            return;
+        }
+        if self.jsx_enabled && self.looks_like_jsx_start() {
+            self.jsx_element();
             return;
         }
         if self.at_literal()
@@ -1403,6 +1423,217 @@ impl Parser<'_, '_> {
         self.expect(TokenKind::RightBrace);
     }
 
+    fn jsx_element(&mut self) {
+        self.start(SyntaxKind::JSX_ELEMENT);
+        if self.nth(1) == Some(TokenKind::Greater) {
+            self.jsx_fragment();
+        } else {
+            self.jsx_named_element();
+        }
+        self.finish();
+    }
+
+    fn jsx_named_element(&mut self) {
+        self.start(SyntaxKind::JSX_OPENING_ELEMENT);
+        self.expect(TokenKind::Less);
+        let opening_name = self.jsx_name();
+        while self.current().is_some()
+            && !matches!(self.current(), Some(TokenKind::Greater | TokenKind::Slash))
+        {
+            if self.at(TokenKind::LeftBrace) && self.nth(1) == Some(TokenKind::Ellipsis) {
+                self.jsx_spread_attribute();
+            } else if self.at_any(&[TokenKind::Identifier, TokenKind::From]) {
+                self.jsx_attribute();
+            } else {
+                self.error_and_recover(
+                    "SYNTAX_JSX_EXPECTED_ATTRIBUTE",
+                    "expected a JSX attribute",
+                    &[TokenKind::Greater, TokenKind::Slash],
+                );
+            }
+        }
+        let self_closing = self.eat(TokenKind::Slash);
+        self.expect(TokenKind::Greater);
+        self.finish();
+        if self_closing {
+            return;
+        }
+
+        while self.current().is_some() {
+            let before = self.cursor;
+            if self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash) {
+                break;
+            }
+            if self.at(TokenKind::LeftBrace) {
+                self.jsx_expression_container();
+            } else if self.jsx_child_starts_element() {
+                self.jsx_element();
+            } else {
+                self.jsx_text();
+            }
+            self.ensure_progress(before);
+        }
+
+        self.start(SyntaxKind::JSX_CLOSING_ELEMENT);
+        let closing_start = self.current_range().start;
+        self.expect(TokenKind::Less);
+        self.expect(TokenKind::Slash);
+        let closing_name = self.jsx_name();
+        if let (Some(opening_name), Some(closing_name)) = (opening_name, closing_name)
+            && opening_name != closing_name
+        {
+            self.error_at(
+                "SYNTAX_JSX_TAG_MISMATCH",
+                "JSX closing tag does not match its opening tag",
+                closing_start..self.current_range().start,
+                "close the element with the same component name",
+            );
+        }
+        self.expect(TokenKind::Greater);
+        self.finish();
+    }
+
+    fn jsx_fragment(&mut self) {
+        self.start(SyntaxKind::JSX_FRAGMENT);
+        self.expect(TokenKind::Less);
+        self.expect(TokenKind::Greater);
+        while self.current().is_some() {
+            let before = self.cursor;
+            if self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash) {
+                break;
+            }
+            if self.at(TokenKind::LeftBrace) {
+                self.jsx_expression_container();
+            } else if self.jsx_child_starts_element() {
+                self.jsx_element();
+            } else {
+                self.jsx_text();
+            }
+            self.ensure_progress(before);
+        }
+        self.start(SyntaxKind::JSX_CLOSING_ELEMENT);
+        self.expect(TokenKind::Less);
+        self.expect(TokenKind::Slash);
+        self.expect(TokenKind::Greater);
+        self.finish();
+        self.finish();
+    }
+
+    fn jsx_attribute(&mut self) {
+        self.start(SyntaxKind::JSX_ATTRIBUTE);
+        self.jsx_name();
+        if self.eat(TokenKind::Equal) {
+            match self.current() {
+                Some(TokenKind::StringLiteral) => {
+                    self.bump();
+                }
+                Some(TokenKind::LeftBrace) => self.jsx_expression_container(),
+                _ => self.error_current(
+                    "SYNTAX_JSX_EXPECTED_ATTRIBUTE_VALUE",
+                    "expected a JSX attribute value",
+                    "use a quoted string or a braced expression",
+                ),
+            }
+        }
+        self.finish();
+    }
+
+    fn jsx_spread_attribute(&mut self) {
+        self.start(SyntaxKind::JSX_SPREAD_ATTRIBUTE);
+        self.expect(TokenKind::LeftBrace);
+        self.expect(TokenKind::Ellipsis);
+        self.expression();
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn jsx_expression_container(&mut self) {
+        self.start(SyntaxKind::JSX_EXPRESSION_CONTAINER);
+        self.expect(TokenKind::LeftBrace);
+        if !self.at(TokenKind::RightBrace) {
+            self.expression();
+        }
+        self.expect(TokenKind::RightBrace);
+        self.finish();
+    }
+
+    fn jsx_text(&mut self) {
+        self.start(SyntaxKind::JSX_TEXT);
+        let before = self.cursor;
+        while self.current().is_some()
+            && !self.at(TokenKind::LeftBrace)
+            && !self.jsx_child_starts_element()
+            && !(self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash))
+        {
+            self.bump();
+        }
+        if self.cursor == before {
+            self.error_current(
+                "SYNTAX_JSX_EXPECTED_CHILD",
+                "expected a JSX child",
+                "use text, a braced expression, or a nested element",
+            );
+            self.bump();
+        }
+        self.finish();
+    }
+
+    fn jsx_name(&mut self) -> Option<String> {
+        self.start(SyntaxKind::JSX_NAME);
+        let mut name = String::new();
+        let mut valid = false;
+        if self.at_any(&[TokenKind::Identifier, TokenKind::From]) {
+            valid = true;
+            name.push_str(self.current_text().unwrap_or_default());
+            self.bump();
+            loop {
+                let separator = if self.eat(TokenKind::Dot) {
+                    Some('.')
+                } else if self.eat(TokenKind::Minus) {
+                    Some('-')
+                } else {
+                    None
+                };
+                let Some(separator) = separator else {
+                    break;
+                };
+                name.push(separator);
+                if self.at_any(&[TokenKind::Identifier, TokenKind::From]) {
+                    name.push_str(self.current_text().unwrap_or_default());
+                    self.bump();
+                } else {
+                    self.error_current(
+                        "SYNTAX_JSX_EXPECTED_NAME",
+                        "expected a name after the JSX name separator",
+                        "complete the component or host element name",
+                    );
+                    break;
+                }
+            }
+        } else {
+            self.error_current(
+                "SYNTAX_JSX_EXPECTED_NAME",
+                "expected a JSX element name",
+                "use an identifier or a component member expression",
+            );
+        }
+        self.finish();
+        valid.then_some(name)
+    }
+
+    fn looks_like_jsx_start(&self) -> bool {
+        self.at(TokenKind::Less)
+            && !self.looks_like_generic_call()
+            && matches!(
+                self.nth(1),
+                Some(TokenKind::Identifier | TokenKind::From | TokenKind::Greater)
+            )
+    }
+
+    fn jsx_child_starts_element(&self) -> bool {
+        self.looks_like_jsx_start() && self.nth(1) != Some(TokenKind::Greater)
+    }
+
     fn switch_expression(&mut self) {
         self.expect(TokenKind::Switch);
         if self.at(TokenKind::LeftParen) {
@@ -1479,6 +1710,78 @@ impl Parser<'_, '_> {
             );
         }
         self.leave_recursion();
+        self.finish();
+    }
+
+    fn binding_pattern(&mut self) {
+        self.start(SyntaxKind::BINDING_PATTERN);
+        if self.eat(TokenKind::Mut) {
+            self.binding_pattern();
+        } else if self.eat(TokenKind::LeftBracket) {
+            if !self.at(TokenKind::RightBracket) {
+                loop {
+                    if self.eat(TokenKind::Ellipsis) {
+                        self.binding_pattern();
+                        if self.eat(TokenKind::Comma) && !self.at(TokenKind::RightBracket) {
+                            self.error_current(
+                                "SYNTAX_BINDING_REST_NOT_LAST",
+                                "rest binding must be last",
+                                "move the rest binding to the end of the pattern",
+                            );
+                        }
+                        break;
+                    }
+                    if !self.at(TokenKind::Comma) {
+                        self.binding_pattern();
+                        if self.eat(TokenKind::Equal) {
+                            self.expression();
+                        }
+                    }
+                    if !self.eat(TokenKind::Comma) || self.at(TokenKind::RightBracket) {
+                        break;
+                    }
+                }
+            }
+            self.expect(TokenKind::RightBracket);
+        } else if self.eat(TokenKind::LeftBrace) {
+            if !self.at(TokenKind::RightBrace) {
+                loop {
+                    if self.eat(TokenKind::Ellipsis) {
+                        self.binding_pattern();
+                        if self.eat(TokenKind::Comma) && !self.at(TokenKind::RightBrace) {
+                            self.error_current(
+                                "SYNTAX_BINDING_REST_NOT_LAST",
+                                "rest binding must be last",
+                                "move the rest binding to the end of the pattern",
+                            );
+                        }
+                        break;
+                    }
+                    self.start(SyntaxKind::BINDING_PROPERTY);
+                    self.expect(TokenKind::Identifier);
+                    if self.eat(TokenKind::Colon) {
+                        self.binding_pattern();
+                        if self.eat(TokenKind::Equal) {
+                            self.expression();
+                        }
+                    } else if self.eat(TokenKind::Equal) {
+                        self.expression();
+                    }
+                    self.finish();
+                    if !self.eat(TokenKind::Comma) || self.at(TokenKind::RightBrace) {
+                        break;
+                    }
+                }
+            }
+            self.expect(TokenKind::RightBrace);
+        } else if self.eat(TokenKind::Identifier) {
+        } else {
+            self.error_current(
+                "SYNTAX_EXPECTED_BINDING_PATTERN",
+                "expected a binding pattern",
+                "use an identifier, array pattern, or object pattern",
+            );
+        }
         self.finish();
     }
 
@@ -1631,6 +1934,23 @@ impl Parser<'_, '_> {
         ));
     }
 
+    fn error_at(&mut self, id: &str, message: &str, range: Range<usize>, label: &str) {
+        self.start(SyntaxKind::ERROR);
+        self.finish();
+        if self.diagnostics.len() >= 256 {
+            return;
+        }
+        self.diagnostics.push(Diagnostic::error(
+            ConditionId::new(id).expect("static condition identifier is valid"),
+            message,
+            Label {
+                span: SourceSpan::new(self.file, range, self.source),
+                message: label.into(),
+            },
+            id.to_ascii_lowercase().replace('_', "/"),
+        ));
+    }
+
     fn obsolete_extern_block_diagnostic(&mut self) {
         self.start(SyntaxKind::ERROR);
         self.finish();
@@ -1727,6 +2047,7 @@ fn parse_expression_fragment(file: &str, source: &str, range: Range<usize>) -> V
         cursor: 0,
         eof_offset,
         recursion_depth: 0,
+        jsx_enabled: file.ends_with(".tnx"),
         builder: GreenNodeBuilder::new(),
         diagnostics: lexed.diagnostics,
     };
@@ -1772,6 +2093,86 @@ function main(): void {
   console.log(value);
 }
 "#,
+        );
+    }
+
+    #[test]
+    fn parses_tnx_jsx_as_dedicated_lossless_nodes() {
+        let source = r#"function App(): Element {
+  return (
+    <View gap={12} enabled>
+      <Text>Hello</Text>
+      <Button onPress={() => save()}>Save</Button>
+      {items}
+    </View>
+  );
+}
+"#;
+        let parsed = parse("test.tnx", source.as_bytes());
+        assert!(
+            parsed.is_success(),
+            "diagnostics: {:#?}",
+            parsed.diagnostics()
+        );
+        assert_eq!(parsed.syntax().to_string(), source);
+        assert!(
+            parsed
+                .syntax()
+                .descendants()
+                .any(|node| node.kind() == SyntaxKind::JSX_ELEMENT)
+        );
+        assert!(
+            parsed
+                .syntax()
+                .descendants()
+                .any(|node| node.kind() == SyntaxKind::JSX_EXPRESSION_CONTAINER)
+        );
+    }
+
+    #[test]
+    fn parses_tnx_fragments_and_reports_mismatched_tags() {
+        let source = "function App(): Element { return <><Text>Hello</Text></>; }\n";
+        let parsed = parse("test.tnx", source.as_bytes());
+        assert_eq!(parsed.syntax().to_string(), source);
+        assert!(
+            parsed
+                .syntax()
+                .descendants()
+                .any(|node| node.kind() == SyntaxKind::JSX_FRAGMENT)
+        );
+
+        let mismatched = parse(
+            "test.tnx",
+            b"function App(): Element { return <View></Text>; }\n",
+        );
+        assert!(
+            mismatched
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.condition.as_str() == "SYNTAX_JSX_TAG_MISMATCH")
+        );
+    }
+
+    #[test]
+    fn keeps_tnx_generic_calls_and_comparisons_out_of_jsx_parsing() {
+        let source = r#"
+function identity<T>(value: T): T { return value; }
+function main(value: i32): bool {
+  const result = identity<i32>(value);
+  return result < 10;
+}
+"#;
+        let parsed = parse("test.tnx", source.as_bytes());
+        assert!(
+            parsed.is_success(),
+            "diagnostics: {:#?}",
+            parsed.diagnostics()
+        );
+        assert!(
+            !parsed
+                .syntax()
+                .descendants()
+                .any(|node| node.kind() == SyntaxKind::JSX_ELEMENT)
         );
     }
 

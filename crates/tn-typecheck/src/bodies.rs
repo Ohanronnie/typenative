@@ -5,12 +5,14 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
 use tn_hir::{
-    BodyHir, BodyOwner, DeclarationId, Definition, DefinitionData, Function, HirCaptureMode,
-    HirClosure, HirClosureCapture, HirClosureId, HirExpression, HirExpressionId, HirExpressionKind,
-    HirLocal, HirLocalId, HirPattern, HirPatternBinding, HirPatternProjection, HirStatement,
-    HirStatementId, HirStatementKind, HirTemplate, HirTemplateId, HirTemplatePart,
-    HirTemplateStorage, ImportClause, IterationWitness, MemberId, Method, Module, ModuleId,
-    PrimitiveType, Program, ReceiverMode, ResolvedValue, Type, Visibility,
+    BindingPattern, BindingPatternKind, BodyHir, BodyOwner, DeclarationId, Definition,
+    DefinitionData, Function, HirBindingPattern, HirBindingPatternId, HirCaptureMode, HirClosure,
+    HirClosureCapture, HirClosureId, HirExpression, HirExpressionId, HirExpressionKind,
+    HirJsxChild, HirJsxElement, HirJsxId, HirJsxProperty, HirJsxValue, HirLocal, HirLocalId,
+    HirPattern, HirPatternBinding, HirPatternProjection, HirStatement, HirStatementId,
+    HirStatementKind, HirTemplate, HirTemplateId, HirTemplatePart, HirTemplateStorage,
+    ImportClause, IterationWitness, MemberId, Method, Module, ModuleId, PrimitiveType, Program,
+    ReceiverMode, ResolvedValue, Type, Visibility,
 };
 use tn_syntax::{Token, TokenKind, lex, template_interpolation_ranges};
 
@@ -233,16 +235,21 @@ fn check_one(
         return;
     };
     let lexed = lex(&module.path.to_string_lossy(), module.source.as_bytes());
-    let tokens = lexed
+    let all_tokens = lexed
         .tokens
         .iter()
-        .filter(|token| {
-            !token.kind.is_trivia()
-                && token.range.start > function.body_start as usize
-                && token.range.end < function.body_end as usize
-        })
+        .filter(|token| !token.kind.is_trivia() && token.range.end <= function.body_end as usize)
         .cloned()
         .collect::<Vec<_>>();
+    let body_start = all_tokens
+        .iter()
+        .position(|token| token.range.start > function.body_start as usize)
+        .unwrap_or(all_tokens.len());
+    let body_limit = all_tokens
+        .iter()
+        .position(|token| token.range.end >= function.body_end as usize)
+        .unwrap_or(all_tokens.len());
+    let body_tokens = all_tokens[body_start..body_limit].to_vec();
     let result = if function.is_async {
         match &function.result {
             Type::Promise { result, .. } => result.as_ref(),
@@ -253,7 +260,7 @@ fn check_one(
     };
     if !function.is_generator
         && *result != Type::Primitive(PrimitiveType::Void)
-        && !guaranteed_sequence(&tokens)
+        && !guaranteed_sequence(&body_tokens)
     {
         diagnostics.push(Diagnostic::error(
             ConditionId::new("TYPE_MISSING_RETURN").expect("static condition is valid"),
@@ -268,17 +275,34 @@ fn check_one(
     let mut initial_scope = BTreeMap::new();
     let mut initial_hir_scope = BTreeMap::new();
     let mut hir_locals = Vec::new();
+    let mut parameter_roots = Vec::new();
+    let mut hir_binding_patterns = Vec::new();
+    let mut destructured_parameters = Vec::new();
     for parameter in &function.parameters {
         let id = HirLocalId(u32::try_from(hir_locals.len()).expect("HIR local limit"));
-        initial_scope.insert(parameter.name.clone(), parameter.ty.clone());
-        initial_hir_scope.insert(parameter.name.clone(), id);
-        hir_locals.push(HirLocal {
-            id,
-            name: parameter.name.clone(),
-            ty: parameter.ty.clone(),
-            mutable: false,
-            origin: parameter.span.clone(),
-        });
+        parameter_roots.push(id);
+        if parameter.pattern.is_simple_identifier() {
+            let (name, mutable) = binding_identifier(&parameter.pattern)
+                .unwrap_or_else(|| (parameter.name.clone(), false));
+            initial_scope.insert(name.clone(), parameter.ty.clone());
+            initial_hir_scope.insert(name.clone(), id);
+            hir_locals.push(HirLocal {
+                id,
+                name,
+                ty: parameter.ty.clone(),
+                mutable,
+                origin: parameter.span.clone(),
+            });
+        } else {
+            hir_locals.push(HirLocal {
+                id,
+                name: parameter.name.clone(),
+                ty: parameter.ty.clone(),
+                mutable: false,
+                origin: parameter.span.clone(),
+            });
+            destructured_parameters.push((id, parameter));
+        }
     }
     if let Some(self_type) = self_type {
         let id = HirLocalId(u32::try_from(hir_locals.len()).expect("HIR local limit"));
@@ -292,6 +316,29 @@ fn check_one(
             origin: declaration.span.clone(),
         });
     }
+    for (root, parameter) in destructured_parameters {
+        let mut bindings = Vec::new();
+        collect_binding_pattern_bindings(
+            program,
+            &parameter.pattern,
+            &parameter.ty,
+            &mut Vec::new(),
+            &mut initial_scope,
+            &mut initial_hir_scope,
+            &mut hir_locals,
+            &mut bindings,
+            diagnostics,
+        );
+        let id = HirBindingPatternId(
+            u32::try_from(hir_binding_patterns.len()).expect("HIR binding pattern limit"),
+        );
+        hir_binding_patterns.push(HirBindingPattern {
+            id,
+            root,
+            bindings,
+            origin: parameter.pattern.span.clone(),
+        });
+    }
     let mut checker = BodyChecker {
         program,
         module,
@@ -299,8 +346,9 @@ fn check_one(
         function,
         callable,
         ownership_facts,
-        tokens,
-        index: 0,
+        tokens: all_tokens,
+        body_limit,
+        index: body_start,
         scopes: vec![initial_scope],
         hir_scopes: vec![initial_hir_scope],
         diagnostics,
@@ -319,6 +367,9 @@ fn check_one(
             member,
         }),
         hir_locals,
+        parameter_roots,
+        hir_binding_patterns,
+        hir_jsx_elements: Vec::new(),
         hir_expressions: Vec::new(),
         hir_patterns: Vec::new(),
         hir_statements: Vec::new(),
@@ -326,6 +377,7 @@ fn check_one(
         hir_templates: Vec::new(),
         iteration_witnesses: BTreeMap::new(),
     };
+    checker.check_parameter_defaults(function);
     while checker.kind().is_some() {
         let before = checker.index;
         checker.statement();
@@ -336,6 +388,261 @@ fn check_one(
     checker.finish_hir();
 }
 
+fn binding_identifier(pattern: &BindingPattern) -> Option<(String, bool)> {
+    match &pattern.kind {
+        BindingPatternKind::Identifier { name, mutable } => Some((name.clone(), *mutable)),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_binding_pattern_bindings(
+    program: &Program,
+    pattern: &BindingPattern,
+    pattern_type: &Type,
+    projection: &mut Vec<HirPatternProjection>,
+    scope: &mut BTreeMap<String, Type>,
+    hir_scope: &mut BTreeMap<String, HirLocalId>,
+    hir_locals: &mut Vec<HirLocal>,
+    bindings: &mut Vec<HirPatternBinding>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let pattern_type = binding_default_type(pattern_type, pattern.default.is_some());
+    match &pattern.kind {
+        BindingPatternKind::Identifier { name, mutable } => {
+            if name == "_" {
+                return;
+            }
+            let ty = pattern_type.clone();
+            if scope.contains_key(name) {
+                binding_diagnostic(
+                    diagnostics,
+                    "RESOLVE_DUPLICATE_LOCAL",
+                    format!("local `{name}` is already declared in this scope"),
+                    &pattern.span,
+                    "choose a distinct binding name",
+                );
+            }
+            let id = HirLocalId(u32::try_from(hir_locals.len()).expect("HIR local limit"));
+            scope.insert(name.clone(), ty.clone());
+            hir_scope.insert(name.clone(), id);
+            hir_locals.push(HirLocal {
+                id,
+                name: name.clone(),
+                ty: ty.clone(),
+                mutable: *mutable,
+                origin: pattern.span.clone(),
+            });
+            bindings.push(HirPatternBinding {
+                local: id,
+                ty,
+                projection: projection.clone(),
+                default: pattern.default.clone(),
+            });
+        }
+        BindingPatternKind::Array { elements, rest } => {
+            for (index, element) in elements.iter().enumerate() {
+                let Some(element) = element else {
+                    continue;
+                };
+                let element_type = binding_projection_type(
+                    program,
+                    &pattern_type,
+                    &[HirPatternProjection::Index(
+                        u32::try_from(index).unwrap_or(u32::MAX),
+                    )],
+                );
+                projection.push(HirPatternProjection::Index(
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                ));
+                collect_binding_pattern_bindings(
+                    program,
+                    element,
+                    &element_type,
+                    projection,
+                    scope,
+                    hir_scope,
+                    hir_locals,
+                    bindings,
+                    diagnostics,
+                );
+                projection.pop();
+            }
+            if let Some(rest) = rest {
+                let start = u32::try_from(elements.len()).unwrap_or(u32::MAX);
+                let rest_type = binding_projection_type(
+                    program,
+                    &pattern_type,
+                    &[HirPatternProjection::Rest { start }],
+                );
+                projection.push(HirPatternProjection::Rest { start });
+                collect_binding_pattern_bindings(
+                    program,
+                    rest,
+                    &rest_type,
+                    projection,
+                    scope,
+                    hir_scope,
+                    hir_locals,
+                    bindings,
+                    diagnostics,
+                );
+                projection.pop();
+            }
+        }
+        BindingPatternKind::Object { properties, rest } => {
+            let parent_type = pattern_type.clone();
+            for property in properties {
+                let Some((field_index, field_type)) =
+                    binding_field(program, &parent_type, &property.key)
+                else {
+                    binding_diagnostic(
+                        diagnostics,
+                        "TYPE_UNKNOWN_PROPERTY",
+                        format!(
+                            "property `{}` is not present in the binding type",
+                            property.key
+                        ),
+                        &property.span,
+                        "bind a declared property or change the source type",
+                    );
+                    continue;
+                };
+                let field_type =
+                    binding_default_type(&field_type, property.pattern.default.is_some());
+                projection.push(HirPatternProjection::Field(field_index));
+                collect_binding_pattern_bindings(
+                    program,
+                    &property.pattern,
+                    &field_type,
+                    projection,
+                    scope,
+                    hir_scope,
+                    hir_locals,
+                    bindings,
+                    diagnostics,
+                );
+                projection.pop();
+            }
+            if let Some(rest) = rest {
+                let rest_type = binding_projection_type(
+                    program,
+                    &pattern_type,
+                    &[HirPatternProjection::Rest { start: 0 }],
+                );
+                projection.push(HirPatternProjection::Rest { start: 0 });
+                collect_binding_pattern_bindings(
+                    program,
+                    rest,
+                    &rest_type,
+                    projection,
+                    scope,
+                    hir_scope,
+                    hir_locals,
+                    bindings,
+                    diagnostics,
+                );
+                projection.pop();
+            }
+        }
+    }
+}
+
+fn binding_default_type(ty: &Type, has_default: bool) -> Type {
+    if has_default {
+        if let Type::Optional(inner) = ty {
+            return inner.as_ref().clone();
+        }
+    }
+    ty.clone()
+}
+
+fn binding_projection_type(
+    program: &Program,
+    root_type: &Type,
+    projection: &[HirPatternProjection],
+) -> Type {
+    let mut current = root_type.clone();
+    for projection in projection {
+        current = match projection {
+            HirPatternProjection::Field(index) => {
+                binding_field_by_index(program, &current, *index).map_or(Type::Error, |(_, ty)| ty)
+            }
+            HirPatternProjection::Index(index) => match &current {
+                Type::Array(element, _) | Type::Slice(element) => element.as_ref().clone(),
+                Type::Tuple(elements) => elements
+                    .get(*index as usize)
+                    .cloned()
+                    .unwrap_or(Type::Error),
+                Type::Reference { referent, .. } => match referent.as_ref() {
+                    Type::Array(element, _) | Type::Slice(element) => element.as_ref().clone(),
+                    Type::Tuple(elements) => elements
+                        .get(*index as usize)
+                        .cloned()
+                        .unwrap_or(Type::Error),
+                    _ => Type::Error,
+                },
+                _ => Type::Error,
+            },
+            HirPatternProjection::Rest { .. } => match &current {
+                Type::Array(element, _) | Type::Slice(element) => Type::Slice(element.clone()),
+                _ => Type::Unknown,
+            },
+            HirPatternProjection::OptionalPayload => match &current {
+                Type::Optional(inner) => inner.as_ref().clone(),
+                _ => Type::Error,
+            },
+            HirPatternProjection::Variant(_) => current,
+        };
+    }
+    current
+}
+
+fn binding_field(program: &Program, ty: &Type, name: &str) -> Option<(u32, Type)> {
+    let Type::Nominal(declaration, _) = ty else {
+        return None;
+    };
+    let fields = match &program.definition(*declaration)?.data {
+        DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => fields,
+        _ => return None,
+    };
+    fields
+        .iter()
+        .position(|field| field.name == name)
+        .and_then(|index| Some((u32::try_from(index).ok()?, fields.get(index)?.ty.clone())))
+}
+
+fn binding_field_by_index(program: &Program, ty: &Type, index: u32) -> Option<(String, Type)> {
+    let Type::Nominal(declaration, _) = ty else {
+        return None;
+    };
+    let fields = match &program.definition(*declaration)?.data {
+        DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => fields,
+        _ => return None,
+    };
+    fields
+        .get(index as usize)
+        .map(|field| (field.name.clone(), field.ty.clone()))
+}
+
+fn binding_diagnostic(
+    diagnostics: &mut Vec<Diagnostic>,
+    id: &str,
+    message: String,
+    span: &SourceSpan,
+    label: &str,
+) {
+    diagnostics.push(Diagnostic::error(
+        ConditionId::new(id).expect("static condition identifier is valid"),
+        message,
+        Label {
+            span: span.clone(),
+            message: label.into(),
+        },
+        id.to_ascii_lowercase().replace('_', "/"),
+    ));
+}
+
 struct BodyChecker<'a> {
     program: &'a Program,
     module: &'a Module,
@@ -344,6 +651,7 @@ struct BodyChecker<'a> {
     callable: &'a BTreeMap<(ModuleId, String), (DeclarationId, Function)>,
     ownership_facts: &'a OwnershipFacts,
     tokens: Vec<Token>,
+    body_limit: usize,
     index: usize,
     scopes: Vec<BTreeMap<String, Type>>,
     hir_scopes: Vec<BTreeMap<String, HirLocalId>>,
@@ -360,6 +668,9 @@ struct BodyChecker<'a> {
     hir_bodies: &'a mut Vec<BodyHir>,
     hir_owner: BodyOwner,
     hir_locals: Vec<HirLocal>,
+    parameter_roots: Vec<HirLocalId>,
+    hir_binding_patterns: Vec<HirBindingPattern>,
+    hir_jsx_elements: Vec<HirJsxElement>,
     hir_expressions: Vec<HirExpression>,
     hir_patterns: Vec<HirPattern>,
     hir_statements: Vec<HirStatement>,
@@ -374,6 +685,72 @@ struct CaptureContext {
 }
 
 #[derive(Clone)]
+struct BodyBindingPattern {
+    start: usize,
+    kind: BodyBindingPatternKind,
+    span: SourceSpan,
+    default: Option<SourceSpan>,
+}
+
+#[derive(Clone)]
+enum BodyBindingPatternKind {
+    Identifier {
+        name: String,
+        mutable: bool,
+    },
+    Array {
+        elements: Vec<Option<BodyBindingPattern>>,
+        rest: Option<Box<BodyBindingPattern>>,
+    },
+    Object {
+        properties: Vec<BodyBindingProperty>,
+        rest: Option<Box<BodyBindingPattern>>,
+    },
+}
+
+#[derive(Clone)]
+struct BodyBindingProperty {
+    key: String,
+    pattern: BodyBindingPattern,
+    span: SourceSpan,
+}
+
+impl BodyBindingPattern {
+    fn is_simple_identifier(&self) -> bool {
+        matches!(self.kind, BodyBindingPatternKind::Identifier { .. })
+    }
+}
+
+fn body_binding_identifier(pattern: &BodyBindingPattern) -> Option<(String, bool)> {
+    match &pattern.kind {
+        BodyBindingPatternKind::Identifier { name, mutable } => Some((name.clone(), *mutable)),
+        _ => None,
+    }
+}
+
+fn make_body_binding_mutable(pattern: &mut BodyBindingPattern) {
+    match &mut pattern.kind {
+        BodyBindingPatternKind::Identifier { mutable, .. } => *mutable = true,
+        BodyBindingPatternKind::Array { elements, rest } => {
+            for element in elements.iter_mut().flatten() {
+                make_body_binding_mutable(element);
+            }
+            if let Some(rest) = rest {
+                make_body_binding_mutable(rest);
+            }
+        }
+        BodyBindingPatternKind::Object { properties, rest } => {
+            for property in properties {
+                make_body_binding_mutable(&mut property.pattern);
+            }
+            if let Some(rest) = rest {
+                make_body_binding_mutable(rest);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 struct ExpressionType {
     ty: Type,
     optional_chain_value: Option<Type>,
@@ -384,11 +761,42 @@ struct ExpressionType {
     captures: Vec<Capture>,
     resolution: Option<ResolvedValue>,
     type_qualifier: bool,
+    jsx: Option<HirJsxId>,
 }
 
 impl BodyChecker<'_> {
     fn kind(&self) -> Option<TokenKind> {
-        self.tokens.get(self.index).map(|token| token.kind)
+        (self.index < self.body_limit)
+            .then(|| self.tokens.get(self.index).map(|token| token.kind))
+            .flatten()
+    }
+
+    fn check_parameter_defaults(&mut self, function: &Function) {
+        let parameter_defaults = function
+            .parameters
+            .iter()
+            .filter_map(|parameter| {
+                parameter
+                    .default
+                    .as_ref()
+                    .map(|default| (default.clone(), parameter.ty.clone()))
+            })
+            .collect::<Vec<_>>();
+        let pattern_defaults = self
+            .hir_binding_patterns
+            .iter()
+            .flat_map(|pattern| {
+                pattern.bindings.iter().filter_map(|binding| {
+                    binding
+                        .default
+                        .as_ref()
+                        .map(|default| (default.clone(), binding.ty.clone()))
+                })
+            })
+            .collect::<Vec<_>>();
+        for (default, expected) in parameter_defaults.into_iter().chain(pattern_defaults) {
+            self.check_binding_default(&default, &expected);
+        }
     }
 
     fn nth(&self, offset: usize) -> Option<TokenKind> {
@@ -488,15 +896,320 @@ impl BodyChecker<'_> {
         self.hir_scopes.pop();
     }
 
+    fn body_binding_pattern(&mut self) -> Option<BodyBindingPattern> {
+        let start = self.index;
+        let mutable = self.eat(TokenKind::Mut);
+        let kind = match self.kind()? {
+            TokenKind::Identifier => {
+                let token = self.bump().cloned()?;
+                BodyBindingPatternKind::Identifier {
+                    name: self.module.source[token.range.clone()].to_owned(),
+                    mutable: false,
+                }
+            }
+            TokenKind::LeftBracket => {
+                self.bump();
+                let mut elements = Vec::new();
+                let mut rest = None;
+                while self.kind().is_some() && self.kind() != Some(TokenKind::RightBracket) {
+                    if self.eat(TokenKind::Comma) {
+                        elements.push(None);
+                        continue;
+                    }
+                    if self.eat(TokenKind::Ellipsis) {
+                        rest = self.body_binding_pattern().map(Box::new);
+                        self.eat(TokenKind::Comma);
+                        break;
+                    }
+                    let element = self.body_binding_pattern()?;
+                    let mut element = element;
+                    if self.eat(TokenKind::Equal) {
+                        element.default = self.skip_body_binding_default(&[
+                            TokenKind::Comma,
+                            TokenKind::RightBracket,
+                        ]);
+                    }
+                    elements.push(Some(element));
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.eat(TokenKind::RightBracket);
+                BodyBindingPatternKind::Array { elements, rest }
+            }
+            TokenKind::LeftBrace => {
+                self.bump();
+                let mut properties = Vec::new();
+                let mut rest = None;
+                while self.kind().is_some() && self.kind() != Some(TokenKind::RightBrace) {
+                    if self.eat(TokenKind::Ellipsis) {
+                        rest = self.body_binding_pattern().map(Box::new);
+                        self.eat(TokenKind::Comma);
+                        break;
+                    }
+                    let property_start = self.index;
+                    let key_token = self.bump().cloned()?;
+                    let key = self.module.source[key_token.range.clone()].to_owned();
+                    let mut pattern = if self.eat(TokenKind::Colon) {
+                        self.body_binding_pattern()?
+                    } else {
+                        BodyBindingPattern {
+                            start: property_start,
+                            kind: BodyBindingPatternKind::Identifier {
+                                name: key.clone(),
+                                mutable: false,
+                            },
+                            span: self.token_span(&key_token),
+                            default: None,
+                        }
+                    };
+                    if self.eat(TokenKind::Equal) {
+                        pattern.default = self
+                            .skip_body_binding_default(&[TokenKind::Comma, TokenKind::RightBrace]);
+                    }
+                    properties.push(BodyBindingProperty {
+                        key,
+                        pattern,
+                        span: self.body_binding_span(property_start, self.index),
+                    });
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.eat(TokenKind::RightBrace);
+                BodyBindingPatternKind::Object { properties, rest }
+            }
+            _ => return None,
+        };
+        let mut pattern = BodyBindingPattern {
+            start,
+            kind,
+            span: self.body_binding_span(start, self.index),
+            default: None,
+        };
+        if mutable {
+            make_body_binding_mutable(&mut pattern);
+        }
+        Some(pattern)
+    }
+
+    fn skip_body_binding_default(&mut self, stops: &[TokenKind]) -> Option<SourceSpan> {
+        let start = self.tokens.get(self.index)?.range.start;
+        let mut end = start;
+        let mut delimiters = Vec::new();
+        while let Some(kind) = self.kind() {
+            if delimiters.is_empty() && stops.contains(&kind) {
+                break;
+            }
+            match kind {
+                TokenKind::LeftParen => delimiters.push(TokenKind::RightParen),
+                TokenKind::LeftBracket => delimiters.push(TokenKind::RightBracket),
+                TokenKind::LeftBrace => delimiters.push(TokenKind::RightBrace),
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    if delimiters.last() == Some(&kind) {
+                        delimiters.pop();
+                    } else if delimiters.is_empty() {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if let Some(token) = self.tokens.get(self.index) {
+                end = token.range.end;
+            }
+            self.bump();
+        }
+        Some(SourceSpan::new(
+            self.module.path.to_string_lossy(),
+            start..end,
+            &self.module.source,
+        ))
+    }
+
+    fn check_binding_default(&mut self, span: &SourceSpan, expected: &Type) {
+        if span.byte_start == span.byte_end {
+            return;
+        }
+        let Some(start) = self
+            .tokens
+            .iter()
+            .position(|token| token.range.start >= span.byte_start as usize)
+        else {
+            return;
+        };
+        let end = self
+            .tokens
+            .iter()
+            .position(|token| token.range.end > span.byte_end as usize)
+            .unwrap_or(self.tokens.len());
+        if start >= end {
+            return;
+        }
+        let saved = self.index;
+        self.index = start;
+        let actual = self.expression(0, Some(expected));
+        self.index = saved;
+        if let Some(actual) = actual
+            && !compatible(self.program, &actual.ty, expected)
+            && actual.ty != Type::Error
+            && *expected != Type::Error
+        {
+            self.error_span(
+                "TYPE_MISMATCH",
+                format!(
+                    "binding default has type {:?}, expected {expected:?}",
+                    actual.ty
+                ),
+                span,
+                "use a value compatible with the binding type",
+            );
+        }
+    }
+
+    fn body_binding_span(&self, start: usize, end: usize) -> SourceSpan {
+        let byte_start = self
+            .tokens
+            .get(start)
+            .map_or(self.module.source.len(), |token| token.range.start);
+        let byte_end = self
+            .tokens
+            .get(end.saturating_sub(1))
+            .map_or(byte_start, |token| token.range.end);
+        SourceSpan::new(
+            self.module.path.to_string_lossy(),
+            byte_start..byte_end,
+            &self.module.source,
+        )
+    }
+
+    fn collect_body_binding_pattern(
+        &mut self,
+        pattern: &BodyBindingPattern,
+        pattern_type: &Type,
+        projection: &mut Vec<HirPatternProjection>,
+        bindings: &mut Vec<HirPatternBinding>,
+    ) {
+        let pattern_type = binding_default_type(pattern_type, pattern.default.is_some());
+        match &pattern.kind {
+            BodyBindingPatternKind::Identifier { name, mutable } => {
+                if name == "_" {
+                    return;
+                }
+                let ty = pattern_type.clone();
+                if let Some(default) = pattern.default.as_ref() {
+                    self.check_binding_default(default, &ty);
+                }
+                let duplicate = self
+                    .scopes
+                    .last_mut()
+                    .is_some_and(|scope| scope.insert(name.clone(), ty.clone()).is_some());
+                if duplicate {
+                    self.error_span(
+                        "RESOLVE_DUPLICATE_LOCAL",
+                        format!("local `{name}` is already declared in this scope"),
+                        &pattern.span,
+                        "choose a distinct binding name",
+                    );
+                }
+                let id = self.declare_hir_local(
+                    name.clone(),
+                    ty.clone(),
+                    *mutable,
+                    pattern.span.clone(),
+                );
+                bindings.push(HirPatternBinding {
+                    local: id,
+                    ty,
+                    projection: projection.clone(),
+                    default: pattern.default.clone(),
+                });
+            }
+            BodyBindingPatternKind::Array { elements, rest } => {
+                for (index, element) in elements.iter().enumerate() {
+                    let Some(element) = element else {
+                        continue;
+                    };
+                    let element_type = binding_projection_type(
+                        self.program,
+                        &pattern_type,
+                        &[HirPatternProjection::Index(
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                        )],
+                    );
+                    projection.push(HirPatternProjection::Index(
+                        u32::try_from(index).unwrap_or(u32::MAX),
+                    ));
+                    self.collect_body_binding_pattern(element, &element_type, projection, bindings);
+                    projection.pop();
+                }
+                if let Some(rest) = rest {
+                    let start = u32::try_from(elements.len()).unwrap_or(u32::MAX);
+                    let rest_type = binding_projection_type(
+                        self.program,
+                        &pattern_type,
+                        &[HirPatternProjection::Rest { start }],
+                    );
+                    projection.push(HirPatternProjection::Rest { start });
+                    self.collect_body_binding_pattern(rest, &rest_type, projection, bindings);
+                    projection.pop();
+                }
+            }
+            BodyBindingPatternKind::Object { properties, rest } => {
+                let parent_type = pattern_type.clone();
+                for property in properties {
+                    let Some((field_index, field_type)) =
+                        binding_field(self.program, &parent_type, &property.key)
+                    else {
+                        if !matches!(parent_type, Type::Unknown | Type::Error) {
+                            self.error_span(
+                                "TYPE_UNKNOWN_PROPERTY",
+                                format!(
+                                    "property `{}` is not present in the binding type",
+                                    property.key
+                                ),
+                                &property.span,
+                                "bind a declared property or change the source type",
+                            );
+                        }
+                        continue;
+                    };
+                    let field_type =
+                        binding_default_type(&field_type, property.pattern.default.is_some());
+                    projection.push(HirPatternProjection::Field(field_index));
+                    self.collect_body_binding_pattern(
+                        &property.pattern,
+                        &field_type,
+                        projection,
+                        bindings,
+                    );
+                    projection.pop();
+                }
+                if let Some(rest) = rest {
+                    let rest_type = binding_projection_type(
+                        self.program,
+                        &pattern_type,
+                        &[HirPatternProjection::Rest { start: 0 }],
+                    );
+                    projection.push(HirPatternProjection::Rest { start: 0 });
+                    self.collect_body_binding_pattern(rest, &rest_type, projection, bindings);
+                    projection.pop();
+                }
+            }
+        }
+    }
+
     fn local_declaration(&mut self) {
         let mutable = self.eat(TokenKind::Let);
         if !mutable {
             self.eat(TokenKind::Const);
         }
-        let Some(name_token) = self.bump().cloned() else {
+        let Some(mut pattern) = self.body_binding_pattern() else {
             return;
         };
-        let name = self.module.source[name_token.range.clone()].to_owned();
+        if mutable {
+            make_body_binding_mutable(&mut pattern);
+        }
+        let pattern_token = self.tokens.get(pattern.start).cloned();
         let annotation = if self.eat(TokenKind::Colon) {
             self.parse_local_type()
         } else {
@@ -511,41 +1224,63 @@ impl BodyChecker<'_> {
         let ty = match (annotation, value) {
             (Some(expected), Some(actual)) => {
                 if !compatible(self.program, &actual.ty, &expected) {
-                    self.error(
-                        "TYPE_MISMATCH",
-                        format!(
-                            "initializer has type {:?}, expected {expected:?}",
-                            actual.ty
-                        ),
-                        &name_token,
-                        "use a value of the annotated type; numeric widening is explicit",
-                    );
+                    if let Some(token) = pattern_token.as_ref() {
+                        self.error(
+                            "TYPE_MISMATCH",
+                            format!(
+                                "initializer has type {:?}, expected {expected:?}",
+                                actual.ty
+                            ),
+                            token,
+                            "use a value of the annotated type; numeric widening is explicit",
+                        );
+                    }
                 }
                 expected
             }
             (None, Some(actual)) if actual.ty != Type::Error => actual.ty,
             _ => Type::Error,
         };
-        if let Some(scope) = self.scopes.last_mut()
-            && scope.insert(name.clone(), ty).is_some()
-        {
-            self.error(
-                "RESOLVE_DUPLICATE_LOCAL",
-                format!("local `{name}` is already declared in this scope"),
-                &name_token,
-                "choose a distinct local name",
-            );
-        }
-        self.declare_hir_local(
-            name.clone(),
-            self.lookup(&name).unwrap_or(Type::Error),
-            mutable,
-            self.token_span(&name_token),
-        );
-        if captured_closure.is_empty() {
-            self.closure_bindings.remove(&name);
+        let simple_name = body_binding_identifier(&pattern);
+        let root_name = simple_name
+            .as_ref()
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| format!("$binding{}", self.hir_locals.len()));
+        let root_origin = pattern.span.clone();
+        let root = if let Some((name, pattern_mutable)) = simple_name {
+            if let Some(scope) = self.scopes.last_mut()
+                && scope.insert(name.clone(), ty.clone()).is_some()
+                && let Some(token) = pattern_token.as_ref()
+            {
+                self.error(
+                    "RESOLVE_DUPLICATE_LOCAL",
+                    format!("local `{name}` is already declared in this scope"),
+                    token,
+                    "choose a distinct local name",
+                );
+            }
+            self.declare_hir_local(name, ty.clone(), pattern_mutable, root_origin.clone())
         } else {
-            self.closure_bindings.insert(name, captured_closure);
+            self.push_hir_local(root_name, ty.clone(), false, root_origin.clone())
+        };
+        if !pattern.is_simple_identifier() {
+            let mut bindings = Vec::new();
+            self.collect_body_binding_pattern(&pattern, &ty, &mut Vec::new(), &mut bindings);
+            let id = HirBindingPatternId(
+                u32::try_from(self.hir_binding_patterns.len()).expect("HIR binding pattern limit"),
+            );
+            self.hir_binding_patterns.push(HirBindingPattern {
+                id,
+                root,
+                bindings,
+                origin: pattern.span.clone(),
+            });
+        } else if let Some((name, _)) = body_binding_identifier(&pattern) {
+            if captured_closure.is_empty() {
+                self.closure_bindings.remove(&name);
+            } else {
+                self.closure_bindings.insert(name, captured_closure);
+            }
         }
         self.eat(TokenKind::Semicolon);
     }
@@ -748,42 +1483,85 @@ impl BodyChecker<'_> {
             );
         }
         self.eat(TokenKind::LeftParen);
-        self.eat(TokenKind::Const);
-        let binding = self.bump().cloned();
+        let mutable = self.eat(TokenKind::Let);
+        if !mutable {
+            self.eat(TokenKind::Const);
+        }
+        let mut pattern = self.body_binding_pattern();
+        if mutable && let Some(pattern) = pattern.as_mut() {
+            make_body_binding_mutable(pattern);
+        }
+        let binding_token = pattern
+            .as_ref()
+            .and_then(|pattern| self.tokens.get(pattern.start).cloned());
         self.eat(TokenKind::Of);
         let iterable = self.expression(0, None);
         self.eat(TokenKind::RightParen);
         self.scopes.push(BTreeMap::new());
         self.hir_scopes.push(BTreeMap::new());
-        if let Some(binding) = binding {
-            let name = self.module.source[binding.range.clone()].to_owned();
+        if let Some(pattern) = pattern {
+            let binding_name = body_binding_identifier(&pattern)
+                .map(|(name, _)| name)
+                .unwrap_or_else(|| format!("$binding{}", self.hir_locals.len()));
             let iteration = iterable
                 .as_ref()
                 .map_or(Err(IterationError::NotIterable), |iterable| {
                     for_iteration(self.program, &iterable.ty, awaited)
                 });
-            let (item, witness) = iteration.unwrap_or_else(|error| {
-                match error {
-                    IterationError::NotIterable => self.error(
-                        "TYPE_NOT_ITERABLE",
-                        "for-of expression does not implement IntoIterator<Item, Iter>",
-                        &binding,
-                        "iterate an array, slice, string view, or explicit IntoIterator type",
-                    ),
-                    IterationError::InvalidProtocol => self.error(
-                        "TYPE_INVALID_ITERATOR_PROTOCOL",
-                        "selected iterator implementations do not provide the required operations",
-                        &binding,
-                        "provide infallible move intoIterator() and mut next() with exact types",
-                    ),
+            let (item, witness) = match iteration {
+                Ok(iteration) => iteration,
+                Err(error) => {
+                    if let Some(binding) = binding_token.as_ref() {
+                        match error {
+                            IterationError::NotIterable => self.error(
+                                "TYPE_NOT_ITERABLE",
+                                "for-of expression does not implement IntoIterator<Item, Iter>",
+                                binding,
+                                "iterate an array, slice, string view, or explicit IntoIterator type",
+                            ),
+                            IterationError::InvalidProtocol => self.error(
+                                "TYPE_INVALID_ITERATOR_PROTOCOL",
+                                "selected iterator implementations do not provide the required operations",
+                                binding,
+                                "provide infallible move intoIterator() and mut next() with exact types",
+                            ),
+                        }
+                    }
+                    (Type::Error, None)
                 }
-                (Type::Error, None)
-            });
-            self.scopes
-                .last_mut()
-                .expect("loop scope")
-                .insert(name.clone(), item.clone());
-            let local = self.declare_hir_local(name, item, false, self.token_span(&binding));
+            };
+            let local = if pattern.is_simple_identifier() {
+                let (name, pattern_mutable) = body_binding_identifier(&pattern)
+                    .unwrap_or_else(|| (binding_name.clone(), mutable));
+                self.scopes
+                    .last_mut()
+                    .expect("loop scope")
+                    .insert(name.clone(), item.clone());
+                self.declare_hir_local(
+                    name,
+                    item.clone(),
+                    pattern_mutable,
+                    binding_token
+                        .as_ref()
+                        .map_or_else(|| pattern.span.clone(), |token| self.token_span(token)),
+                )
+            } else {
+                let root =
+                    self.push_hir_local(binding_name, item.clone(), false, pattern.span.clone());
+                let mut bindings = Vec::new();
+                self.collect_body_binding_pattern(&pattern, &item, &mut Vec::new(), &mut bindings);
+                let id = HirBindingPatternId(
+                    u32::try_from(self.hir_binding_patterns.len())
+                        .expect("HIR binding pattern limit"),
+                );
+                self.hir_binding_patterns.push(HirBindingPattern {
+                    id,
+                    root,
+                    bindings,
+                    origin: pattern.span.clone(),
+                });
+                root
+            };
             if let Some(witness) = witness {
                 self.iteration_witnesses.insert(local, witness);
             }
@@ -1128,6 +1906,12 @@ impl BodyChecker<'_> {
                     }))
                 }
             }
+            TokenKind::Less
+                if self.module.path.extension().is_some_and(|ext| ext == "tnx")
+                    && self.looks_like_jsx_start() =>
+            {
+                self.jsx_element_expression(expected)
+            }
             TokenKind::TemplateLiteral => self.template_literal(),
             TokenKind::Undefined => {
                 let token = self.bump().cloned();
@@ -1205,6 +1989,7 @@ impl BodyChecker<'_> {
                     .lookup_hir(&self.module.source[token.range.clone()])
                     .map(ResolvedValue::Local),
                 type_qualifier: false,
+                jsx: None,
             });
         }
         if let Some((declaration, ty, mutable_static)) = self.resolve_global_value(&name) {
@@ -1567,6 +2352,841 @@ impl BodyChecker<'_> {
             Box::new(element_type.unwrap_or(Type::Error)),
             length,
         ))
+    }
+
+    fn jsx_element_expression(&mut self, expected: Option<&Type>) -> Option<ExpressionType> {
+        let start = self.index;
+        let (id, element_type) = self.parse_jsx_element(expected)?;
+        let mut expression = value_type(element_type);
+        expression.jsx = Some(id);
+        self.record_hir_expression_range(start, self.index, &expression);
+        Some(expression)
+    }
+
+    fn parse_jsx_element(&mut self, _expected: Option<&Type>) -> Option<(HirJsxId, Type)> {
+        let start = self.index;
+        if !self.eat(TokenKind::Less) {
+            return None;
+        }
+        if self.eat(TokenKind::Greater) {
+            let children = self.parse_jsx_children(None);
+            if self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash) {
+                self.bump();
+                self.bump();
+                if !self.eat(TokenKind::Greater) {
+                    self.error_current(
+                        "SYNTAX_JSX_EXPECTED_FRAGMENT_CLOSE",
+                        "expected `>` after a fragment closing tag",
+                        "close the fragment with `</>`",
+                    );
+                }
+            } else {
+                self.error_current(
+                    "SYNTAX_JSX_EXPECTED_FRAGMENT_CLOSE",
+                    "expected a fragment closing tag",
+                    "close the fragment with `</>`",
+                );
+            }
+            let id = self.push_jsx_element(
+                None,
+                Vec::new(),
+                children,
+                Type::Unknown,
+                self.jsx_element_type(),
+                None,
+                None,
+                true,
+                start,
+            );
+            let element_type = self
+                .hir_jsx_elements
+                .get(id.0 as usize)
+                .map_or(Type::Unknown, |element| element.element_type.clone());
+            return Some((id, element_type));
+        }
+
+        let Some((name, name_start, name_end)) = self.parse_jsx_name() else {
+            self.error_current(
+                "SYNTAX_JSX_EXPECTED_NAME",
+                "expected a JSX element name",
+                "use an identifier or a component member expression",
+            );
+            self.recover_jsx_element(start);
+            return None;
+        };
+        let (component, props_type, element_type) =
+            self.resolve_jsx_component(&name, name_start, name_end);
+        let fields = self.jsx_fields(&props_type);
+        let mut properties = Vec::new();
+        let mut provided = BTreeSet::new();
+        let mut spread_provided = BTreeSet::new();
+        let mut key = None;
+        let mut reference = None;
+        while self.kind().is_some()
+            && !matches!(self.kind(), Some(TokenKind::Greater | TokenKind::Slash))
+        {
+            if self.at(TokenKind::LeftBrace) && self.nth(1) == Some(TokenKind::Ellipsis) {
+                let origin_start = self.index;
+                self.bump();
+                self.bump();
+                let value_start = self.index;
+                let value = self.expression(0, Some(&props_type));
+                let value_end = self.index;
+                self.eat(TokenKind::RightBrace);
+                if let Some(value) = value {
+                    if props_type != Type::Unknown
+                        && !compatible(self.program, &value.ty, &props_type)
+                    {
+                        self.error_span(
+                            "TYPE_JSX_SPREAD_MISMATCH",
+                            format!(
+                                "JSX spread has type {:?}, expected {:?}",
+                                value.ty, props_type
+                            ),
+                            &self.span_from_tokens(value_start, value_end),
+                            "spread a value compatible with the component properties",
+                        );
+                    } else {
+                        spread_provided.extend(fields.iter().map(|(name, _, _, _)| name.clone()));
+                    }
+                    if let Some(expression) =
+                        self.hir_expression_id_for_range(value_start, value_end)
+                    {
+                        properties.push(HirJsxProperty {
+                            name: None,
+                            value: HirJsxValue::Expression(expression),
+                            spread: true,
+                            origin: self.span_from_tokens(origin_start, self.index),
+                        });
+                    }
+                }
+                continue;
+            }
+            let attr_start = self.index;
+            let Some((attr_name, _, attr_end)) = self.parse_jsx_name() else {
+                self.error_current(
+                    "SYNTAX_JSX_EXPECTED_ATTRIBUTE",
+                    "expected a JSX attribute",
+                    "use a name, a spread attribute, or close the opening tag",
+                );
+                self.bump();
+                continue;
+            };
+            let expected_field = fields
+                .iter()
+                .find(|(name, _, _, _)| name == &attr_name)
+                .cloned();
+            let expected_type = expected_field.as_ref().map(|(_, ty, _, _)| ty);
+            let (value, value_type, value_span) =
+                self.parse_jsx_attribute_value(expected_type, attr_start);
+            if attr_name == "key" || attr_name == "ref" {
+                let target = if attr_name == "key" {
+                    &mut key
+                } else {
+                    &mut reference
+                };
+                if target.is_some() {
+                    self.error_span(
+                        "TYPE_DUPLICATE_JSX_ATTRIBUTE",
+                        format!("duplicate JSX attribute `{attr_name}`"),
+                        &self.span_from_tokens(attr_start, self.index),
+                        "provide `key` and `ref` at most once",
+                    );
+                } else if let HirJsxValue::Expression(expression) = value {
+                    if attr_name == "key"
+                        && !is_jsx_key_type(&value_type)
+                        && value_type != Type::Error
+                    {
+                        self.error_span(
+                            "TYPE_JSX_INVALID_KEY",
+                            "JSX keys must be strings or integer values",
+                            &value_span,
+                            "use a stable string or integer key",
+                        );
+                    }
+                    if attr_name == "ref"
+                        && !is_jsx_ref_type(self.program, &value_type, &element_type)
+                        && value_type != Type::Error
+                    {
+                        self.error_span(
+                            "TYPE_JSX_INVALID_REF",
+                            "JSX refs must target the produced element type",
+                            &value_span,
+                            "use a `Ref<Element>` or mutable reference compatible with this component",
+                        );
+                    }
+                    *target = Some(expression);
+                } else {
+                    self.error_span(
+                        "TYPE_JSX_ATTRIBUTE_REQUIRES_EXPRESSION",
+                        format!("JSX `{attr_name}` requires an expression value"),
+                        &self.span_from_tokens(attr_start, self.index),
+                        "write the value inside braces",
+                    );
+                }
+                continue;
+            }
+            if !provided.insert(attr_name.clone()) {
+                self.error_span(
+                    "TYPE_DUPLICATE_JSX_ATTRIBUTE",
+                    format!("duplicate JSX attribute `{attr_name}`"),
+                    &self.span_from_tokens(attr_start, self.index),
+                    "provide each property at most once",
+                );
+            }
+            if let Some((_, field_type, _, _)) = expected_field {
+                if !compatible(self.program, &value_type, &field_type) {
+                    self.error_span(
+                        "TYPE_MISMATCH",
+                        format!(
+                            "JSX property `{attr_name}` has type {:?}, expected {:?}",
+                            value_type, field_type
+                        ),
+                        &value_span,
+                        "provide a value compatible with the declared property type",
+                    );
+                }
+            } else if props_type != Type::Unknown {
+                self.error_span(
+                    "TYPE_UNKNOWN_JSX_PROPERTY",
+                    format!("unknown JSX property `{attr_name}`"),
+                    &self.span_from_tokens(attr_start, attr_end.max(attr_start + 1)),
+                    "use a property declared by the component's props type",
+                );
+            }
+            properties.push(HirJsxProperty {
+                name: Some(attr_name),
+                value,
+                spread: false,
+                origin: self.span_from_tokens(attr_start, self.index),
+            });
+        }
+        let self_closing = self.eat(TokenKind::Slash);
+        if !self.eat(TokenKind::Greater) {
+            self.error_current(
+                "SYNTAX_JSX_EXPECTED_OPENING_CLOSE",
+                "expected `>` to close the JSX opening tag",
+                "close the opening tag before adding children",
+            );
+        }
+        let child_type = fields
+            .iter()
+            .find(|(name, _, _, _)| name == "children")
+            .map(|(_, ty, _, _)| ty.clone());
+        let children = if self_closing {
+            Vec::new()
+        } else {
+            let children = self.parse_jsx_children(child_type.as_ref());
+            if self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash) {
+                let close_start = self.index;
+                self.bump();
+                self.bump();
+                let Some((closing_name, _, _)) = self.parse_jsx_name() else {
+                    self.error_current(
+                        "SYNTAX_JSX_EXPECTED_CLOSE_NAME",
+                        "expected a JSX closing tag name",
+                        "repeat the opening component name",
+                    );
+                    self.recover_jsx_closing_tag();
+                    return None;
+                };
+                if closing_name != name {
+                    self.error_span(
+                        "TYPE_JSX_TAG_MISMATCH",
+                        "JSX closing tag does not match its opening tag",
+                        &self.span_from_tokens(close_start, self.index),
+                        "close the element with the same component name",
+                    );
+                }
+                if !self.eat(TokenKind::Greater) {
+                    self.error_current(
+                        "SYNTAX_JSX_EXPECTED_CLOSE",
+                        "expected `>` after a JSX closing tag",
+                        "finish the closing tag",
+                    );
+                }
+            } else {
+                self.error_current(
+                    "SYNTAX_JSX_EXPECTED_CLOSE",
+                    "expected a JSX closing tag",
+                    "close the element before the end of the function",
+                );
+            }
+            children
+        };
+        if !children.is_empty() {
+            if provided.contains("children") {
+                self.error_span(
+                    "TYPE_DUPLICATE_JSX_ATTRIBUTE",
+                    "JSX children cannot be supplied both as an attribute and as child nodes",
+                    &self.span_from_tokens(start, self.index),
+                    "use either the `children` property or nested child nodes",
+                );
+            } else {
+                if let Some(child_type) = child_type.as_ref() {
+                    self.validate_jsx_children(&children, child_type);
+                }
+                properties.push(HirJsxProperty {
+                    name: Some("children".into()),
+                    value: HirJsxValue::Children(children.clone()),
+                    spread: false,
+                    origin: self.span_from_tokens(start, self.index),
+                });
+                provided.insert("children".into());
+            }
+        }
+        for (field_name, _, optional, has_initializer) in &fields {
+            if !optional
+                && !has_initializer
+                && !provided.contains(field_name)
+                && !spread_provided.contains(field_name)
+            {
+                self.error_span(
+                    "TYPE_MISSING_JSX_PROPERTY",
+                    format!("missing required JSX property `{field_name}`"),
+                    &self.span_from_tokens(start, self.index),
+                    "provide the required property or mark it optional",
+                );
+            }
+        }
+        let id = self.push_jsx_element(
+            component,
+            properties,
+            children,
+            props_type,
+            element_type,
+            key,
+            reference,
+            false,
+            start,
+        );
+        let result_type = self
+            .hir_jsx_elements
+            .get(id.0 as usize)
+            .map_or(Type::Error, |element| element.element_type.clone());
+        Some((id, result_type))
+    }
+
+    fn parse_jsx_children(&mut self, expected: Option<&Type>) -> Vec<HirJsxChild> {
+        let mut children = Vec::new();
+        while self.kind().is_some() {
+            if self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash) {
+                break;
+            }
+            if self.at(TokenKind::LeftBrace) {
+                self.bump();
+                if self.at(TokenKind::RightBrace) {
+                    self.bump();
+                    continue;
+                }
+                let expression_start = self.index;
+                let expression = self.expression(0, expected);
+                let expression_end = self.index;
+                if !self.eat(TokenKind::RightBrace) {
+                    self.error_current(
+                        "SYNTAX_JSX_EXPECTED_EXPRESSION_CLOSE",
+                        "expected `}` after a JSX expression child",
+                        "close the expression container",
+                    );
+                }
+                if let Some(expression) = expression
+                    && let Some(id) =
+                        self.hir_expression_id_for_range(expression_start, expression_end)
+                {
+                    if let Some(expected) = expected
+                        && !compatible(self.program, &expression.ty, expected)
+                    {
+                        self.error_span(
+                            "TYPE_MISMATCH",
+                            format!(
+                                "JSX child has type {:?}, expected {:?}",
+                                expression.ty, expected
+                            ),
+                            &self.span_from_tokens(expression_start, expression_end),
+                            "provide a child compatible with the component's children type",
+                        );
+                    }
+                    children.push(HirJsxChild::Expression(id));
+                }
+                continue;
+            }
+            if self.looks_like_jsx_start() && self.nth(1) != Some(TokenKind::Greater) {
+                let child_start = self.index;
+                if let Some(expression) = self.jsx_element_expression(expected)
+                    && let Some(id) = expression.jsx
+                {
+                    let child_type = expression.ty.clone();
+                    children.push(HirJsxChild::Element(id));
+                    if let Some(expected) = expected
+                        && !compatible(self.program, &child_type, expected)
+                    {
+                        self.error_span(
+                            "TYPE_MISMATCH",
+                            format!(
+                                "JSX child has type {:?}, expected {:?}",
+                                child_type, expected
+                            ),
+                            &self.span_from_tokens(child_start, self.index),
+                            "provide a child compatible with the component's children type",
+                        );
+                    }
+                }
+                continue;
+            }
+            let text_start = self.index;
+            let mut text_end = text_start;
+            while self.kind().is_some()
+                && !self.at(TokenKind::LeftBrace)
+                && !(self.at(TokenKind::Less)
+                    && (self.nth(1) == Some(TokenKind::Slash)
+                        || matches!(
+                            self.nth(1),
+                            Some(TokenKind::Identifier | TokenKind::From | TokenKind::Greater)
+                        )))
+            {
+                self.bump();
+                text_end = self.index;
+            }
+            if text_end == text_start {
+                self.error_current(
+                    "SYNTAX_JSX_EXPECTED_CHILD",
+                    "expected a JSX child",
+                    "use text, a braced expression, or a nested element",
+                );
+                self.bump();
+                continue;
+            }
+            let first = &self.tokens[text_start];
+            let last = &self.tokens[text_end - 1];
+            let value = self.module.source[first.range.start..last.range.end].to_owned();
+            children.push(HirJsxChild::Text {
+                value,
+                origin: self.span_from_tokens(text_start, text_end),
+            });
+        }
+        children
+    }
+
+    fn parse_jsx_attribute_value(
+        &mut self,
+        expected: Option<&Type>,
+        attribute_start: usize,
+    ) -> (HirJsxValue, Type, SourceSpan) {
+        if !self.eat(TokenKind::Equal) {
+            return (
+                HirJsxValue::Boolean(true),
+                Type::Primitive(PrimitiveType::Bool),
+                self.span_from_tokens(attribute_start, self.index),
+            );
+        }
+        if self.at(TokenKind::LeftBrace) {
+            self.bump();
+            let start = self.index;
+            let value = if self.at(TokenKind::RightBrace) {
+                None
+            } else {
+                self.expression(0, expected)
+            };
+            let end = self.index;
+            if !self.eat(TokenKind::RightBrace) {
+                self.error_current(
+                    "SYNTAX_JSX_EXPECTED_ATTRIBUTE_CLOSE",
+                    "expected `}` after a JSX attribute expression",
+                    "close the expression container",
+                );
+            }
+            let ty = value.as_ref().map_or(Type::Error, |value| value.ty.clone());
+            let value_span = if start < end {
+                self.span_from_tokens(start, end)
+            } else {
+                self.span_from_tokens(start.saturating_sub(1), self.index)
+            };
+            let expression = self
+                .hir_expression_id_for_range(start, end)
+                .map(HirJsxValue::Expression)
+                .unwrap_or(HirJsxValue::Boolean(true));
+            return (expression, ty, value_span);
+        }
+        if self.at(TokenKind::StringLiteral) {
+            let start = self.index;
+            let literal = self
+                .text()
+                .and_then(decode_quoted_literal)
+                .unwrap_or_default();
+            let value = self.prefix(expected);
+            let expression = self
+                .hir_expression_id_for_range(start, self.index)
+                .map(HirJsxValue::Expression)
+                .unwrap_or(HirJsxValue::String(literal));
+            let ty = value.as_ref().map_or(Type::Error, |value| value.ty.clone());
+            return (expression, ty, self.span_from_tokens(start, self.index));
+        }
+        self.error_current(
+            "SYNTAX_JSX_EXPECTED_ATTRIBUTE_VALUE",
+            "expected a JSX attribute value",
+            "use a quoted string or a braced expression",
+        );
+        (
+            HirJsxValue::Boolean(true),
+            Type::Primitive(PrimitiveType::Bool),
+            self.span_from_tokens(self.index, self.index),
+        )
+    }
+
+    fn parse_jsx_name(&mut self) -> Option<(String, usize, usize)> {
+        let start = self.index;
+        if !matches!(self.kind(), Some(TokenKind::Identifier | TokenKind::From)) {
+            return None;
+        }
+        let mut name = self.text()?.to_owned();
+        self.bump();
+        loop {
+            let separator = match self.kind() {
+                Some(TokenKind::Dot) => '.',
+                Some(TokenKind::Minus) => '-',
+                _ => break,
+            };
+            self.bump();
+            let Some(part) = self.text() else {
+                break;
+            };
+            if !matches!(self.kind(), Some(TokenKind::Identifier | TokenKind::From)) {
+                break;
+            }
+            name.push(separator);
+            name.push_str(part);
+            self.bump();
+        }
+        Some((name, start, self.index))
+    }
+
+    fn resolve_jsx_component(
+        &mut self,
+        name: &str,
+        start: usize,
+        end: usize,
+    ) -> (Option<HirExpressionId>, Type, Type) {
+        let mut expression_candidate = None;
+        if !name.contains('-') {
+            let diagnostics_before = self.diagnostics.len();
+            let expressions_before = self.hir_expressions.len();
+            let saved_index = self.index;
+            self.index = start;
+            let candidate = self.expression(0, None);
+            let consumed = self.index;
+            self.index = saved_index;
+            if consumed == end
+                && candidate
+                    .as_ref()
+                    .is_some_and(|expression| expression.ty != Type::Error)
+            {
+                expression_candidate = candidate;
+            } else {
+                self.diagnostics.truncate(diagnostics_before);
+                self.hir_expressions.truncate(expressions_before);
+            }
+        }
+        if let Some(expression) = expression_candidate {
+            let component_type = expression.ty.clone();
+            let id = self
+                .hir_expression_id_for_range(start, end)
+                .or_else(|| self.record_hir_expression_range(start, end, &expression));
+            return self.resolve_jsx_component_type(id, component_type, name, start);
+        }
+        let mut declaration_and_function = None;
+        if let Some((declaration, function)) = self.callable.get(&(self.module.id, name.to_owned()))
+        {
+            declaration_and_function = Some((*declaration, function.clone()));
+        } else if let Some((namespace, member)) = name.split_once('.') {
+            if let Some(import) = self.module.imports.iter().find(|import| {
+                matches!(
+                    &import.clause,
+                    ImportClause::Namespace { local, .. } if local == namespace
+                )
+            }) {
+                if let Some((declaration, function)) =
+                    self.callable.get(&(import.target, member.to_owned()))
+                {
+                    declaration_and_function = Some((*declaration, function.clone()));
+                }
+            }
+        }
+        let (declaration, component_type) =
+            if let Some((declaration, function)) = declaration_and_function {
+                (declaration, function_type(&function))
+            } else if let Some((declaration, ty, _)) = self.resolve_global_value(name) {
+                (declaration, ty)
+            } else {
+                let token = self.tokens.get(start).cloned();
+                if let Some(token) = token.as_ref() {
+                    self.error(
+                        "RESOLVE_UNRESOLVED_JSX_COMPONENT",
+                        format!("unresolved JSX component `{name}`"),
+                        token,
+                        "declare or import the component before using it",
+                    );
+                }
+                return (None, Type::Error, Type::Error);
+            };
+        let mut expression = value_type(component_type.clone());
+        expression.resolution = Some(ResolvedValue::Declaration(declaration));
+        expression.callable = matches!(component_type, Type::Function(_))
+            .then_some(CallableIdentity::Function(declaration));
+        expression.call_name = Some(name.into());
+        let id = self.record_hir_expression_range(start, end, &expression);
+        self.resolve_jsx_component_type(id, component_type, name, start)
+    }
+
+    fn resolve_jsx_component_type(
+        &mut self,
+        id: Option<HirExpressionId>,
+        component_type: Type,
+        name: &str,
+        start: usize,
+    ) -> (Option<HirExpressionId>, Type, Type) {
+        let (props_type, element_type) = match &component_type {
+            Type::Function(function) => (
+                function
+                    .parameters
+                    .first()
+                    .cloned()
+                    .unwrap_or(Type::Unknown),
+                (*function.result).clone(),
+            ),
+            Type::Nominal(component, arguments)
+                if matches!(
+                    declaration_name(self.program, *component),
+                    Some("ComponentType" | "HostComponent")
+                ) =>
+            {
+                (
+                    arguments.first().cloned().unwrap_or(Type::Unknown),
+                    self.jsx_element_type(),
+                )
+            }
+            _ => {
+                let token = self.tokens.get(start).cloned();
+                if let Some(token) = token.as_ref() {
+                    self.error(
+                        "TYPE_JSX_COMPONENT_NOT_CALLABLE",
+                        format!("JSX tag `{name}` does not resolve to a component value"),
+                        token,
+                        "use a function or a ComponentType value as the tag",
+                    );
+                }
+                (Type::Error, Type::Error)
+            }
+        };
+        (id, props_type, element_type)
+    }
+
+    fn jsx_fields(&self, props_type: &Type) -> Vec<(String, Type, bool, bool)> {
+        let Type::Nominal(declaration, arguments) = normalize_alias(self.program, props_type)
+        else {
+            return Vec::new();
+        };
+        let Some(definition) = self.program.definition(declaration) else {
+            return Vec::new();
+        };
+        let substitutions = definition
+            .generics
+            .iter()
+            .filter(|parameter| parameter.namespace != tn_hir::Namespace::Value)
+            .zip(arguments)
+            .map(|(parameter, argument)| (parameter.name.clone(), argument))
+            .collect::<BTreeMap<_, _>>();
+        let fields = match &definition.data {
+            DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => fields,
+            _ => return Vec::new(),
+        };
+        fields
+            .iter()
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    substitute_type(&field.ty, &substitutions),
+                    field.optional,
+                    field.has_initializer,
+                )
+            })
+            .collect()
+    }
+
+    fn validate_jsx_children(&mut self, children: &[HirJsxChild], expected: &Type) {
+        let element_type = match expected {
+            Type::Array(element, _) | Type::Slice(element) => element.as_ref(),
+            _ => expected,
+        };
+        for child in children {
+            let actual = match child {
+                HirJsxChild::Element(id) => self
+                    .hir_jsx_elements
+                    .get(id.0 as usize)
+                    .map_or(Type::Error, |element| element.element_type.clone()),
+                HirJsxChild::Expression(id) => self
+                    .hir_expressions
+                    .get(id.0 as usize)
+                    .map_or(Type::Error, |expression| expression.ty.clone()),
+                HirJsxChild::Text { .. } => Type::String,
+            };
+            if !compatible(self.program, &actual, element_type)
+                && !matches!(element_type, Type::Unknown | Type::Error)
+            {
+                self.error_span(
+                    "TYPE_MISMATCH",
+                    format!(
+                        "JSX child has type {:?}, expected {:?}",
+                        actual, element_type
+                    ),
+                    &self.jsx_child_origin(child),
+                    "provide a compatible child value",
+                );
+            }
+        }
+    }
+
+    fn jsx_child_origin(&self, child: &HirJsxChild) -> SourceSpan {
+        match child {
+            HirJsxChild::Element(id) => self
+                .hir_jsx_elements
+                .get(id.0 as usize)
+                .map_or_else(|| self.empty_span(), |element| element.origin.clone()),
+            HirJsxChild::Expression(id) => self
+                .hir_expressions
+                .get(id.0 as usize)
+                .map_or_else(|| self.empty_span(), |expression| expression.origin.clone()),
+            HirJsxChild::Text { origin, .. } => origin.clone(),
+        }
+    }
+
+    fn jsx_element_type(&self) -> Type {
+        self.resolve_type_name("Element").unwrap_or(Type::Unknown)
+    }
+
+    fn push_jsx_element(
+        &mut self,
+        component: Option<HirExpressionId>,
+        properties: Vec<HirJsxProperty>,
+        children: Vec<HirJsxChild>,
+        properties_type: Type,
+        element_type: Type,
+        key: Option<HirExpressionId>,
+        reference: Option<HirExpressionId>,
+        fragment: bool,
+        start: usize,
+    ) -> HirJsxId {
+        let id = HirJsxId(u32::try_from(self.hir_jsx_elements.len()).expect("HIR JSX limit"));
+        self.hir_jsx_elements.push(HirJsxElement {
+            id,
+            component,
+            properties,
+            children,
+            properties_type,
+            element_type,
+            key,
+            reference,
+            fragment,
+            origin: self.span_from_tokens(start, self.index),
+        });
+        id
+    }
+
+    fn hir_expression_id_for_range(&self, start: usize, end: usize) -> Option<HirExpressionId> {
+        let first = self.tokens.get(start)?;
+        let last = self.tokens.get(end.checked_sub(1)?)?;
+        let start = u32::try_from(first.range.start).ok()?;
+        let end = u32::try_from(last.range.end).ok()?;
+        self.hir_expressions
+            .iter()
+            .rev()
+            .find(|expression| {
+                expression.origin.byte_start == start && expression.origin.byte_end == end
+            })
+            .map(|expression| expression.id)
+    }
+
+    fn span_from_tokens(&self, start: usize, end: usize) -> SourceSpan {
+        let byte_start = self
+            .tokens
+            .get(start)
+            .map_or(self.module.source.len(), |token| token.range.start);
+        let byte_end = self
+            .tokens
+            .get(end.saturating_sub(1))
+            .map_or(byte_start, |token| token.range.end);
+        SourceSpan::new(
+            self.module.path.to_string_lossy(),
+            byte_start..byte_end,
+            &self.module.source,
+        )
+    }
+
+    fn empty_span(&self) -> SourceSpan {
+        SourceSpan::new(
+            self.module.path.to_string_lossy(),
+            self.module.source.len()..self.module.source.len(),
+            &self.module.source,
+        )
+    }
+
+    fn at(&self, kind: TokenKind) -> bool {
+        self.kind() == Some(kind)
+    }
+
+    fn looks_like_generic_call(&self) -> bool {
+        let mut depth = 0_u32;
+        let mut offset = 0_usize;
+        while offset < 512
+            && let Some(kind) = self.nth(offset)
+        {
+            match kind {
+                TokenKind::Less => depth += 1,
+                TokenKind::Greater => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return self.nth(offset + 1) == Some(TokenKind::LeftParen);
+                    }
+                }
+                TokenKind::Semicolon | TokenKind::LeftBrace if depth == 0 => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+        false
+    }
+
+    fn looks_like_jsx_start(&self) -> bool {
+        self.at(TokenKind::Less)
+            && !self.looks_like_generic_call()
+            && matches!(
+                self.nth(1),
+                Some(TokenKind::Identifier | TokenKind::From | TokenKind::Greater)
+            )
+    }
+
+    fn error_current(&mut self, id: &str, message: impl Into<String>, label: &str) {
+        if let Some(token) = self.token().cloned() {
+            self.error(id, message, &token, label);
+        }
+    }
+
+    fn recover_jsx_element(&mut self, _start: usize) {
+        while self.kind().is_some()
+            && !matches!(
+                self.kind(),
+                Some(TokenKind::Greater | TokenKind::RightBrace | TokenKind::Semicolon)
+            )
+        {
+            self.bump();
+        }
+        self.eat(TokenKind::Greater);
+    }
+
+    fn recover_jsx_closing_tag(&mut self) {
+        while self.kind().is_some() && self.kind() != Some(TokenKind::Greater) {
+            self.bump();
+        }
+        self.eat(TokenKind::Greater);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2070,6 +3690,7 @@ impl BodyChecker<'_> {
                         local,
                         ty,
                         projection: projections.get(&name).cloned().unwrap_or_default(),
+                        default: None,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -3059,18 +4680,29 @@ impl BodyChecker<'_> {
         mutable: bool,
         origin: SourceSpan,
     ) -> HirLocalId {
-        let id = HirLocalId(u32::try_from(self.hir_locals.len()).expect("HIR local limit"));
-        self.hir_locals.push(HirLocal {
-            id,
-            name: name.clone(),
-            ty,
-            mutable,
-            origin,
-        });
+        let id = self.push_hir_local(name.clone(), ty, mutable, origin);
         self.hir_scopes
             .last_mut()
             .expect("HIR local scope")
             .insert(name, id);
+        id
+    }
+
+    fn push_hir_local(
+        &mut self,
+        name: String,
+        ty: Type,
+        mutable: bool,
+        origin: SourceSpan,
+    ) -> HirLocalId {
+        let id = HirLocalId(u32::try_from(self.hir_locals.len()).expect("HIR local limit"));
+        self.hir_locals.push(HirLocal {
+            id,
+            name,
+            ty,
+            mutable,
+            origin,
+        });
         id
     }
 
@@ -3126,8 +4758,11 @@ impl BodyChecker<'_> {
         self.hir_bodies.push(BodyHir {
             owner: self.hir_owner,
             locals: std::mem::take(&mut self.hir_locals),
+            parameter_roots: std::mem::take(&mut self.parameter_roots),
             expressions: std::mem::take(&mut self.hir_expressions),
             patterns: std::mem::take(&mut self.hir_patterns),
+            binding_patterns: std::mem::take(&mut self.hir_binding_patterns),
+            jsx_elements: std::mem::take(&mut self.hir_jsx_elements),
             statements: std::mem::take(&mut self.hir_statements),
             closures: std::mem::take(&mut self.hir_closures),
             templates: std::mem::take(&mut self.hir_templates),
@@ -3200,10 +4835,22 @@ impl BodyChecker<'_> {
     }
 
     fn record_hir_expression(&mut self, start: usize, expression: &ExpressionType) {
-        let Some(first) = self.tokens.get(start) else {
-            return;
-        };
         let end = self.index.max(start + 1).min(self.tokens.len());
+        self.record_hir_expression_range(start, end, expression);
+    }
+
+    fn record_hir_expression_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        expression: &ExpressionType,
+    ) -> Option<HirExpressionId> {
+        let Some(first) = self.tokens.get(start) else {
+            return None;
+        };
+        if start >= end || end > self.tokens.len() {
+            return None;
+        }
         let last = &self.tokens[end - 1];
         let tokens = &self.tokens[start..end];
         if tokens
@@ -3216,7 +4863,7 @@ impl BodyChecker<'_> {
                 .iter()
                 .any(|token| matches!(token.kind, TokenKind::Comma | TokenKind::FatArrow))
         {
-            return;
+            return self.hir_expressions.last().map(|expression| expression.id);
         }
         let origin = SourceSpan::new(
             self.module.path.to_string_lossy(),
@@ -3228,7 +4875,7 @@ impl BodyChecker<'_> {
                 && recorded.ty == expression.ty
                 && recorded.resolution == expression.resolution
         }) {
-            return;
+            return self.hir_expressions.last().map(|expression| expression.id);
         }
         let children = maximal_expression_ids(&self.hir_expressions, Some(&origin), &[], &[]);
         let id = HirExpressionId(
@@ -3244,6 +4891,7 @@ impl BodyChecker<'_> {
             children,
             origin,
         });
+        Some(id)
     }
 
     fn resolve_type_name(&self, name: &str) -> Option<Type> {
@@ -3360,6 +5008,18 @@ impl BodyChecker<'_> {
                     token.range.clone(),
                     &self.module.source,
                 ),
+                message: label.into(),
+            },
+            id.to_ascii_lowercase().replace('_', "/"),
+        ));
+    }
+
+    fn error_span(&mut self, id: &str, message: impl Into<String>, span: &SourceSpan, label: &str) {
+        self.diagnostics.push(Diagnostic::error(
+            ConditionId::new(id).expect("static condition is valid"),
+            message,
+            Label {
+                span: span.clone(),
                 message: label.into(),
             },
             id.to_ascii_lowercase().replace('_', "/"),
@@ -3846,6 +5506,52 @@ fn value_type(ty: Type) -> ExpressionType {
         captures: Vec::new(),
         resolution: None,
         type_qualifier: false,
+        jsx: None,
+    }
+}
+
+fn is_jsx_key_type(ty: &Type) -> bool {
+    match ty {
+        Type::String | Type::Str => true,
+        Type::Reference { referent, .. } => matches!(referent.as_ref(), Type::String | Type::Str),
+        Type::Primitive(
+            PrimitiveType::I8
+            | PrimitiveType::I16
+            | PrimitiveType::I32
+            | PrimitiveType::I64
+            | PrimitiveType::I128
+            | PrimitiveType::Isize
+            | PrimitiveType::U8
+            | PrimitiveType::U16
+            | PrimitiveType::U32
+            | PrimitiveType::U64
+            | PrimitiveType::U128
+            | PrimitiveType::Usize,
+        ) => true,
+        _ => false,
+    }
+}
+
+fn is_jsx_ref_type(program: &Program, actual: &Type, element: &Type) -> bool {
+    if matches!(element, Type::Unknown | Type::Error)
+        || matches!(actual, Type::Unknown | Type::Error)
+    {
+        return true;
+    }
+    let actual = normalize_alias(program, actual);
+    match actual {
+        Type::Optional(inner) => is_jsx_ref_type(program, inner.as_ref(), element),
+        Type::Reference {
+            mutable, referent, ..
+        } => mutable && compatible(program, referent.as_ref(), element),
+        Type::Nominal(declaration, arguments)
+            if declaration_name(program, declaration) == Some("Ref") =>
+        {
+            arguments
+                .first()
+                .is_some_and(|target| compatible(program, target, element))
+        }
+        _ => false,
     }
 }
 
@@ -3907,6 +5613,9 @@ fn decode_template_chunk(chunk: &str) -> Option<String> {
 fn hir_expression_kind(tokens: &[Token], expression: &ExpressionType) -> HirExpressionKind {
     if expression.ty == Type::Error {
         return HirExpressionKind::Error;
+    }
+    if let Some(jsx) = expression.jsx {
+        return HirExpressionKind::Jsx(jsx);
     }
     let first = tokens.first().map(|token| token.kind);
     if first == Some(TokenKind::StringLiteral) && tokens.len() == 1 && expression.ty == Type::String
@@ -5773,4 +7482,46 @@ fn primitive(name: &str) -> Option<Type> {
         "str" => Type::Str,
         _ => return None,
     })
+}
+
+fn decode_quoted_literal(text: &str) -> Option<String> {
+    let content = text.get(1..text.len().checked_sub(1)?)?;
+    let mut decoded = String::new();
+    let mut characters = content.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        match characters.next()? {
+            '\\' => decoded.push('\\'),
+            '"' => decoded.push('"'),
+            '\'' => decoded.push('\''),
+            'n' => decoded.push('\n'),
+            'r' => decoded.push('\r'),
+            't' => decoded.push('\t'),
+            '0' => decoded.push('\0'),
+            'x' => {
+                let digits = [characters.next()?, characters.next()?];
+                decoded.push(char::from(
+                    u8::from_str_radix(&digits.iter().collect::<String>(), 16).ok()?,
+                ));
+            }
+            'u' => {
+                if characters.next()? != '{' {
+                    return None;
+                }
+                let mut digits = String::new();
+                for character in characters.by_ref() {
+                    if character == '}' {
+                        break;
+                    }
+                    digits.push(character);
+                }
+                decoded.push(char::from_u32(u32::from_str_radix(&digits, 16).ok()?)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(decoded)
 }

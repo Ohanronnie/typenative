@@ -7,7 +7,10 @@ fn invalid_fixture_corpus_has_localized_diagnostics_and_lossless_recovery() {
     let mut files = std::fs::read_dir(&root)
         .expect("invalid fixture directory exists")
         .map(|entry| entry.expect("fixture entry is readable").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "tn"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| matches!(extension.to_str(), Some("tn" | "tnx")))
+        })
         .collect::<Vec<_>>();
     files.sort();
     assert!(

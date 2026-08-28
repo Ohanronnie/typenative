@@ -9466,6 +9466,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ty,
+            } if operation == "binding_rest" => self.lower_binding_rest(operands, ty),
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
             } if matches!(
                 operation.as_str(),
                 "atomic_i32_load"
@@ -12753,6 +12758,24 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     })?;
                 Ok((target.function, function_type.clone()))
             }
+            Constant::ExternalFunction { symbol, ty } => {
+                let Type::Function(function_type) = ty else {
+                    return Err(CodegenError::Unsupported(
+                        "external function constant lacks a function type".into(),
+                    ));
+                };
+                let llvm_type = self.generator.llvm_function_type(
+                    &function_type.parameters,
+                    &function_type.result,
+                    &function_type.effects,
+                )?;
+                let function = self
+                    .generator
+                    .module
+                    .get_function(symbol)
+                    .unwrap_or_else(|| self.generator.module.add_function(symbol, llvm_type, None));
+                Ok((function, function_type.clone()))
+            }
             _ => Err(CodegenError::Unsupported(
                 "call target is not a direct callable constant".into(),
             )),
@@ -13958,6 +13981,56 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         Ok(adapter)
     }
 
+    fn direct_external_callable_adapter(
+        &self,
+        symbol: &str,
+        signature: &FunctionType,
+        target: FunctionValue<'ctx>,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!(
+            "tn_external_callable_adapter_{}",
+            stable_hash(&format!("{symbol}:{signature:?}"))
+        );
+        if let Some(function) = self.generator.module.get_function(&name) {
+            return Ok(function);
+        }
+        let mut parameters = vec![Type::RawPointer {
+            mutable: true,
+            pointee: Box::new(Type::Primitive(PrimitiveType::U8)),
+        }];
+        parameters.extend(signature.parameters.clone());
+        let function_type = self.generator.llvm_function_type(
+            &parameters,
+            &signature.result,
+            &signature.effects,
+        )?;
+        let adapter = self
+            .generator
+            .module
+            .add_function(&name, function_type, None);
+        adapter.set_linkage(Linkage::Internal);
+        let entry = self.generator.context.append_basic_block(adapter, "entry");
+        let builder = self.generator.context.create_builder();
+        builder.position_at_end(entry);
+        let arguments = adapter
+            .get_param_iter()
+            .skip(1)
+            .map(|value| value.as_basic_value_enum().into())
+            .collect::<Vec<BasicMetadataValueEnum>>();
+        let call = builder.build_call(target, &arguments, "external.callable.target")?;
+        if signature.result.as_ref() == &Type::Primitive(PrimitiveType::Void)
+            && signature.effects.is_empty()
+        {
+            builder.build_return(None)?;
+        } else {
+            let value = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::Builder("external callable target returned void".into())
+            })?;
+            builder.build_return(Some(&value))?;
+        }
+        Ok(adapter)
+    }
+
     fn lower_vtable_lookup(
         &self,
         object: &Place,
@@ -14381,6 +14454,37 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 )?
                 .into()
             }
+            Constant::ExternalFunction { symbol, ty } => {
+                let Type::Function(function_type) = ty else {
+                    return Err(CodegenError::Unsupported(
+                        "external function constant lacks a function type".into(),
+                    ));
+                };
+                let llvm_type = self.generator.llvm_function_type(
+                    &function_type.parameters,
+                    &function_type.result,
+                    &function_type.effects,
+                )?;
+                let target = self
+                    .generator
+                    .module
+                    .get_function(symbol)
+                    .unwrap_or_else(|| self.generator.module.add_function(symbol, llvm_type, None));
+                let adapter =
+                    self.direct_external_callable_adapter(symbol, function_type, target)?;
+                self.callable_value(
+                    adapter.as_global_value().as_pointer_value(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                    self.generator
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null(),
+                )?
+                .into()
+            }
             Constant::Method { owner, member, ty } => {
                 let Type::Function(function_type) = ty else {
                     return Err(CodegenError::Unsupported(
@@ -14780,6 +14884,139 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             &self.place_type(collection)?,
             index,
         )
+    }
+
+    fn lower_binding_rest(
+        &self,
+        operands: &[Operand],
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let Type::Slice(element) = ty else {
+            return Err(CodegenError::Unsupported(
+                "binding rest requires a slice result".into(),
+            ));
+        };
+        let collection = operands.first().ok_or_else(|| {
+            CodegenError::Unsupported("binding rest lacks a source collection".into())
+        })?;
+        let start_operand = operands.get(1).ok_or_else(|| {
+            CodegenError::Unsupported("binding rest lacks a starting index".into())
+        })?;
+        let start = self.lower_operand(start_operand)?.into_int_value();
+        let collection_type = self.operand_type(collection)?;
+        let collection_place = operand_place(collection).ok_or_else(|| {
+            CodegenError::Unsupported("binding rest source must be addressable".into())
+        })?;
+        let collection_pointer = self.place_pointer(collection_place)?;
+        let (data, length) = match &collection_type {
+            Type::Array(source_element, array_length) => {
+                if source_element.as_ref() != element.as_ref() {
+                    return Err(CodegenError::Unsupported(
+                        "binding rest element type does not match its source".into(),
+                    ));
+                }
+                let length = self
+                    .generator
+                    .pointer_int_type()
+                    .const_int(*array_length, false);
+                let valid = self.builder.build_int_compare(
+                    IntPredicate::ULE,
+                    start,
+                    length,
+                    "binding.rest.start.in_bounds",
+                )?;
+                self.guard(valid, "binding rest starts outside the array")?;
+                let array = self
+                    .generator
+                    .basic_type(&collection_type)?
+                    .into_array_type();
+                let data = unsafe {
+                    self.builder.build_gep(
+                        array,
+                        collection_pointer,
+                        &[self.generator.context.i32_type().const_zero(), start],
+                        "binding.rest.array.data",
+                    )?
+                };
+                (
+                    data,
+                    self.builder
+                        .build_int_sub(length, start, "binding.rest.length")?,
+                )
+            }
+            Type::Slice(source_element) => {
+                if source_element.as_ref() != element.as_ref() {
+                    return Err(CodegenError::Unsupported(
+                        "binding rest element type does not match its source".into(),
+                    ));
+                }
+                let slice = self
+                    .generator
+                    .basic_type(&collection_type)?
+                    .into_struct_type();
+                let data = self
+                    .builder
+                    .build_load(
+                        self.generator.context.ptr_type(AddressSpace::default()),
+                        self.builder.build_struct_gep(
+                            slice,
+                            collection_pointer,
+                            0,
+                            "binding.rest.slice.data.address",
+                        )?,
+                        "binding.rest.slice.data",
+                    )?
+                    .into_pointer_value();
+                let length = self
+                    .builder
+                    .build_load(
+                        self.generator.pointer_int_type(),
+                        self.builder.build_struct_gep(
+                            slice,
+                            collection_pointer,
+                            1,
+                            "binding.rest.slice.length.address",
+                        )?,
+                        "binding.rest.slice.length",
+                    )?
+                    .into_int_value();
+                let valid = self.builder.build_int_compare(
+                    IntPredicate::ULE,
+                    start,
+                    length,
+                    "binding.rest.start.in_bounds",
+                )?;
+                self.guard(valid, "binding rest starts outside the slice")?;
+                let data = unsafe {
+                    self.builder.build_gep(
+                        self.generator.basic_type(element)?,
+                        data,
+                        &[start],
+                        "binding.rest.slice.data",
+                    )?
+                };
+                (
+                    data,
+                    self.builder
+                        .build_int_sub(length, start, "binding.rest.length")?,
+                )
+            }
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "binding rest requires an array or slice source, found {other:?}"
+                )));
+            }
+        };
+        let structure = self.generator.basic_type(ty)?.into_struct_type();
+        let value = self
+            .builder
+            .build_insert_value(structure.const_zero(), data, 0, "binding.rest.data")?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(value, length, 1, "binding.rest.length")?
+            .into_struct_value()
+            .into())
     }
 
     fn index_pointer_from(

@@ -2,10 +2,11 @@ use crate::{OwnershipFacts, derive_ownership_facts};
 use std::collections::{BTreeMap, BTreeSet};
 use tn_diagnostics::SourceSpan;
 use tn_hir::{
-    BodyHir, BodyOwner, DeclarationId, DefinitionData, Function, HirCaptureMode, HirClosureId,
-    HirLocalId, HirPatternBinding, HirPatternProjection, HirStatementKind, HirTemplateId,
-    HirTemplatePart, HirTemplateStorage, ImportClause, IterationWitness, MemberId, Namespace,
-    PrimitiveType, Program, ReceiverMode, ResolvedValue, Type,
+    BodyHir, BodyOwner, DeclarationId, DefinitionData, Function, HirBindingPattern, HirCaptureMode,
+    HirClosureId, HirJsxChild, HirJsxValue, HirLocalId, HirPatternBinding, HirPatternProjection,
+    HirStatementKind, HirTemplateId, HirTemplatePart, HirTemplateStorage, ImportClause,
+    IterationWitness, MemberId, Namespace, PrimitiveType, Program, ReceiverMode, ResolvedValue,
+    Type,
 };
 use tn_mir::{
     BasicBlock, BasicBlockId, Body, BorrowKind, CastKind, Local, LocalId, Operand, Place, RegionId,
@@ -115,16 +116,20 @@ fn lower_one(
         return;
     };
     let lexed = lex(&module.path.to_string_lossy(), module.source.as_bytes());
-    let tokens = lexed
+    let all_tokens = lexed
         .tokens
         .iter()
-        .filter(|token| {
-            !token.kind.is_trivia()
-                && token.range.start > function.body_start as usize
-                && token.range.end < function.body_end as usize
-        })
+        .filter(|token| !token.kind.is_trivia() && token.range.end <= function.body_end as usize)
         .collect::<Vec<_>>();
-    let generic_call_ends = generic_call_ends(&tokens);
+    let body_start = all_tokens
+        .iter()
+        .position(|token| token.range.start > function.body_start as usize)
+        .unwrap_or(all_tokens.len());
+    let body_limit = all_tokens
+        .iter()
+        .position(|token| token.range.end >= function.body_end as usize)
+        .unwrap_or(all_tokens.len());
+    let generic_call_ends = generic_call_ends(&all_tokens);
     let function_result = specialize_owner_result(program, declaration, &function.result);
     let return_type = if function.is_async {
         match &function_result {
@@ -151,9 +156,10 @@ fn lower_one(
         program,
         module,
         hir,
-        tokens,
+        tokens: all_tokens,
+        body_limit,
         generic_call_ends,
-        index: 0,
+        index: body_start,
         locals: Vec::new(),
         temporary_locals: BTreeSet::new(),
         names: BTreeMap::new(),
@@ -179,12 +185,16 @@ fn lower_one(
         generator_buffer: None,
         generator_finish_block: None,
     };
-    let argument_count = function.parameters.len() + usize::from(member.is_some());
-    let mut argument_locals = hir.locals.iter().take(argument_count).collect::<Vec<_>>();
-    if member.is_some() {
-        argument_locals.sort_by_key(|local| usize::from(local.name != "this"));
+    let mut argument_ids = hir.parameter_roots.clone();
+    if member.is_some()
+        && let Some(this) = hir.locals.iter().find(|local| local.name == "this")
+    {
+        argument_ids.insert(0, this.id);
     }
-    for parameter in argument_locals {
+    for id in argument_ids {
+        let Some(parameter) = hir.locals.get(id.0 as usize) else {
+            continue;
+        };
         let local = lowerer.add_local(
             parameter.name.clone(),
             parameter.ty.clone(),
@@ -193,6 +203,28 @@ fn lower_one(
             parameter.origin.clone(),
         );
         lowerer.hir_local_ids.insert(parameter.id, local);
+    }
+    let binding_locals = hir
+        .binding_patterns
+        .iter()
+        .flat_map(|pattern| pattern.bindings.iter().map(|binding| binding.local))
+        .collect::<BTreeSet<_>>();
+    for hir_local in hir
+        .locals
+        .iter()
+        .filter(|local| binding_locals.contains(&local.id))
+    {
+        if lowerer.hir_local_ids.contains_key(&hir_local.id) {
+            continue;
+        }
+        let local = lowerer.add_local(
+            hir_local.name.clone(),
+            hir_local.ty.clone(),
+            hir_local.mutable,
+            false,
+            hir_local.origin.clone(),
+        );
+        lowerer.hir_local_ids.insert(hir_local.id, local);
     }
     lowerer.lower();
     bodies.push(lowerer.finish(declaration, member, function.effects.clone()));
@@ -307,6 +339,7 @@ struct OwnershipMirLowerer<'a> {
     module: &'a tn_hir::Module,
     hir: &'a BodyHir,
     tokens: Vec<&'a Token>,
+    body_limit: usize,
     generic_call_ends: BTreeMap<usize, usize>,
     index: usize,
     locals: Vec<Local>,
@@ -337,6 +370,7 @@ impl OwnershipMirLowerer<'_> {
         if self.generator_item_type.is_some() {
             self.start_generator();
         }
+        self.lower_parameter_bindings();
         self.lower_sequence(None);
         if self.blocks[self.current].terminator.is_none() {
             let managed = self.active_async_disposals();
@@ -354,6 +388,233 @@ impl OwnershipMirLowerer<'_> {
             }
             self.current = finish;
             self.finish_generator();
+        }
+    }
+
+    fn lower_parameter_bindings(&mut self) {
+        let patterns = self.hir.binding_patterns.clone();
+        for pattern in &patterns {
+            if self.hir_local_ids.contains_key(&pattern.root) {
+                self.lower_binding_pattern(pattern);
+            }
+        }
+    }
+
+    fn lower_binding_pattern(&mut self, pattern: &HirBindingPattern) {
+        let Some(root) = self.hir_local_ids.get(&pattern.root).copied() else {
+            return;
+        };
+        let root_type = self
+            .hir
+            .locals
+            .get(pattern.root.0 as usize)
+            .map_or(Type::Error, |local| local.ty.clone());
+        for binding in &pattern.bindings {
+            let destination = if let Some(destination) = self.hir_local_ids.get(&binding.local) {
+                *destination
+            } else {
+                let Some(hir_local) = self.hir.locals.get(binding.local.0 as usize).cloned() else {
+                    continue;
+                };
+                let destination = self.add_local(
+                    hir_local.name,
+                    hir_local.ty,
+                    hir_local.mutable,
+                    false,
+                    hir_local.origin,
+                );
+                self.hir_local_ids.insert(binding.local, destination);
+                destination
+            };
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span_from_hir_local(binding.local),
+            );
+            let mut source = Place::local(root);
+            let mut source_type = root_type.clone();
+            let mut rest = false;
+            let mut rest_start = 0_u32;
+            for projection in &binding.projection {
+                match projection {
+                    HirPatternProjection::Field(index) => {
+                        let field_type = self
+                            .binding_projection_type(&source_type, projection)
+                            .unwrap_or_else(|| binding.ty.clone());
+                        source.projection.push(tn_mir::Projection::Field {
+                            index: *index,
+                            ty: field_type.clone(),
+                        });
+                        source_type = field_type;
+                    }
+                    HirPatternProjection::Index(index) => {
+                        let element_type = self
+                            .binding_projection_type(&source_type, projection)
+                            .unwrap_or_else(|| binding.ty.clone());
+                        if matches!(source_type, Type::Tuple(_)) {
+                            source.projection.push(tn_mir::Projection::Field {
+                                index: *index,
+                                ty: element_type.clone(),
+                            });
+                        } else {
+                            let index_local = self.temporary(
+                                Type::Primitive(PrimitiveType::Usize),
+                                self.span_from_hir_local(binding.local),
+                            );
+                            self.statement(
+                                StatementKind::StorageLive(index_local),
+                                self.span_from_hir_local(binding.local),
+                            );
+                            self.statement(
+                                StatementKind::Assign(
+                                    Place::local(index_local),
+                                    Box::new(Rvalue::Use(Operand::Constant(
+                                        tn_mir::Constant::Integer {
+                                            value: i128::from(*index),
+                                            ty: Type::Primitive(PrimitiveType::Usize),
+                                        },
+                                    ))),
+                                ),
+                                self.span_from_hir_local(binding.local),
+                            );
+                            source
+                                .projection
+                                .push(tn_mir::Projection::Index(index_local));
+                        }
+                        source_type = element_type;
+                    }
+                    HirPatternProjection::Rest { start } => {
+                        rest = true;
+                        rest_start = *start;
+                        source_type = self
+                            .binding_projection_type(&source_type, projection)
+                            .unwrap_or(Type::Unknown);
+                    }
+                    HirPatternProjection::Variant(_) | HirPatternProjection::OptionalPayload => {}
+                }
+            }
+            if let Type::Optional(inner) = &source_type
+                && binding.default.is_some()
+            {
+                self.lower_binding_default(
+                    destination,
+                    source,
+                    inner.as_ref().clone(),
+                    binding.default.as_ref(),
+                    binding.local,
+                );
+                continue;
+            }
+            let rvalue = if rest {
+                Rvalue::RawOperation {
+                    operation: "binding_rest".into(),
+                    operands: vec![
+                        Operand::Copy(source),
+                        Operand::Constant(tn_mir::Constant::Integer {
+                            value: i128::from(rest_start),
+                            ty: Type::Primitive(PrimitiveType::Usize),
+                        }),
+                    ],
+                    ty: binding.ty.clone(),
+                }
+            } else {
+                Rvalue::Use(Operand::Move(source))
+            };
+            self.statement(
+                StatementKind::Assign(Place::local(destination), Box::new(rvalue)),
+                self.span_from_hir_local(binding.local),
+            );
+        }
+    }
+
+    fn lower_binding_default(
+        &mut self,
+        destination: LocalId,
+        source: Place,
+        value_type: Type,
+        default: Option<&SourceSpan>,
+        binding: HirLocalId,
+    ) {
+        let span = self.span_from_hir_local(binding);
+        let present = self.new_block();
+        let fallback = self.new_block();
+        let join = self.new_block();
+        self.terminate(
+            TerminatorKind::Switch {
+                value: Operand::Copy(source.clone()),
+                targets: vec![(1, Self::block_id(present))],
+                otherwise: Self::block_id(fallback),
+            },
+            span.clone(),
+        );
+
+        self.current = present;
+        let mut payload = source;
+        payload.projection.push(tn_mir::Projection::Downcast(1));
+        self.statement(
+            StatementKind::Assign(
+                Place::local(destination),
+                Box::new(Rvalue::Use(Operand::Move(payload))),
+            ),
+            span.clone(),
+        );
+        self.terminate(TerminatorKind::Goto(Self::block_id(join)), span.clone());
+
+        self.current = fallback;
+        let saved_index = self.index;
+        let fallback = default
+            .and_then(|default| {
+                let (start, end) = self.token_range_for_bytes(
+                    default.byte_start as usize,
+                    default.byte_end as usize,
+                )?;
+                self.lower_expression_range(start, end, Some(&value_type))
+            })
+            .unwrap_or_else(|| {
+                (
+                    Operand::Constant(tn_mir::Constant::Undefined(value_type.clone())),
+                    value_type.clone(),
+                )
+            });
+        self.index = saved_index;
+        let value = if fallback.1 == value_type {
+            Rvalue::Use(fallback.0)
+        } else {
+            Rvalue::Cast {
+                operand: fallback.0,
+                ty: value_type.clone(),
+                kind: mir_cast_kind(&fallback.1, &value_type),
+            }
+        };
+        self.statement(
+            StatementKind::Assign(Place::local(destination), Box::new(value)),
+            span.clone(),
+        );
+        self.terminate(TerminatorKind::Goto(Self::block_id(join)), span);
+        self.current = join;
+    }
+
+    fn binding_projection_type(
+        &self,
+        ty: &Type,
+        projection: &HirPatternProjection,
+    ) -> Option<Type> {
+        match projection {
+            HirPatternProjection::Field(index) => self
+                .aggregate_schema(ty)
+                .get(*index as usize)
+                .map(|(_, ty)| ty.clone()),
+            HirPatternProjection::Index(index) => match ty {
+                Type::Tuple(elements) => elements.get(*index as usize).cloned(),
+                Type::Array(element, _) | Type::Slice(element) => Some(element.as_ref().clone()),
+                _ => None,
+            },
+            HirPatternProjection::Rest { .. } => match ty {
+                Type::Array(element, _) | Type::Slice(element) => {
+                    Some(Type::Slice(element.clone()))
+                }
+                _ => None,
+            },
+            HirPatternProjection::Variant(_) | HirPatternProjection::OptionalPayload => None,
         }
     }
 
@@ -532,7 +793,7 @@ impl OwnershipMirLowerer<'_> {
     }
 
     fn lower_sequence(&mut self, end: Option<TokenKind>) {
-        while self.index < self.tokens.len() && self.kind() != end {
+        while self.kind().is_some() && self.kind() != end {
             if self.blocks[self.current].terminator.is_some() {
                 self.current = self.new_block();
             }
@@ -567,7 +828,13 @@ impl OwnershipMirLowerer<'_> {
             Some(TokenKind::While) => self.lower_while(),
             Some(TokenKind::For) => self.lower_for(),
             Some(TokenKind::Yield) => self.lower_yield(),
-            Some(TokenKind::Switch | TokenKind::Identifier | TokenKind::This | TokenKind::Star) => {
+            Some(
+                TokenKind::Switch
+                | TokenKind::Identifier
+                | TokenKind::This
+                | TokenKind::Star
+                | TokenKind::Less,
+            ) => {
                 self.lower_expression_statement();
             }
             Some(TokenKind::Try)
@@ -803,7 +1070,12 @@ impl OwnershipMirLowerer<'_> {
             self.index = header_end + 1;
             return;
         };
-        let iterable_start = binding_index + 2;
+        let binding_pattern = self.for_binding_pattern(token);
+        let Some(of_index) = self.find_top_level(binding_index, header_end, TokenKind::Of) else {
+            self.index = header_end + 1;
+            return;
+        };
+        let iterable_start = of_index + 1;
         let Some((iterable, iterable_type)) =
             self.lower_expression_range(iterable_start, header_end, None)
         else {
@@ -837,13 +1109,19 @@ impl OwnershipMirLowerer<'_> {
             iterable.projection.push(tn_mir::Projection::Dereference);
         }
         let binding = self.add_local(
-            self.text(binding_token).to_owned(),
+            binding_pattern
+                .as_ref()
+                .and_then(|pattern| self.hir.locals.get(pattern.root.0 as usize))
+                .map_or_else(
+                    || self.text(binding_token).to_owned(),
+                    |local| local.name.clone(),
+                ),
             item_type.clone(),
             false,
             false,
             self.span(binding_token),
         );
-        self.bind_hir_local(binding_token, binding);
+        self.prepare_for_binding(binding_pattern.as_ref(), binding_token, binding);
         let usize_type = Type::Primitive(PrimitiveType::Usize);
         let index = self.temporary(usize_type.clone(), self.span(token));
         let length = self.temporary(usize_type.clone(), self.span(token));
@@ -914,6 +1192,9 @@ impl OwnershipMirLowerer<'_> {
             ),
             self.span(binding_token),
         );
+        if let Some(pattern) = &binding_pattern {
+            self.lower_binding_pattern(pattern);
+        }
         self.index = header_end + 1;
         self.loop_targets.push((
             Self::block_id(increment_block),
@@ -1032,13 +1313,20 @@ impl OwnershipMirLowerer<'_> {
         };
         let iterator = self.materialize_operand(iterator, iterator_type.clone(), token);
         let binding = self.add_local(
-            self.text(binding_token).to_owned(),
+            self.for_binding_pattern(token)
+                .as_ref()
+                .and_then(|pattern| self.hir.locals.get(pattern.root.0 as usize))
+                .map_or_else(
+                    || self.text(binding_token).to_owned(),
+                    |local| local.name.clone(),
+                ),
             item_type.clone(),
             false,
             false,
             self.span(binding_token),
         );
-        self.bind_hir_local(binding_token, binding);
+        let binding_pattern = self.for_binding_pattern(token);
+        self.prepare_for_binding(binding_pattern.as_ref(), binding_token, binding);
 
         let condition_block = self.new_block();
         let body_block = self.new_block();
@@ -1108,6 +1396,9 @@ impl OwnershipMirLowerer<'_> {
             ),
             self.span(binding_token),
         );
+        if let Some(pattern) = &binding_pattern {
+            self.lower_binding_pattern(pattern);
+        }
         self.index = header_end + 1;
         self.loop_targets.push((
             Self::block_id(condition_block),
@@ -1167,13 +1458,20 @@ impl OwnershipMirLowerer<'_> {
         };
         let iterable = self.materialize_operand(iterable, iterable_type.clone(), token);
         let binding = self.add_local(
-            self.text(binding_token).to_owned(),
+            self.for_binding_pattern(token)
+                .as_ref()
+                .and_then(|pattern| self.hir.locals.get(pattern.root.0 as usize))
+                .map_or_else(
+                    || self.text(binding_token).to_owned(),
+                    |local| local.name.clone(),
+                ),
             item_type.clone(),
             false,
             false,
             self.span(binding_token),
         );
-        self.bind_hir_local(binding_token, binding);
+        let binding_pattern = self.for_binding_pattern(token);
+        self.prepare_for_binding(binding_pattern.as_ref(), binding_token, binding);
         let condition_block = self.new_block();
         let resume_block = self.new_block();
         let body_block = self.new_block();
@@ -1270,6 +1568,9 @@ impl OwnershipMirLowerer<'_> {
             ),
             self.span(binding_token),
         );
+        if let Some(pattern) = &binding_pattern {
+            self.lower_binding_pattern(pattern);
+        }
         self.index = header_end + 1;
         self.loop_targets.push((
             Self::block_id(condition_block),
@@ -1533,7 +1834,9 @@ impl OwnershipMirLowerer<'_> {
     }
 
     fn kind(&self) -> Option<TokenKind> {
-        self.tokens.get(self.index).map(|token| token.kind)
+        (self.index < self.body_limit)
+            .then(|| self.tokens.get(self.index).map(|token| token.kind))
+            .flatten()
     }
 
     fn text(&self, token: &Token) -> &str {
@@ -1548,25 +1851,87 @@ impl OwnershipMirLowerer<'_> {
         )
     }
 
+    fn span_from_hir_local(&self, local: HirLocalId) -> SourceSpan {
+        self.hir.locals.get(local.0 as usize).map_or_else(
+            || SourceSpan::new("<binding>", 0..0, ""),
+            |hir_local| hir_local.origin.clone(),
+        )
+    }
+
+    fn for_binding_pattern(&self, token: &Token) -> Option<HirBindingPattern> {
+        let start = u32::try_from(token.range.start).ok()?;
+        let root = self.hir.statements.iter().find_map(|statement| {
+            if statement.origin.byte_start != start {
+                return None;
+            }
+            let HirStatementKind::For { binding, .. } = statement.kind else {
+                return None;
+            };
+            Some(binding)
+        })?;
+        self.hir
+            .binding_patterns
+            .iter()
+            .find(|pattern| pattern.root == root)
+            .cloned()
+    }
+
+    fn prepare_for_binding(
+        &mut self,
+        pattern: Option<&HirBindingPattern>,
+        binding_token: &Token,
+        binding: LocalId,
+    ) {
+        if let Some(pattern) = pattern {
+            self.hir_local_ids.insert(pattern.root, binding);
+        } else {
+            self.bind_hir_local(binding_token, binding);
+        }
+    }
+
     fn lower_local(&mut self) {
         let mutable = self.kind() == Some(TokenKind::Let);
         let start = self.index;
-        let Some(name_token) = self.tokens.get(start + 1).copied() else {
+        let pattern_start = start
+            + 1
+            + usize::from(
+                self.tokens
+                    .get(start + 1)
+                    .is_some_and(|token| token.kind == TokenKind::Mut),
+            );
+        let end = self.statement_end(start);
+        let Some(pattern_token) = self.tokens.get(pattern_start).copied() else {
             self.index += 1;
             return;
         };
-        let name = self.text(name_token).to_owned();
-        let end = self.statement_end(start);
-        let equal = self.tokens[start..end]
+        let pattern_origin_start = if self
+            .tokens
+            .get(start + 1)
+            .is_some_and(|token| token.kind == TokenKind::Mut)
+        {
+            start + 1
+        } else {
+            pattern_start
+        };
+        let binding_pattern = self
+            .hir
+            .binding_patterns
             .iter()
-            .position(|token| token.kind == TokenKind::Equal)
-            .map(|offset| start + offset);
+            .find(|pattern| {
+                pattern.origin.byte_start
+                    == self
+                        .tokens
+                        .get(pattern_origin_start)
+                        .map_or(u32::MAX, |token| {
+                            u32::try_from(token.range.start).unwrap_or(u32::MAX)
+                        })
+            })
+            .cloned();
+        let equal = self.find_top_level(pattern_start, end, TokenKind::Equal);
         let initializer = equal.and_then(|equal| self.tokens.get(equal + 1).copied());
         let annotation = equal.and_then(|equal| {
-            self.tokens[start + 2..equal]
-                .iter()
-                .position(|token| token.kind == TokenKind::Colon)
-                .map(|colon| start + 2 + colon + 1)
+            self.find_top_level(pattern_start, equal, TokenKind::Colon)
+                .map(|colon| colon + 1)
                 .and_then(|type_start| self.parse_type_range(type_start, equal))
         });
         let (simple_type, source) = self.infer_initializer(initializer, equal, end);
@@ -1592,11 +1957,33 @@ impl OwnershipMirLowerer<'_> {
             .as_ref()
             .map_or_else(|| simple_type.clone(), |(_, ty)| ty.clone());
         let ty = annotation.unwrap_or_else(|| inferred.clone());
-        let local = self.add_local(name, ty.clone(), mutable, false, self.span(name_token));
-        self.bind_hir_local(name_token, local);
-        self.statement(StatementKind::StorageLive(local), self.span(name_token));
+        let (name, pattern_mutable, origin) = binding_pattern
+            .as_ref()
+            .and_then(|pattern| {
+                self.hir
+                    .locals
+                    .get(pattern.root.0 as usize)
+                    .map(|local| (local.name.clone(), local.mutable, local.origin.clone()))
+            })
+            .unwrap_or_else(|| {
+                (
+                    self.text(pattern_token).to_owned(),
+                    mutable,
+                    self.span(pattern_token),
+                )
+            });
+        let local = self.add_local(name, ty.clone(), pattern_mutable, false, origin.clone());
+        if let Some(pattern) = &binding_pattern {
+            self.hir_local_ids.insert(pattern.root, local);
+        } else {
+            self.bind_hir_local(pattern_token, local);
+        }
+        self.statement(StatementKind::StorageLive(local), origin.clone());
         if !self.assign_simple_initializer(local, &ty, &inferred, source) {
-            self.assign_remaining_initializer(local, &ty, initializer, complex, name_token);
+            self.assign_remaining_initializer(local, &ty, initializer, complex, pattern_token);
+        }
+        if let Some(pattern) = binding_pattern {
+            self.lower_binding_pattern(&pattern);
         }
         self.index = end
             + usize::from(
@@ -2151,6 +2538,432 @@ impl OwnershipMirLowerer<'_> {
         self.index = end + usize::from(end < self.tokens.len());
     }
 
+    fn lower_jsx(&mut self, id: tn_hir::HirJsxId, start: usize) -> Option<(Operand, Type)> {
+        let element = self.hir.jsx_elements.get(id.0 as usize)?.clone();
+        if element.fragment {
+            let (children, child_type) = self.lower_jsx_children(&element.children, None, start)?;
+            let array_type =
+                Type::Array(Box::new(child_type.clone()), element.children.len() as u64);
+            let children =
+                self.materialize_jsx_aggregate(array_type.clone(), children, child_type, start)?;
+            let element_type = element.element_type.clone();
+            let signature = tn_hir::FunctionType {
+                parameters: vec![array_type],
+                result: Box::new(element_type.clone()),
+                effects: Vec::new(),
+                generics: Vec::new(),
+                is_async: false,
+                is_unsafe: false,
+            };
+            return self.emit_call(
+                self.jsx_runtime_function("fragment", signature.clone())?,
+                None,
+                &signature,
+                vec![children],
+                start,
+            );
+        }
+        let component_id = element.component?;
+        let component_origin = self
+            .hir
+            .expressions
+            .get(component_id.0 as usize)?
+            .origin
+            .clone();
+        let component_expression = self.hir.expressions.get(component_id.0 as usize)?;
+        let (component_start, component_end) = self.token_range_for_bytes(
+            component_origin.byte_start as usize,
+            component_origin.byte_end as usize,
+        )?;
+        let component = match (component_expression.resolution, &component_expression.ty) {
+            (Some(ResolvedValue::Declaration(declaration)), Type::Function(_)) => (
+                Operand::Constant(tn_mir::Constant::Function(
+                    declaration,
+                    component_expression.ty.clone(),
+                )),
+                component_expression.ty.clone(),
+            ),
+            (Some(ResolvedValue::Member(member)), Type::Function(_))
+                if self.method_receiver(member) == Some(tn_hir::ReceiverMode::Static) =>
+            {
+                let owner = self.method_owner(member)?;
+                (
+                    Operand::Constant(tn_mir::Constant::Method {
+                        owner,
+                        member,
+                        ty: component_expression.ty.clone(),
+                    }),
+                    component_expression.ty.clone(),
+                )
+            }
+            _ => self.lower_expression_range(component_start, component_end, None)?,
+        };
+        let (component, component_type) = component;
+        let props = self.lower_jsx_properties(&element, start)?;
+        let key = if let Some(key_id) = element.key {
+            let origin = self.hir.expressions.get(key_id.0 as usize)?.origin.clone();
+            let (key_start, key_end) =
+                self.token_range_for_bytes(origin.byte_start as usize, origin.byte_end as usize)?;
+            let (value, value_type) = self.lower_expression_range(key_start, key_end, None)?;
+            let optional_type = Type::Optional(Box::new(value_type.clone()));
+            self.materialize_jsx_optional(optional_type.clone(), value, start)?
+                .map(|value| (value, optional_type))?
+        } else {
+            let key_type = Type::Optional(Box::new(Type::String));
+            (
+                Operand::Constant(tn_mir::Constant::Undefined(key_type.clone())),
+                key_type,
+            )
+        };
+        let function_name = if element.children.len() > 1 {
+            "jsxs"
+        } else {
+            "jsx"
+        };
+        let signature = tn_hir::FunctionType {
+            parameters: vec![
+                component_type,
+                element.properties_type.clone(),
+                key.1.clone(),
+            ],
+            result: Box::new(element.element_type.clone()),
+            effects: Vec::new(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: false,
+        };
+        self.emit_call(
+            self.jsx_runtime_function(function_name, signature.clone())?,
+            None,
+            &signature,
+            vec![component, props, key.0],
+            start,
+        )
+    }
+
+    fn lower_jsx_properties(
+        &mut self,
+        element: &tn_hir::HirJsxElement,
+        start: usize,
+    ) -> Option<Operand> {
+        let props_type = if element.properties_type == Type::Unknown {
+            Type::Tuple(Vec::new())
+        } else {
+            element.properties_type.clone()
+        };
+        let schema = self.aggregate_schema(&props_type);
+        if schema.is_empty() && !element.properties.is_empty() {
+            let spread = element.properties.iter().find(|property| property.spread)?;
+            let HirJsxValue::Expression(expression) = spread.value else {
+                return None;
+            };
+            let origin = self
+                .hir
+                .expressions
+                .get(expression.0 as usize)?
+                .origin
+                .clone();
+            let (value_start, value_end) =
+                self.token_range_for_bytes(origin.byte_start as usize, origin.byte_end as usize)?;
+            return self
+                .lower_expression_range(value_start, value_end, Some(&props_type))
+                .map(|(operand, _)| operand);
+        }
+        let mut spread_sources = vec![None; element.properties.len()];
+        for (property_index, property) in element.properties.iter().enumerate() {
+            if !property.spread {
+                continue;
+            }
+            let HirJsxValue::Expression(expression) = &property.value else {
+                return None;
+            };
+            let origin = self
+                .hir
+                .expressions
+                .get(expression.0 as usize)?
+                .origin
+                .clone();
+            let (value_start, value_end) =
+                self.token_range_for_bytes(origin.byte_start as usize, origin.byte_end as usize)?;
+            let (operand, value_type) =
+                self.lower_expression_range(value_start, value_end, Some(&props_type))?;
+            let token = (*self.tokens.get(start)?).clone();
+            let place = self.materialize_operand(operand, value_type.clone(), &token);
+            spread_sources[property_index] = Some((place, value_type));
+        }
+        let mut fields = Vec::with_capacity(schema.len());
+        for (field_name, field_type) in &schema {
+            let property_index =
+                element
+                    .properties
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(index, property)| {
+                        if property.name.as_deref() == Some(field_name)
+                            || (property.spread && spread_sources[index].is_some())
+                        {
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    });
+            let value = match property_index {
+                Some(index) if !element.properties[index].spread => {
+                    self.lower_jsx_value(&element.properties[index].value, field_type, start)?
+                }
+                Some(index) => {
+                    let (place, source_type) = spread_sources[index].as_ref()?;
+                    let source_field_index = self
+                        .aggregate_schema(source_type)
+                        .iter()
+                        .position(|(name, _)| name == field_name)?;
+                    let mut field = place.clone();
+                    field.projection.push(tn_mir::Projection::Field {
+                        index: u32::try_from(source_field_index).ok()?,
+                        ty: field_type.clone(),
+                    });
+                    Operand::Move(field)
+                }
+                None => Operand::Constant(tn_mir::Constant::Undefined(field_type.clone())),
+            };
+            fields.push(value);
+        }
+        self.materialize_jsx_aggregate_with_types(
+            props_type,
+            fields,
+            schema.into_iter().map(|(_, ty)| ty).collect(),
+            start,
+        )
+    }
+
+    fn lower_jsx_value(
+        &mut self,
+        value: &HirJsxValue,
+        expected: &Type,
+        start: usize,
+    ) -> Option<Operand> {
+        match value {
+            HirJsxValue::Boolean(value) => Some(Operand::Constant(tn_mir::Constant::Bool(*value))),
+            HirJsxValue::String(value) if *expected == Type::String => {
+                let literal = Operand::Constant(tn_mir::Constant::String(value.clone()));
+                let length = Operand::Constant(tn_mir::Constant::Integer {
+                    value: i128::try_from(value.len()).unwrap_or(i128::MAX),
+                    ty: Type::Primitive(PrimitiveType::Usize),
+                });
+                let destination = self.temporary(Type::String, self.span(self.tokens[start]));
+                self.statement(
+                    StatementKind::StorageLive(destination),
+                    self.span(self.tokens[start]),
+                );
+                self.statement(
+                    StatementKind::Assign(
+                        Place::local(destination),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "string_from_static".into(),
+                            operands: vec![literal, length],
+                            ty: Type::String,
+                        }),
+                    ),
+                    self.span(self.tokens[start]),
+                );
+                Some(Operand::Move(Place::local(destination)))
+            }
+            HirJsxValue::String(value) => {
+                Some(Operand::Constant(tn_mir::Constant::String(value.clone())))
+            }
+            HirJsxValue::Expression(expression) => {
+                let origin = self
+                    .hir
+                    .expressions
+                    .get(expression.0 as usize)?
+                    .origin
+                    .clone();
+                let (value_start, value_end) = self
+                    .token_range_for_bytes(origin.byte_start as usize, origin.byte_end as usize)?;
+                self.lower_expression_range(value_start, value_end, Some(expected))
+                    .map(|(operand, _)| operand)
+            }
+            HirJsxValue::Children(children) => {
+                let (operands, child_type) =
+                    self.lower_jsx_children(children, Some(expected), start)?;
+                if children.len() == 1 && !matches!(expected, Type::Array(_, _) | Type::Slice(_)) {
+                    return operands.into_iter().next();
+                }
+                let array_type = match expected {
+                    Type::Array(_, length) => Type::Array(Box::new(child_type.clone()), *length),
+                    _ => Type::Array(Box::new(child_type.clone()), children.len() as u64),
+                };
+                self.materialize_jsx_aggregate(array_type, operands, child_type, start)
+            }
+        }
+    }
+
+    fn lower_jsx_children(
+        &mut self,
+        children: &[HirJsxChild],
+        expected: Option<&Type>,
+        start: usize,
+    ) -> Option<(Vec<Operand>, Type)> {
+        let expected_element = expected.and_then(|expected| match expected {
+            Type::Array(element, _) | Type::Slice(element) => Some(element.as_ref()),
+            _ => Some(expected),
+        });
+        let mut operands = Vec::with_capacity(children.len());
+        let mut child_type = None;
+        for child in children {
+            let (operand, actual) = match child {
+                HirJsxChild::Element(id) => {
+                    let origin = self.hir.jsx_elements.get(id.0 as usize)?.origin.clone();
+                    let (child_start, child_end) = self.token_range_for_bytes(
+                        origin.byte_start as usize,
+                        origin.byte_end as usize,
+                    )?;
+                    self.lower_expression_range(child_start, child_end, expected_element)?
+                }
+                HirJsxChild::Expression(id) => {
+                    let origin = self.hir.expressions.get(id.0 as usize)?.origin.clone();
+                    let (child_start, child_end) = self.token_range_for_bytes(
+                        origin.byte_start as usize,
+                        origin.byte_end as usize,
+                    )?;
+                    self.lower_expression_range(child_start, child_end, expected_element)?
+                }
+                HirJsxChild::Text { value, .. } => {
+                    let ty = expected_element.cloned().unwrap_or(Type::Reference {
+                        mutable: false,
+                        lifetime: "static".into(),
+                        referent: Box::new(Type::Str),
+                    });
+                    if ty == Type::String {
+                        let literal = Operand::Constant(tn_mir::Constant::String(value.clone()));
+                        let length = Operand::Constant(tn_mir::Constant::Integer {
+                            value: i128::try_from(value.len()).unwrap_or(i128::MAX),
+                            ty: Type::Primitive(PrimitiveType::Usize),
+                        });
+                        let destination =
+                            self.temporary(Type::String, self.span(self.tokens[start]));
+                        self.statement(
+                            StatementKind::StorageLive(destination),
+                            self.span(self.tokens[start]),
+                        );
+                        self.statement(
+                            StatementKind::Assign(
+                                Place::local(destination),
+                                Box::new(Rvalue::RawOperation {
+                                    operation: "string_from_static".into(),
+                                    operands: vec![literal, length],
+                                    ty: Type::String,
+                                }),
+                            ),
+                            self.span(self.tokens[start]),
+                        );
+                        (Operand::Move(Place::local(destination)), ty)
+                    } else {
+                        (
+                            Operand::Constant(tn_mir::Constant::String(value.clone())),
+                            ty,
+                        )
+                    }
+                }
+            };
+            if let Some(previous) = &child_type
+                && *previous != actual
+                && !matches!(previous, Type::Unknown)
+            {
+                return None;
+            }
+            child_type = Some(actual.clone());
+            operands.push(operand);
+        }
+        Some((
+            operands,
+            child_type
+                .or_else(|| expected_element.cloned())
+                .unwrap_or(Type::String),
+        ))
+    }
+
+    fn materialize_jsx_aggregate(
+        &mut self,
+        ty: Type,
+        fields: Vec<Operand>,
+        field_type: Type,
+        start: usize,
+    ) -> Option<Operand> {
+        let field_types = vec![field_type; fields.len()];
+        self.materialize_jsx_aggregate_with_types(ty, fields, field_types, start)
+    }
+
+    fn materialize_jsx_aggregate_with_types(
+        &mut self,
+        ty: Type,
+        fields: Vec<Operand>,
+        field_types: Vec<Type>,
+        start: usize,
+    ) -> Option<Operand> {
+        let destination = self.temporary(ty.clone(), self.span(self.tokens[start]));
+        self.statement(
+            StatementKind::StorageLive(destination),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(destination),
+                Box::new(Rvalue::Aggregate {
+                    ty: ty.clone(),
+                    variant: None,
+                    fields,
+                    field_types,
+                }),
+            ),
+            self.span(self.tokens[start]),
+        );
+        Some(Operand::Move(Place::local(destination)))
+    }
+
+    fn materialize_jsx_optional(
+        &mut self,
+        ty: Type,
+        value: Operand,
+        start: usize,
+    ) -> Option<Option<Operand>> {
+        let Type::Optional(inner) = &ty else {
+            return None;
+        };
+        let inner = inner.as_ref().clone();
+        let operand =
+            self.materialize_jsx_aggregate_with_types(ty, vec![value], vec![inner], start)?;
+        Some(Some(operand))
+    }
+
+    fn jsx_runtime_function(
+        &self,
+        operation: &str,
+        signature: tn_hir::FunctionType,
+    ) -> Option<Operand> {
+        let runtime = self.program.graph.jsx_runtime.as_deref()?;
+        Some(Operand::Constant(tn_mir::Constant::ExternalFunction {
+            symbol: jsx_runtime_symbol(runtime, operation),
+            ty: Type::Function(signature),
+        }))
+    }
+
+    fn token_range_for_bytes(&self, start: usize, end: usize) -> Option<(usize, usize)> {
+        let first = self
+            .tokens
+            .iter()
+            .position(|token| token.range.start == start || token.range.start >= start)?;
+        let last = self
+            .tokens
+            .iter()
+            .enumerate()
+            .skip(first)
+            .find(|(_, token)| token.range.end >= end)
+            .map(|(index, _)| index + 1)?;
+        Some((first, last))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn lower_expression_range(
         &mut self,
@@ -2160,6 +2973,12 @@ impl OwnershipMirLowerer<'_> {
     ) -> Option<(Operand, Type)> {
         if start >= end {
             return None;
+        }
+        if let Some(tn_hir::HirExpressionKind::Jsx(id)) = self
+            .hir_expression_range(start, end)
+            .map(|expression| &expression.kind)
+        {
+            return self.lower_jsx(*id, start);
         }
         if let Some(ResolvedValue::Closure(closure)) = self
             .hir_expression_range(start, end)
@@ -3356,8 +4175,8 @@ impl OwnershipMirLowerer<'_> {
                 return body_close + 1;
             }
         }
-        self.find_top_level(start, self.tokens.len(), TokenKind::Semicolon)
-            .unwrap_or(self.tokens.len())
+        self.find_top_level(start, self.body_limit, TokenKind::Semicolon)
+            .unwrap_or(self.body_limit)
     }
 
     fn lower_template(
@@ -3468,12 +4287,14 @@ impl OwnershipMirLowerer<'_> {
             range: absolute_end..absolute_end.saturating_add(1),
         });
         let tokens = owned_tokens.iter().collect::<Vec<_>>();
+        let body_limit = tokens.len();
         let generic_call_ends = generic_call_ends(&tokens);
         let mut nested = OwnershipMirLowerer {
             program: self.program,
             module: self.module,
             hir: self.hir,
             tokens,
+            body_limit,
             generic_call_ends,
             index: 0,
             locals: std::mem::take(&mut self.locals),
@@ -3583,12 +4404,14 @@ impl OwnershipMirLowerer<'_> {
             body_tokens.remove(0);
             body_tokens.pop();
         }
+        let body_limit = body_tokens.len();
         let generic_call_ends = generic_call_ends(&body_tokens);
         let mut nested = OwnershipMirLowerer {
             program: self.program,
             module: self.module,
             hir: self.hir,
             tokens: body_tokens,
+            body_limit,
             generic_call_ends,
             index: 0,
             locals: Vec::new(),
@@ -6072,6 +6895,7 @@ impl OwnershipMirLowerer<'_> {
                     HirPatternProjection::OptionalPayload => {
                         source.projection.push(tn_mir::Projection::Downcast(1));
                     }
+                    HirPatternProjection::Index(_) | HirPatternProjection::Rest { .. } => {}
                 }
             }
             self.statement(
@@ -6770,6 +7594,15 @@ fn replace_callable_type(operand: &mut Operand, ty: Type) {
         | tn_mir::Constant::Constructor { ty: function, .. } => *function = ty,
         _ => {}
     }
+}
+
+fn jsx_runtime_symbol(runtime: &str, operation: &str) -> String {
+    let hash = runtime
+        .bytes()
+        .fold(14_695_981_039_346_656_037_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
+        });
+    format!("tn_jsx_runtime_{hash:016x}_{operation}")
 }
 
 fn specialize_method_operand(lowerer: &mut OwnershipMirLowerer<'_>, operand: &Operand, ty: &Type) {

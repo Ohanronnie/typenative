@@ -54,6 +54,17 @@ ast_node!(Pattern, SyntaxKind::PATTERN);
 ast_node!(MatchArm, SyntaxKind::MATCH_ARM);
 ast_node!(CatchClause, SyntaxKind::CATCH_CLAUSE);
 ast_node!(EnumVariant, SyntaxKind::ENUM_VARIANT);
+ast_node!(BindingPattern, SyntaxKind::BINDING_PATTERN);
+ast_node!(BindingProperty, SyntaxKind::BINDING_PROPERTY);
+ast_node!(JsxElement, SyntaxKind::JSX_ELEMENT);
+ast_node!(JsxFragment, SyntaxKind::JSX_FRAGMENT);
+ast_node!(JsxOpeningElement, SyntaxKind::JSX_OPENING_ELEMENT);
+ast_node!(JsxClosingElement, SyntaxKind::JSX_CLOSING_ELEMENT);
+ast_node!(JsxName, SyntaxKind::JSX_NAME);
+ast_node!(JsxAttribute, SyntaxKind::JSX_ATTRIBUTE);
+ast_node!(JsxSpreadAttribute, SyntaxKind::JSX_SPREAD_ATTRIBUTE);
+ast_node!(JsxExpressionContainer, SyntaxKind::JSX_EXPRESSION_CONTAINER);
+ast_node!(JsxText, SyntaxKind::JSX_TEXT);
 
 impl SourceFile {
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
@@ -83,6 +94,87 @@ impl FunctionDeclaration {
 
     pub fn body(&self) -> Option<Block> {
         self.syntax().children().find_map(Block::cast)
+    }
+}
+
+impl BindingPattern {
+    pub fn nested_patterns(&self) -> impl Iterator<Item = BindingPattern> + '_ {
+        self.syntax().children().filter_map(BindingPattern::cast)
+    }
+
+    pub fn properties(&self) -> impl Iterator<Item = BindingProperty> + '_ {
+        self.syntax().children().filter_map(BindingProperty::cast)
+    }
+}
+
+impl BindingProperty {
+    pub fn pattern(&self) -> Option<BindingPattern> {
+        self.syntax().children().find_map(BindingPattern::cast)
+    }
+}
+
+impl JsxElement {
+    pub fn opening_element(&self) -> Option<JsxOpeningElement> {
+        self.syntax().children().find_map(JsxOpeningElement::cast)
+    }
+
+    pub fn closing_element(&self) -> Option<JsxClosingElement> {
+        self.syntax().children().find_map(JsxClosingElement::cast)
+    }
+
+    pub fn children(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
+        self.syntax().children().filter(|node| {
+            matches!(
+                node.kind(),
+                SyntaxKind::JSX_ELEMENT
+                    | SyntaxKind::JSX_EXPRESSION_CONTAINER
+                    | SyntaxKind::JSX_TEXT
+                    | SyntaxKind::JSX_FRAGMENT
+            )
+        })
+    }
+}
+
+impl JsxOpeningElement {
+    pub fn name(&self) -> Option<JsxName> {
+        self.syntax().children().find_map(JsxName::cast)
+    }
+
+    pub fn attributes(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
+        self.syntax().children().filter(|node| {
+            matches!(
+                node.kind(),
+                SyntaxKind::JSX_ATTRIBUTE | SyntaxKind::JSX_SPREAD_ATTRIBUTE
+            )
+        })
+    }
+}
+
+impl JsxClosingElement {
+    pub fn name(&self) -> Option<JsxName> {
+        self.syntax().children().find_map(JsxName::cast)
+    }
+}
+
+impl JsxName {
+    pub fn text(&self) -> String {
+        self.syntax().text().to_string()
+    }
+}
+
+impl JsxAttribute {
+    pub fn name(&self) -> Option<JsxName> {
+        self.syntax().children().find_map(JsxName::cast)
+    }
+
+    pub fn value(&self) -> Option<SyntaxNode> {
+        self.syntax().children().next()
+    }
+}
+
+impl JsxExpressionContainer {
+    pub fn expression(&self) -> Option<Expression> {
+        self.syntax().children().find_map(Expression::cast)
     }
 }
 

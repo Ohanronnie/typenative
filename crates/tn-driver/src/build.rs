@@ -1142,10 +1142,11 @@ fn checked_program(
     BuildError,
 > {
     let module_started = Instant::now();
-    let graph = tn_hir::load_module_graph(
+    let graph = tn_hir::load_module_graph_with_jsx_runtime(
         &project.root,
         &project.entry,
         &super::standard_library_path(),
+        project.config.jsx.as_ref().map(|jsx| jsx.runtime.clone()),
     )
     .map_err(|error| {
         if error.diagnostics().is_empty() {
@@ -1155,6 +1156,10 @@ fn checked_program(
         }
     })?;
     let program = tn_hir::lower_program(graph).map_err(BuildError::Diagnostics)?;
+    let jsx_diagnostics = crate::validate_jsx_runtime(&program);
+    if !jsx_diagnostics.is_empty() {
+        return Err(BuildError::Diagnostics(jsx_diagnostics));
+    }
     let module_duration = module_started.elapsed();
     let started = Instant::now();
     let ownership = tn_typecheck::derive_ownership_facts(&program);
@@ -2294,6 +2299,7 @@ fn compile_support_object(
             emit: Emit::Object,
             sanitizers: project.config.sanitizers.clone(),
             link: LinkConfig::default(),
+            jsx: None,
             support_mode,
         },
         config_path: None,

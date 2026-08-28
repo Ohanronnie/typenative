@@ -36,6 +36,10 @@ impl IncrementalDocument {
         &self.source
     }
 
+    pub fn file(&self) -> &str {
+        &self.file
+    }
+
     pub fn parse(&self) -> &Parse {
         &self.parse
     }
@@ -219,5 +223,23 @@ mod tests {
                 .is_err()
         );
         assert_eq!(document.source(), original);
+    }
+
+    #[test]
+    fn retains_tnx_mode_when_applying_full_text_edits() {
+        let mut document = IncrementalDocument::new(
+            "file:///tmp/App.tnx",
+            "function App(): Element { return <View />; }\n".into(),
+        );
+        assert!(document.parse().is_success());
+        let length = document.source().len();
+        document
+            .apply_edit(TextEdit {
+                range: 0..length,
+                replacement: "function App(): Element { return <Text />; }\n".into(),
+            })
+            .expect("full edit");
+        assert_eq!(document.file(), "file:///tmp/App.tnx");
+        assert!(document.parse().is_success());
     }
 }

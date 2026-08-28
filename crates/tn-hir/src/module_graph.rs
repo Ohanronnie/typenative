@@ -20,6 +20,17 @@ pub fn load_module_graph(
     entry: &Path,
     standard_library: &Path,
 ) -> Result<ModuleGraph, ModuleGraphError> {
+    load_module_graph_with_jsx_runtime(root, entry, standard_library, None)
+}
+
+/// Loads a module graph while retaining the explicitly selected JSX runtime for typed lowering.
+#[allow(clippy::too_many_lines)]
+pub fn load_module_graph_with_jsx_runtime(
+    root: &Path,
+    entry: &Path,
+    standard_library: &Path,
+    jsx_runtime: Option<String>,
+) -> Result<ModuleGraph, ModuleGraphError> {
     let root = normalize_existing(root)?;
     let entry = normalize_existing(entry)?;
     let standard_library = normalize_existing(standard_library)?;
@@ -114,6 +125,7 @@ pub fn load_module_graph(
         root,
         standard_library,
         runtime_root,
+        jsx_runtime,
         entry: entry_id,
         modules,
     };
@@ -316,10 +328,19 @@ fn declaration_end(
             .find(|token| token.kind == TokenKind::Semicolon)
             .map_or(source_length, |token| token.range.end);
     }
-    let Some(open_offset) = tokens[start..]
-        .iter()
-        .position(|token| token.kind == TokenKind::LeftBrace)
-    else {
+    let mut paren_depth = 0_u32;
+    let mut bracket_depth = 0_u32;
+    let Some(open_offset) = tokens[start..].iter().position(|token| {
+        match token.kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::LeftBrace if paren_depth == 0 && bracket_depth == 0 => return true,
+            _ => {}
+        }
+        false
+    }) else {
         return source_length;
     };
     let mut depth = 0_u32;
@@ -447,29 +468,32 @@ fn resolve_specifier(
     standard_library: &Path,
 ) -> Result<PathBuf, String> {
     if specifier.contains('\\')
-        || Path::new(specifier)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("tn"))
+        || Path::new(specifier).extension().is_some_and(|extension| {
+            matches!(
+                extension.to_str(),
+                Some(value)
+                    if value.eq_ignore_ascii_case("tn")
+                        || value.eq_ignore_ascii_case("tnx")
+            )
+        })
     {
         return Err(format!(
-            "module specifier must omit the .tn suffix: {specifier}"
+            "module specifier must omit the .tn or .tnx suffix: {specifier}"
         ));
     }
-    let candidate = if let Some(relative) = specifier.strip_prefix("std/") {
-        standard_library.join(relative).with_extension("tn")
+    let base = if let Some(relative) = specifier.strip_prefix("std/") {
+        standard_library.join(relative)
     } else if specifier.starts_with("./") || specifier.starts_with("../") {
-        importer
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(specifier)
-            .with_extension("tn")
+        importer.parent().unwrap_or(Path::new(".")).join(specifier)
     } else {
         return Err(format!(
             "bare package specifiers are not supported: {specifier}"
         ));
     };
-    normalize_existing(&candidate)
-        .map_err(|_| format!("module does not resolve to one source file: {specifier}"))
+    [base.with_extension("tn"), base.with_extension("tnx")]
+        .into_iter()
+        .find_map(|candidate| normalize_existing(&candidate).ok())
+        .ok_or_else(|| format!("module does not resolve to one source file: {specifier}"))
 }
 
 fn normalize_existing(path: &Path) -> std::io::Result<PathBuf> {
@@ -477,11 +501,11 @@ fn normalize_existing(path: &Path) -> std::io::Result<PathBuf> {
     if canonical.is_file()
         && canonical
             .extension()
-            .is_none_or(|extension| extension != "tn")
+            .is_none_or(|extension| !matches!(extension.to_str(), Some("tn" | "tnx")))
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "module source does not use the .tn suffix",
+            "module source does not use the .tn or .tnx suffix",
         ));
     }
     Ok(canonical)

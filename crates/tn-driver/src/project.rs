@@ -106,6 +106,12 @@ pub struct LinkConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct JsxConfig {
+    pub runtime: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProjectConfig {
     pub entry: PathBuf,
     #[serde(default = "default_out_dir")]
@@ -120,6 +126,8 @@ pub struct ProjectConfig {
     pub sanitizers: Vec<Sanitizer>,
     #[serde(default)]
     pub link: LinkConfig,
+    #[serde(default)]
+    pub jsx: Option<JsxConfig>,
     #[serde(skip)]
     pub(crate) support_mode: SupportMode,
 }
@@ -153,14 +161,14 @@ pub struct Project {
 /// # Errors
 ///
 /// Returns a structured driver error for missing inputs, invalid JSON, unknown configuration keys,
-/// unsupported values, or an entry that is not a `.tn` file.
+/// unsupported values, or an entry that is not a `.tn` or `.tnx` file.
 pub fn load_project(input: Option<&Path>) -> Result<Project, ProjectError> {
     let current = std::env::current_dir()?;
     let input = input.map_or_else(
         || find_config(&current),
         |path| resolve_input(path, &current),
     )?;
-    if input.extension().is_some_and(|extension| extension == "tn") {
+    if is_source_path(&input) {
         let entry = absolute(input, &current);
         ensure_source(&entry)?;
         let root = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -175,6 +183,7 @@ pub fn load_project(input: Option<&Path>) -> Result<Project, ProjectError> {
                 emit: Emit::default(),
                 sanitizers: Vec::new(),
                 link: LinkConfig::default(),
+                jsx: None,
                 support_mode: SupportMode::None,
             },
             config_path: None,
@@ -240,10 +249,15 @@ fn ensure_source(path: &Path) -> Result<(), ProjectError> {
     if !path.is_file() {
         return Err(ProjectError::NotFound(path.to_path_buf()));
     }
-    if path.extension().is_none_or(|extension| extension != "tn") {
+    if !is_source_path(path) {
         return Err(ProjectError::InvalidSourceSuffix(path.to_path_buf()));
     }
     Ok(())
+}
+
+fn is_source_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| matches!(extension.to_str(), Some("tn" | "tnx")))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -252,9 +266,9 @@ pub enum ProjectError {
     ConfigurationNotFound(PathBuf),
     #[error("project input was not found: {0}")]
     NotFound(PathBuf),
-    #[error("project input must be a .tn file, a directory, or typenative.json: {0}")]
+    #[error("project input must be a .tn or .tnx file, a directory, or typenative.json: {0}")]
     InvalidInput(PathBuf),
-    #[error("TypeNative source must use the .tn suffix: {0}")]
+    #[error("TypeNative source must use the .tn or .tnx suffix: {0}")]
     InvalidSourceSuffix(PathBuf),
     #[error("invalid project configuration {path}: {source}")]
     InvalidConfiguration {
@@ -278,6 +292,47 @@ mod tests {
         assert!(
             serde_json::from_str::<ProjectConfig>(r#"{"entry":"src/main.tn","dependencies":{}}"#)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn loads_tnx_entry_and_explicit_jsx_runtime() {
+        let directory = tempfile::tempdir().expect("temporary project");
+        let source = directory.path().join("src/main.tnx");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source tree");
+        std::fs::write(&source, "function main(): void {}\n").expect("source file");
+        let config_path = directory.path().join("typenative.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+  "entry": "src/main.tnx",
+  "jsx": { "runtime": "@typenative/ui/jsx-runtime" }
+}"#,
+        )
+        .expect("project configuration");
+
+        let project = load_project(Some(&config_path)).expect("load .tnx project");
+        assert_eq!(project.entry, source);
+        assert_eq!(
+            project.config.jsx,
+            Some(JsxConfig {
+                runtime: "@typenative/ui/jsx-runtime".into()
+            })
+        );
+    }
+
+    #[test]
+    fn check_requires_a_configured_runtime_for_tnx_projects() {
+        let directory = tempfile::tempdir().expect("temporary project");
+        let source = directory.path().join("main.tnx");
+        std::fs::write(&source, "function main(): void {}\n").expect("source file");
+        let project = load_project(Some(&source)).expect("load direct .tnx project");
+        let output = crate::check_project(&project);
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.condition.as_str() == "DRIVER_JSX_RUNTIME_REQUIRED")
         );
     }
 

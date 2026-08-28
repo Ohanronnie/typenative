@@ -1,4 +1,5 @@
-use crate::{Token, TokenKind, lex, parse};
+use crate::{SyntaxKind, SyntaxNode, Token, TokenKind, lex, parse};
+use std::ops::Range;
 use tn_diagnostics::Diagnostic;
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,22 @@ pub fn format(file: &str, bytes: &[u8]) -> FormatResult {
         };
     }
     let mut writer = Writer::default();
+    let jsx_ranges = parsed
+        .syntax()
+        .descendants()
+        .filter_map(|node| {
+            matches!(
+                node.kind(),
+                SyntaxKind::JSX_ELEMENT
+                    | SyntaxKind::JSX_FRAGMENT
+                    | SyntaxKind::JSX_OPENING_ELEMENT
+                    | SyntaxKind::JSX_CLOSING_ELEMENT
+                    | SyntaxKind::JSX_EXPRESSION_CONTAINER
+                    | SyntaxKind::JSX_TEXT
+            )
+            .then_some((node.kind(), syntax_range(&node)))
+        })
+        .collect::<Vec<_>>();
     let significant = lexed
         .tokens
         .iter()
@@ -42,7 +59,13 @@ pub fn format(file: &str, bytes: &[u8]) -> FormatResult {
         let next = significant.get(index + 1).map(|token| token.kind);
         let source_text = &lexed.source[token.range.clone()];
         let text = contextual_numeric_text(&significant, index, lexed.source, source_text);
-        writer.token(token.kind, text, previous, next);
+        writer.token_with_context(
+            token.kind,
+            text,
+            previous,
+            next,
+            jsx_format_context(&jsx_ranges, token),
+        );
     }
     writer.finish_file();
     let output = sort_leading_imports(writer.output);
@@ -250,10 +273,40 @@ struct Writer {
     pending_space: bool,
     inline_braces: Vec<bool>,
     placeholder_mode: u8,
+    jsx_indent_stack: Vec<bool>,
+    jsx_object_pending: bool,
+    jsx_object_depth: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FormatContext {
+    jsx: bool,
+    opening: bool,
+    closing: bool,
+    expression: bool,
+    expression_opening: bool,
+    expression_closing: bool,
+    text: bool,
+    fragment: bool,
 }
 
 impl Writer {
-    fn token(
+    fn token_with_context(
+        &mut self,
+        kind: TokenKind,
+        text: &str,
+        previous: Option<TokenKind>,
+        next: Option<TokenKind>,
+        context: FormatContext,
+    ) {
+        if context.jsx {
+            self.jsx_token(kind, text, previous, next, context);
+            return;
+        }
+        self.normal_token(kind, text, previous, next);
+    }
+
+    fn normal_token(
         &mut self,
         kind: TokenKind,
         text: &str,
@@ -526,6 +579,135 @@ impl Writer {
         }
     }
 
+    fn jsx_token(
+        &mut self,
+        kind: TokenKind,
+        text: &str,
+        previous: Option<TokenKind>,
+        next: Option<TokenKind>,
+        context: FormatContext,
+    ) {
+        if context.expression {
+            match kind {
+                TokenKind::LeftBrace if context.expression_opening => {
+                    self.trim_space();
+                    self.write("{");
+                    if next == Some(TokenKind::LeftBrace) {
+                        self.jsx_object_pending = true;
+                    }
+                }
+                TokenKind::LeftBrace if self.jsx_object_pending => {
+                    self.trim_space();
+                    self.write("{");
+                    self.jsx_object_pending = false;
+                    self.jsx_object_depth = 1;
+                    self.space();
+                }
+                TokenKind::LeftBrace if self.jsx_object_depth > 0 => {
+                    self.normal_token(kind, text, previous, next);
+                }
+                TokenKind::RightBrace
+                    if self.jsx_object_depth > 0 && next == Some(TokenKind::RightBrace) =>
+                {
+                    self.trim_space();
+                    self.space();
+                    self.write("}");
+                    self.jsx_object_depth = self.jsx_object_depth.saturating_sub(1);
+                }
+                TokenKind::RightBrace if context.expression_closing => {
+                    self.trim_space();
+                    self.write("}");
+                    if matches!(next, Some(TokenKind::Less))
+                        && self.jsx_indent_stack.last().copied().unwrap_or(false)
+                    {
+                        self.newline();
+                    }
+                }
+                TokenKind::Equal => {
+                    self.trim_space();
+                    self.write("=");
+                }
+                _ => self.normal_token(kind, text, previous, next),
+            }
+            return;
+        }
+        if context.text {
+            self.normal_token(kind, text, previous, next);
+            return;
+        }
+        if context.closing && kind == TokenKind::Less {
+            let multiline = self.jsx_indent_stack.pop().unwrap_or(false);
+            if multiline {
+                self.indent = self.indent.saturating_sub(1);
+                if !self.line_start {
+                    self.newline();
+                }
+            }
+            self.write("<");
+            return;
+        }
+        if context.closing {
+            match kind {
+                TokenKind::Slash | TokenKind::Greater | TokenKind::Dot | TokenKind::Minus => {
+                    self.trim_space();
+                    self.write(text);
+                    if kind == TokenKind::Greater
+                        && matches!(next, Some(TokenKind::Less))
+                        && self.jsx_indent_stack.last().copied().unwrap_or(false)
+                    {
+                        self.newline();
+                    }
+                }
+                _ => self.normal_token(kind, text, previous, next),
+            }
+            return;
+        }
+        if context.opening || context.fragment {
+            match kind {
+                TokenKind::Less => {
+                    self.trim_space();
+                    self.write("<");
+                }
+                TokenKind::Greater => {
+                    self.trim_space();
+                    self.write(">");
+                    if context.opening && previous != Some(TokenKind::Slash) {
+                        let multiline =
+                            matches!(next, Some(TokenKind::Less | TokenKind::LeftBrace));
+                        self.jsx_indent_stack.push(multiline);
+                        if multiline {
+                            self.indent += 1;
+                            self.newline();
+                        }
+                    } else if context.fragment && previous == Some(TokenKind::Less) {
+                        let multiline =
+                            matches!(next, Some(TokenKind::Less | TokenKind::LeftBrace));
+                        self.jsx_indent_stack.push(multiline);
+                        if multiline {
+                            self.indent += 1;
+                            self.newline();
+                        }
+                    }
+                }
+                TokenKind::Slash => {
+                    self.trim_space();
+                    self.write("/");
+                }
+                TokenKind::Equal => {
+                    self.trim_space();
+                    self.write("=");
+                }
+                TokenKind::Dot | TokenKind::Minus => {
+                    self.trim_space();
+                    self.write(text);
+                }
+                _ => self.normal_token(kind, text, previous, next),
+            }
+            return;
+        }
+        self.normal_token(kind, text, previous, next);
+    }
+
     fn write_block_comment(&mut self, text: &str) {
         for (index, line) in text.lines().enumerate() {
             if index > 0 {
@@ -581,6 +763,34 @@ impl Writer {
         if !self.output.is_empty() && !self.output.ends_with('\n') {
             self.output.push('\n');
         }
+    }
+}
+
+fn syntax_range(node: &SyntaxNode) -> Range<usize> {
+    usize::from(node.text_range().start())..usize::from(node.text_range().end())
+}
+
+fn jsx_format_context(ranges: &[(SyntaxKind, Range<usize>)], token: &Token) -> FormatContext {
+    let contains = |kind| {
+        ranges.iter().any(|(candidate, range)| {
+            *candidate == kind && range.start <= token.range.start && range.end >= token.range.end
+        })
+    };
+    let expression_range = ranges.iter().find_map(|(kind, range)| {
+        (*kind == SyntaxKind::JSX_EXPRESSION_CONTAINER
+            && range.start <= token.range.start
+            && range.end >= token.range.end)
+            .then_some(range)
+    });
+    FormatContext {
+        jsx: contains(SyntaxKind::JSX_ELEMENT) || contains(SyntaxKind::JSX_FRAGMENT),
+        opening: contains(SyntaxKind::JSX_OPENING_ELEMENT),
+        closing: contains(SyntaxKind::JSX_CLOSING_ELEMENT),
+        expression: expression_range.is_some(),
+        expression_opening: expression_range.is_some_and(|range| range.start == token.range.start),
+        expression_closing: expression_range.is_some_and(|range| range.end == token.range.end),
+        text: contains(SyntaxKind::JSX_TEXT),
+        fragment: contains(SyntaxKind::JSX_FRAGMENT),
     }
 }
 
@@ -774,6 +984,22 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(token_text(&original), token_text(&formatted));
+    }
+
+    #[test]
+    fn formats_tnx_jsx_idempotently_without_spacing_inside_tags() {
+        let source = b"function App(): Element { return (<View style={{ flex: 1, gap: 12 }}><Text>Hello</Text><Button onPress={() => save()}>Save</Button></View>); }\n";
+        let first = format("app.tnx", source);
+        assert!(first.is_success(), "{:?}", first.diagnostics);
+        assert!(first.output.contains("<View style={{ flex: 1, gap: 12 }}"));
+        assert!(first.output.contains("<Text>Hello</Text>"));
+        assert!(
+            first.output.contains("onPress={() => save()}") || first.output.contains("onPress =")
+        );
+        assert_eq!(
+            first.output,
+            format("app.tnx", first.output.as_bytes()).output
+        );
     }
 
     #[test]

@@ -97,7 +97,8 @@ fn apply_changes(
                 replacement: change.text,
             })?;
         } else {
-            *document = IncrementalDocument::new("<lsp>", change.text);
+            let file = document.file().to_owned();
+            *document = IncrementalDocument::new(file, change.text);
         }
     }
     Ok(())
@@ -136,7 +137,7 @@ fn publish(
         })
         .collect();
     if diagnostics.is_empty() {
-        diagnostics.extend(semantic_diagnostics(document.source()));
+        diagnostics.extend(semantic_diagnostics(document.file(), document.source()));
     }
     let notification = lsp_server::Notification::new(
         lsp_types::notification::PublishDiagnostics::METHOD.into(),
@@ -148,11 +149,13 @@ fn publish(
     Ok(())
 }
 
-fn semantic_diagnostics(source: &str) -> Vec<LspDiagnostic> {
+fn semantic_diagnostics(file: &str, source: &str) -> Vec<LspDiagnostic> {
     let Ok(directory) = tempfile::tempdir() else {
         return Vec::new();
     };
-    let entry = directory.path().join("main.tn");
+    let is_tnx = file.ends_with(".tnx");
+    let entry_name = if is_tnx { "main.tnx" } else { "main.tn" };
+    let entry = directory.path().join(entry_name);
     if std::fs::write(&entry, source).is_err() {
         return Vec::new();
     }
@@ -160,13 +163,16 @@ fn semantic_diagnostics(source: &str) -> Vec<LspDiagnostic> {
         root: directory.path().to_path_buf(),
         entry: entry.clone(),
         config: crate::ProjectConfig {
-            entry: PathBuf::from("main.tn"),
+            entry: PathBuf::from(entry_name),
             out_dir: PathBuf::from("build"),
             target: crate::Target::host().unwrap_or(crate::Target::Aarch64AppleDarwin),
             profile: crate::Profile::Debug,
             emit: crate::Emit::Executable,
             sanitizers: Vec::new(),
             link: crate::LinkConfig::default(),
+            jsx: is_tnx.then(|| crate::JsxConfig {
+                runtime: "@typenative/ui/jsx-runtime".into(),
+            }),
             support_mode: super::project::SupportMode::None,
         },
         config_path: None,
@@ -252,7 +258,10 @@ mod tests {
 
     #[test]
     fn semantic_document_diagnostics_use_the_compiler_pipeline() {
-        let diagnostics = semantic_diagnostics("@Unknown\nfunction main(): void {}\n");
+        let diagnostics = semantic_diagnostics(
+            "file:///tmp/main.tn",
+            "@Unknown\nfunction main(): void {}\n",
+        );
         assert!(
             diagnostics.iter().any(|diagnostic| diagnostic.code
                 == Some(lsp_types::NumberOrString::String(
@@ -260,5 +269,21 @@ mod tests {
                 ))),
             "{diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn tnx_documents_enable_jsx_semantic_diagnostics() {
+        let diagnostics = semantic_diagnostics(
+            "file:///tmp/App.tnx",
+            r#"
+struct Props {
+  public value: &str;
+}
+struct Element {}
+function View(props: Props): Element { return new Element(); }
+function App(): Element { return <View value="Hello" />; }
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }

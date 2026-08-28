@@ -455,7 +455,8 @@ fn visit_operand(
         | Constant::Float { .. }
         | Constant::Character(_)
         | Constant::String(_)
-        | Constant::Undefined(_) => Ok(()),
+        | Constant::Undefined(_)
+        | Constant::ExternalFunction { .. } => Ok(()),
     }
 }
 
@@ -695,6 +696,7 @@ fn substitute_operand(operand: &mut Operand, substitutions: &BTreeMap<String, Ty
             | Constant::Float { ty, .. }
             | Constant::Undefined(ty)
             | Constant::Function(_, ty)
+            | Constant::ExternalFunction { ty, .. }
             | Constant::Method { ty, .. }
             | Constant::Constructor { ty, .. } => substitute_type(ty, substitutions),
             Constant::Bool(_) | Constant::Character(_) | Constant::String(_) => {}

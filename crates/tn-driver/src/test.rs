@@ -35,10 +35,11 @@ struct TestCase {
 /// Returns diagnostics for invalid projects and driver errors when a test cannot be compiled or
 /// launched.
 pub fn run_tests(project: &Project, filter: Option<&str>) -> Result<TestRun, BuildError> {
-    let graph = tn_hir::load_module_graph(
+    let graph = tn_hir::load_module_graph_with_jsx_runtime(
         &project.root,
         &project.entry,
         &super::standard_library_path(),
+        project.config.jsx.as_ref().map(|jsx| jsx.runtime.clone()),
     )
     .map_err(|error| {
         if error.diagnostics().is_empty() {
@@ -48,6 +49,10 @@ pub fn run_tests(project: &Project, filter: Option<&str>) -> Result<TestRun, Bui
         }
     })?;
     let program = tn_hir::lower_program(graph).map_err(BuildError::Diagnostics)?;
+    let jsx_diagnostics = crate::validate_jsx_runtime(&program);
+    if !jsx_diagnostics.is_empty() {
+        return Err(BuildError::Diagnostics(jsx_diagnostics));
+    }
     let tests = discover_tests(&program)
         .into_iter()
         .filter(|test| filter.is_none_or(|filter| test.name.contains(filter)))

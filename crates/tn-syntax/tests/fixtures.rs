@@ -16,7 +16,10 @@ fn valid_fixture_corpus_parses_losslessly() {
     let mut files = std::fs::read_dir(&root)
         .expect("valid fixture directory exists")
         .map(|entry| entry.expect("fixture entry is readable").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "tn"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| matches!(extension.to_str(), Some("tn" | "tnx")))
+        })
         .collect::<Vec<_>>();
     files.sort();
     assert!(!files.is_empty(), "valid fixture corpus must not be empty");

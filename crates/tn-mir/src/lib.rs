@@ -73,6 +73,10 @@ pub enum Constant {
     String(String),
     Undefined(Type),
     Function(DeclarationId, Type),
+    ExternalFunction {
+        symbol: String,
+        ty: Type,
+    },
     Method {
         owner: DeclarationId,
         member: MemberId,
@@ -93,6 +97,7 @@ impl Constant {
             | Self::Float { ty, .. }
             | Self::Undefined(ty)
             | Self::Function(_, ty)
+            | Self::ExternalFunction { ty, .. }
             | Self::Method { ty, .. }
             | Self::Constructor { ty, .. } => ty.clone(),
             Self::Character(_) => Type::Primitive(tn_hir::PrimitiveType::Char),

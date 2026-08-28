@@ -16,8 +16,8 @@ pub use docs::generate_docs;
 pub use lint::lint_project;
 pub use lsp::run_lsp;
 pub use project::{
-    Emit, LinkConfig, Profile, Project, ProjectConfig, Sanitizer, Target, UnsupportedHost,
-    load_project,
+    Emit, JsxConfig, LinkConfig, Profile, Project, ProjectConfig, Sanitizer, Target,
+    UnsupportedHost, load_project,
 };
 pub use test::{TestRun, run_tests};
 
@@ -47,7 +47,12 @@ pub fn check_project(project: &Project) -> CheckOutput {
 pub fn check_project_with_timings(project: &Project, timings_enabled: bool) -> CheckOutput {
     let started = Instant::now();
     let standard_library = standard_library_path();
-    let graph = match tn_hir::load_module_graph(&project.root, &project.entry, &standard_library) {
+    let graph = match tn_hir::load_module_graph_with_jsx_runtime(
+        &project.root,
+        &project.entry,
+        &standard_library,
+        project.config.jsx.as_ref().map(|jsx| jsx.runtime.clone()),
+    ) {
         Ok(graph) => graph,
         Err(error) => {
             if !error.diagnostics().is_empty() {
@@ -67,6 +72,12 @@ pub fn check_project_with_timings(project: &Project, timings_enabled: bool) -> C
         Ok(program) => program,
         Err(diagnostics) => return CheckOutput { diagnostics },
     };
+    let jsx_diagnostics = validate_jsx_runtime(&program);
+    if !jsx_diagnostics.is_empty() {
+        return CheckOutput {
+            diagnostics: jsx_diagnostics,
+        };
+    }
     if timings_enabled {
         eprintln!(
             "tn-timing phase=module-check micros={}",
@@ -148,6 +159,34 @@ fn driver_diagnostic(path: &Path, message: String) -> Diagnostic {
         },
         "driver/module/io/error",
     )
+}
+
+pub(crate) fn validate_jsx_runtime(program: &tn_hir::Program) -> Vec<Diagnostic> {
+    let Some(module) = program.graph.modules.iter().find(|module| {
+        module
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "tnx")
+    }) else {
+        return Vec::new();
+    };
+    if program
+        .graph
+        .jsx_runtime
+        .as_deref()
+        .is_some_and(|runtime| !runtime.trim().is_empty())
+    {
+        return Vec::new();
+    }
+    vec![Diagnostic::error(
+        ConditionId::new("DRIVER_JSX_RUNTIME_REQUIRED").expect("static condition is valid"),
+        "a `.tnx` project must configure a JSX runtime",
+        Label {
+            span: SourceSpan::new(module.path.to_string_lossy(), 0..0, &module.source),
+            message: "add `jsx.runtime` to typenative.json".into(),
+        },
+        "driver/jsx/runtime-required",
+    )]
 }
 
 #[derive(Clone, Debug)]
