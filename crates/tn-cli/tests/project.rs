@@ -216,17 +216,28 @@ fn build_emits_verified_native_products_and_run_preserves_exit_status() {
 }
 
 fn jsx_runtime_diagnostic_conditions(runtime_source: &str) -> Vec<String> {
-    let directory = tempfile::tempdir().expect("temporary JSX diagnostic project");
-    std::fs::write(
-        directory.path().join("main.tnx"),
+    jsx_runtime_diagnostic_conditions_for(
         "function main(): i32 { return 0; }\n",
+        Some(runtime_source),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
     )
-    .expect("JSX diagnostic entry source");
-    std::fs::write(directory.path().join("jsx-runtime.tn"), runtime_source)
-        .expect("JSX diagnostic runtime source");
+}
+
+fn jsx_runtime_diagnostic_conditions_for(
+    entry_source: &str,
+    runtime_source: Option<&str>,
+    project_configuration: &str,
+) -> Vec<String> {
+    let directory = tempfile::tempdir().expect("temporary JSX diagnostic project");
+    std::fs::write(directory.path().join("main.tnx"), entry_source)
+        .expect("JSX diagnostic entry source");
+    if let Some(runtime_source) = runtime_source {
+        std::fs::write(directory.path().join("jsx-runtime.tn"), runtime_source)
+            .expect("JSX diagnostic runtime source");
+    }
     std::fs::write(
         directory.path().join("typenative.json"),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        project_configuration,
     )
     .expect("JSX diagnostic project configuration");
     let output = Command::new(env!("CARGO_BIN_EXE_tn"))
@@ -250,6 +261,16 @@ fn jsx_runtime_diagnostic_conditions(runtime_source: &str) -> Vec<String> {
         .collect()
 }
 
+fn jsx_entry_source() -> &'static str {
+    r#"import { Element } from "./jsx-runtime";
+struct Props {
+  public enabled: bool;
+}
+function Text(props: Props): Element { return new Element(); }
+function main(): Element { return <Text enabled />; }
+"#
+}
+
 #[test]
 fn jsx_runtime_contract_failures_have_specific_diagnostics() {
     let private_and_missing = jsx_runtime_diagnostic_conditions(
@@ -269,6 +290,106 @@ fn jsx_runtime_contract_failures_have_specific_diagnostics() {
     );
     assert!(wrong_shape.contains(&"DRIVER_JSX_RUNTIME_NOT_FUNCTION".into()));
     assert!(wrong_shape.contains(&"DRIVER_JSX_RUNTIME_WRONG_ARITY".into()));
+}
+
+#[test]
+fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
+    let missing_configuration = jsx_runtime_diagnostic_conditions_for(
+        "function main(): i32 { return 0; }\n",
+        None,
+        r#"{"entry":"main.tnx"}"#,
+    );
+    assert!(missing_configuration.contains(&"DRIVER_JSX_RUNTIME_REQUIRED".into()));
+
+    let missing_module = jsx_runtime_diagnostic_conditions_for(
+        "function main(): i32 { return 0; }\n",
+        None,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./missing"}}"#,
+    );
+    assert!(missing_module.contains(&"RESOLVE_JSX_RUNTIME_MODULE".into()));
+
+    let missing_exports = jsx_runtime_diagnostic_conditions_for(
+        "function main(): i32 { return 0; }\n",
+        Some("export struct Element {}\n"),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    );
+    for operation in ["jsx", "jsxs", "fragment"] {
+        assert!(
+            missing_exports.contains(&"DRIVER_JSX_RUNTIME_MISSING_EXPORT".into()),
+            "missing {operation}: {missing_exports:?}"
+        );
+    }
+    assert_eq!(
+        missing_exports
+            .iter()
+            .filter(|condition| condition.as_str() == "DRIVER_JSX_RUNTIME_MISSING_EXPORT")
+            .count(),
+        3
+    );
+
+    let wrong_property = jsx_runtime_diagnostic_conditions_for(
+        jsx_entry_source(),
+        Some(
+            "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: i32, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        ),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    );
+    assert!(
+        wrong_property.contains(&"TYPE_JSX_RUNTIME_PROPERTIES_PARAMETER".into()),
+        "{wrong_property:?}"
+    );
+
+    let wrong_key = jsx_runtime_diagnostic_conditions_for(
+        jsx_entry_source(),
+        Some(
+            "export struct Element {}\nexport function jsx<P, E>(component: (P) => E, properties: P, key: bool): E { return component(properties); }\nexport function jsxs<P, E>(component: (P) => E, properties: P, key: bool): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        ),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    );
+    assert!(
+        wrong_key.contains(&"TYPE_JSX_RUNTIME_KEY_PARAMETER".into()),
+        "{wrong_key:?}"
+    );
+
+    let wrong_result = jsx_runtime_diagnostic_conditions_for(
+        "function main(): i32 { return 0; }\n",
+        Some(
+            "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): i32 { return 0; }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): i32 { return 0; }\nexport function fragment<C>(children: C): i32 { return 0; }\n",
+        ),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    );
+    assert!(
+        wrong_result.contains(&"DRIVER_JSX_RUNTIME_RESULT_MISMATCH".into()),
+        "{wrong_result:?}"
+    );
+
+    let non_generic = jsx_runtime_diagnostic_conditions_for(
+        jsx_entry_source(),
+        Some(
+            "export struct Element {}\nexport function jsx(component: (i32) => Element, properties: i32, key: string): Element { return component(properties); }\nexport function jsxs(component: (i32) => Element, properties: i32, key: string): Element { return component(properties); }\nexport function fragment(children: [Element; 1usize]): Element { return new Element(); }\n",
+        ),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    );
+    assert!(
+        non_generic.contains(&"TYPE_JSX_RUNTIME_COMPONENT_PARAMETER".into()),
+        "{non_generic:?}"
+    );
+    assert!(
+        non_generic.contains(&"TYPE_JSX_RUNTIME_PROPERTIES_PARAMETER".into()),
+        "{non_generic:?}"
+    );
+
+    let effects = jsx_runtime_diagnostic_conditions_for(
+        "function main(): i32 { return 0; }\n",
+        Some(
+            "struct Failure {}\nexport struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E throws Failure { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        ),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    );
+    assert!(
+        effects.contains(&"DRIVER_JSX_RUNTIME_EFFECTS".into()),
+        "{effects:?}"
+    );
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -334,6 +455,113 @@ fn tnx_jsx_llvm_contains_ordinary_calls_without_hashed_runtime_externals() {
     let ir = std::fs::read_to_string(product).expect("JSX LLVM IR");
     assert!(!ir.contains("tn_jsx_runtime"));
     assert!(ir.contains("call { i32 } @tn_"), "{ir}");
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn tnx_jsx_property_shape_collision_is_verified_in_llvm_assembly_and_symbols() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../validation/jsx/collision/typenative.json");
+    let directory = tempfile::tempdir().expect("temporary JSX collision directory");
+    let mut executables = Vec::new();
+    for profile in ["debug", "optimized"] {
+        let product = directory.path().join(format!("collision-{profile}"));
+        let build = Command::new(env!("CARGO_BIN_EXE_tn"))
+            .args([
+                "build",
+                fixture.to_str().expect("UTF-8 JSX collision fixture path"),
+                "--profile",
+                profile,
+                "--out",
+                product.to_str().expect("UTF-8 JSX collision output path"),
+                "--timings",
+            ])
+            .output()
+            .expect("build JSX collision fixture");
+        assert!(
+            build.status.success(),
+            "{profile}: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let timing_output = String::from_utf8_lossy(&build.stderr);
+        assert!(timing_output.contains("phase=llvm-link"), "{timing_output}");
+        let run = Command::new(&product)
+            .output()
+            .expect("run JSX collision fixture");
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{profile}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        executables.push(product);
+    }
+
+    let llvm = directory.path().join("collision.ll");
+    let llvm_build = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args([
+            "build",
+            fixture.to_str().expect("UTF-8 JSX collision fixture path"),
+            "--emit",
+            "llvm-ir",
+            "--out",
+            llvm.to_str().expect("UTF-8 JSX collision LLVM path"),
+        ])
+        .output()
+        .expect("emit JSX collision LLVM");
+    assert!(
+        llvm_build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&llvm_build.stderr)
+    );
+    let ir = std::fs::read_to_string(&llvm).expect("read JSX collision LLVM");
+    assert!(!ir.contains("tn_jsx_runtime_"), "{ir}");
+    let runtime_calls = ir
+        .lines()
+        .filter(|line| line.contains("call { i32 } @tn_") && line.contains("zeroinitializer"))
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_calls.len(), 2, "{runtime_calls:?}");
+    assert!(
+        runtime_calls
+            .iter()
+            .any(|line| line.contains("{ { ptr, i64 } }"))
+    );
+    assert!(
+        runtime_calls
+            .iter()
+            .any(|line| line.contains("{ i1, { i32 } }"))
+    );
+
+    let assembly = directory.path().join("collision.s");
+    let assembly_build = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args([
+            "build",
+            fixture.to_str().expect("UTF-8 JSX collision fixture path"),
+            "--emit",
+            "assembly",
+            "--out",
+            assembly
+                .to_str()
+                .expect("UTF-8 JSX collision assembly path"),
+        ])
+        .output()
+        .expect("emit JSX collision assembly");
+    assert!(
+        assembly_build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&assembly_build.stderr)
+    );
+    let assembly_source = std::fs::read_to_string(&assembly).expect("read JSX collision assembly");
+    assert!(!assembly_source.contains("tn_jsx_runtime_"));
+
+    for executable in executables {
+        let symbols = Command::new("nm")
+            .args(["-gU", executable.to_str().expect("UTF-8 executable path")])
+            .output()
+            .expect("inspect JSX collision symbols");
+        assert!(symbols.status.success());
+        assert!(!String::from_utf8_lossy(&symbols.stdout).contains("tn_jsx_runtime_"));
+    }
 }
 
 #[test]

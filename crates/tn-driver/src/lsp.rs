@@ -8,7 +8,7 @@ use lsp_types::{
     },
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tn_diagnostics::Severity;
 use tn_syntax::{IncrementalDocument, TextEdit};
 
@@ -153,7 +153,9 @@ fn semantic_diagnostics(file: &str, source: &str) -> Vec<LspDiagnostic> {
     let Ok(directory) = tempfile::tempdir() else {
         return Vec::new();
     };
-    let is_tnx = file.ends_with(".tnx");
+    let is_tnx = Path::new(file)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tnx"));
     let entry_name = if is_tnx { "main.tnx" } else { "main.tn" };
     let entry = directory.path().join(entry_name);
     if std::fs::write(&entry, source).is_err() {

@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation, clippy::needless_raw_string_hashes)]
+
 fn checked(source: &str) -> tn_typecheck::BodyCheckResult {
     let directory = tempfile::tempdir().expect("temporary semantic fixture");
     let path = directory.path().join("main.tn");
@@ -695,6 +697,158 @@ function App(): Element {
         )
     }));
     tn_mir::validate(body).expect("JSX lowers to valid ordinary MIR");
+}
+
+#[test]
+fn specializes_generic_components_for_each_jsx_property_type() {
+    let (program, result) = checked_tnx(
+        r#"
+struct NumberProps {
+  public value: i32;
+}
+struct TextProps {
+  public value: &str;
+}
+struct Element {}
+function Generic<P>(props: P): Element { return new Element(); }
+function App(): Element {
+  const number: NumberProps = { value: 1 };
+  const text: TextProps = { value: "hello" };
+  const first = <Generic {...number} />;
+  const second = <Generic {...text} />;
+  first;
+  return second;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let generic = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("Generic"))
+        .expect("generic component declaration")
+        .id;
+    let mut specializations = result
+        .monomorphizations
+        .iter()
+        .filter_map(|instance| match instance {
+            tn_typecheck::MonomorphizationInstance {
+                callable: tn_typecheck::CallableIdentity::Function(declaration),
+                arguments,
+            } if *declaration == generic => Some(arguments.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    specializations.sort();
+    assert_eq!(specializations.len(), 2, "{specializations:?}");
+    assert_ne!(specializations[0], specializations[1]);
+
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let jsx = program
+        .jsx_runtime_declaration("jsx")
+        .expect("configured jsx runtime declaration");
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    let runtime_calls = lowered
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator.kind {
+            tn_mir::TerminatorKind::Call {
+                function:
+                    tn_mir::Operand::Constant(tn_mir::Constant::Function(
+                        declaration,
+                        tn_hir::Type::Function(signature),
+                    )),
+                ..
+            } if *declaration == jsx => Some(signature.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_calls.len(), 2, "{runtime_calls:?}");
+    assert!(
+        runtime_calls
+            .iter()
+            .all(|signature| { signature.generics.is_empty() && signature.parameters.len() == 3 })
+    );
+    assert_ne!(
+        runtime_calls[0].parameters[1],
+        runtime_calls[1].parameters[1]
+    );
+    tn_mir::validate(&lowered).expect("generic JSX MIR validates");
+}
+
+#[test]
+fn lowers_distinct_jsx_property_shapes_to_ordinary_runtime_calls() {
+    let (program, result) = checked_tnx(
+        r#"
+import { Element } from "./jsx-runtime";
+struct TextProps {
+  public value: &str;
+}
+struct ViewProps {
+  public enabled: bool;
+  public children: Element;
+}
+function Text(props: TextProps): Element { return new Element(); }
+function View(props: ViewProps): Element { return props.children; }
+function App(): Element {
+  return <View enabled={true}><Text value="Hello" /></View>;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let jsx = program
+        .jsx_runtime_declaration("jsx")
+        .expect("configured jsx runtime declaration");
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    let runtime_calls = lowered
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator.kind {
+            tn_mir::TerminatorKind::Call {
+                function:
+                    tn_mir::Operand::Constant(tn_mir::Constant::Function(
+                        declaration,
+                        tn_hir::Type::Function(signature),
+                    )),
+                ..
+            } if *declaration == jsx => Some(signature.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_calls.len(), 2, "{runtime_calls:?}");
+    assert!(
+        runtime_calls
+            .iter()
+            .all(|signature| { signature.generics.is_empty() && signature.parameters.len() == 3 })
+    );
+    assert_ne!(
+        runtime_calls[0].parameters[1], runtime_calls[1].parameters[1],
+        "the two component property aggregates must retain distinct MIR types"
+    );
+    tn_mir::validate(&lowered).expect("collision JSX MIR validates");
 }
 
 #[test]

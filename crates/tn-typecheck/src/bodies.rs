@@ -395,7 +395,7 @@ fn binding_identifier(pattern: &BindingPattern) -> Option<(String, bool)> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn collect_binding_pattern_bindings(
     program: &Program,
     pattern: &BindingPattern,
@@ -549,10 +549,8 @@ fn collect_binding_pattern_bindings(
 }
 
 fn binding_default_type(ty: &Type, has_default: bool) -> Type {
-    if has_default {
-        if let Type::Optional(inner) = ty {
-            return inner.as_ref().clone();
-        }
+    if has_default && let Type::Optional(inner) = ty {
+        return inner.as_ref().clone();
     }
     ty.clone()
 }
@@ -602,9 +600,10 @@ fn binding_field(program: &Program, ty: &Type, name: &str) -> Option<(u32, Type)
     let Type::Nominal(declaration, _) = ty else {
         return None;
     };
-    let fields = match &program.definition(*declaration)?.data {
-        DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => fields,
-        _ => return None,
+    let (DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. }) =
+        &program.definition(*declaration)?.data
+    else {
+        return None;
     };
     fields
         .iter()
@@ -616,9 +615,10 @@ fn binding_field_by_index(program: &Program, ty: &Type, index: u32) -> Option<(S
     let Type::Nominal(declaration, _) = ty else {
         return None;
     };
-    let fields = match &program.definition(*declaration)?.data {
-        DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => fields,
-        _ => return None,
+    let (DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. }) =
+        &program.definition(*declaration)?.data
+    else {
+        return None;
     };
     fields
         .get(index as usize)
@@ -1082,6 +1082,7 @@ impl BodyChecker<'_> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn collect_body_binding_pattern(
         &mut self,
         pattern: &BodyBindingPattern,
@@ -1223,18 +1224,18 @@ impl BodyChecker<'_> {
             .unwrap_or_default();
         let ty = match (annotation, value) {
             (Some(expected), Some(actual)) => {
-                if !compatible(self.program, &actual.ty, &expected) {
-                    if let Some(token) = pattern_token.as_ref() {
-                        self.error(
-                            "TYPE_MISMATCH",
-                            format!(
-                                "initializer has type {:?}, expected {expected:?}",
-                                actual.ty
-                            ),
-                            token,
-                            "use a value of the annotated type; numeric widening is explicit",
-                        );
-                    }
+                if !compatible(self.program, &actual.ty, &expected)
+                    && let Some(token) = pattern_token.as_ref()
+                {
+                    self.error(
+                        "TYPE_MISMATCH",
+                        format!(
+                            "initializer has type {:?}, expected {expected:?}",
+                            actual.ty
+                        ),
+                        token,
+                        "use a value of the annotated type; numeric widening is explicit",
+                    );
                 }
                 expected
             }
@@ -1242,10 +1243,10 @@ impl BodyChecker<'_> {
             _ => Type::Error,
         };
         let simple_name = body_binding_identifier(&pattern);
-        let root_name = simple_name
-            .as_ref()
-            .map(|(name, _)| name.clone())
-            .unwrap_or_else(|| format!("$binding{}", self.hir_locals.len()));
+        let root_name = simple_name.as_ref().map_or_else(
+            || format!("$binding{}", self.hir_locals.len()),
+            |(name, _)| name.clone(),
+        );
         let root_origin = pattern.span.clone();
         let root = if let Some((name, pattern_mutable)) = simple_name {
             if let Some(scope) = self.scopes.last_mut()
@@ -1468,6 +1469,7 @@ impl BodyChecker<'_> {
         self.loop_depth = self.loop_depth.saturating_sub(1);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn for_statement(&mut self) {
         self.bump();
         let awaited = self.eat(TokenKind::Await);
@@ -1500,9 +1502,10 @@ impl BodyChecker<'_> {
         self.scopes.push(BTreeMap::new());
         self.hir_scopes.push(BTreeMap::new());
         if let Some(pattern) = pattern {
-            let binding_name = body_binding_identifier(&pattern)
-                .map(|(name, _)| name)
-                .unwrap_or_else(|| format!("$binding{}", self.hir_locals.len()));
+            let binding_name = body_binding_identifier(&pattern).map_or_else(
+                || format!("$binding{}", self.hir_locals.len()),
+                |(name, _)| name,
+            );
             let iteration = iterable
                 .as_ref()
                 .map_or(Err(IterationError::NotIterable), |iterable| {
@@ -2363,6 +2366,7 @@ impl BodyChecker<'_> {
         Some(expression)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_jsx_element(&mut self, _expected: Option<&Type>) -> Option<(HirJsxId, Type)> {
         let start = self.index;
         if !self.eat(TokenKind::Less) {
@@ -2539,8 +2543,7 @@ impl BodyChecker<'_> {
                     self.error_span(
                         "TYPE_MISMATCH",
                         format!(
-                            "JSX property `{attr_name}` has type {:?}, expected {:?}",
-                            value_type, field_type
+                            "JSX property `{attr_name}` has type {value_type:?}, expected {field_type:?}"
                         ),
                         &value_span,
                         "provide a value compatible with the declared property type",
@@ -2667,6 +2670,7 @@ impl BodyChecker<'_> {
         Some((id, result_type))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_jsx_children(&mut self, expected: Option<&Type>) -> Vec<HirJsxChild> {
         let expected_child = expected.map(|expected| match expected {
             Type::Array(element, _) | Type::Slice(element) => element.as_ref(),
@@ -2703,8 +2707,8 @@ impl BodyChecker<'_> {
                         self.error_span(
                             "TYPE_MISMATCH",
                             format!(
-                                "JSX child has type {:?}, expected {:?}",
-                                expression.ty, expected
+                                "JSX child has type {:?}, expected {expected:?}",
+                                expression.ty
                             ),
                             &self.span_from_tokens(expression_start, expression_end),
                             "provide a child compatible with the component's children type",
@@ -2726,10 +2730,7 @@ impl BodyChecker<'_> {
                     {
                         self.error_span(
                             "TYPE_MISMATCH",
-                            format!(
-                                "JSX child has type {:?}, expected {:?}",
-                                child_type, expected
-                            ),
+                            format!("JSX child has type {child_type:?}, expected {expected:?}"),
                             &self.span_from_tokens(child_start, self.index),
                             "provide a child compatible with the component's children type",
                         );
@@ -2807,8 +2808,7 @@ impl BodyChecker<'_> {
             };
             let expression = self
                 .hir_expression_id_for_range(start, end)
-                .map(HirJsxValue::Expression)
-                .unwrap_or(HirJsxValue::Boolean(true));
+                .map_or(HirJsxValue::Boolean(true), HirJsxValue::Expression);
             return (expression, ty, value_span);
         }
         if self.at(TokenKind::StringLiteral) {
@@ -2820,8 +2820,7 @@ impl BodyChecker<'_> {
             let value = self.prefix(expected);
             let expression = self
                 .hir_expression_id_for_range(start, self.index)
-                .map(HirJsxValue::Expression)
-                .unwrap_or(HirJsxValue::String(literal));
+                .map_or(HirJsxValue::String(literal), HirJsxValue::Expression);
             let ty = value.as_ref().map_or(Type::Error, |value| value.ty.clone());
             return (expression, ty, self.span_from_tokens(start, self.index));
         }
@@ -2895,25 +2894,23 @@ impl BodyChecker<'_> {
             let id = self
                 .hir_expression_id_for_range(start, end)
                 .or_else(|| self.record_hir_expression_range(start, end, &expression));
-            return self.resolve_jsx_component_type(id, component_type, name, start);
+            return self.resolve_jsx_component_type(id, &component_type, name, start);
         }
         let mut declaration_and_function = None;
         if let Some((declaration, function)) = self.callable.get(&(self.module.id, name.to_owned()))
         {
             declaration_and_function = Some((*declaration, function.clone()));
-        } else if let Some((namespace, member)) = name.split_once('.') {
-            if let Some(import) = self.module.imports.iter().find(|import| {
+        } else if let Some((namespace, member)) = name.split_once('.')
+            && let Some(import) = self.module.imports.iter().find(|import| {
                 matches!(
                     &import.clause,
                     ImportClause::Namespace { local, .. } if local == namespace
                 )
-            }) {
-                if let Some((declaration, function)) =
-                    self.callable.get(&(import.target, member.to_owned()))
-                {
-                    declaration_and_function = Some((*declaration, function.clone()));
-                }
-            }
+            })
+            && let Some((declaration, function)) =
+                self.callable.get(&(import.target, member.to_owned()))
+        {
+            declaration_and_function = Some((*declaration, function.clone()));
         }
         let (declaration, component_type) =
             if let Some((declaration, function)) = declaration_and_function {
@@ -2938,13 +2935,13 @@ impl BodyChecker<'_> {
             .then_some(CallableIdentity::Function(declaration));
         expression.call_name = Some(name.into());
         let id = self.record_hir_expression_range(start, end, &expression);
-        self.resolve_jsx_component_type(id, component_type, name, start)
+        self.resolve_jsx_component_type(id, &component_type, name, start)
     }
 
     fn resolve_jsx_component_type(
         &mut self,
         id: Option<HirExpressionId>,
-        component_type: Type,
+        component_type: &Type,
         name: &str,
         start: usize,
     ) -> (Option<HirExpressionId>, Type, Type) {
@@ -2999,9 +2996,10 @@ impl BodyChecker<'_> {
             .zip(arguments)
             .map(|(parameter, argument)| (parameter.name.clone(), argument))
             .collect::<BTreeMap<_, _>>();
-        let fields = match &definition.data {
-            DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => fields,
-            _ => return Vec::new(),
+        let (DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. }) =
+            &definition.data
+        else {
+            return Vec::new();
         };
         fields
             .iter()
@@ -3038,10 +3036,7 @@ impl BodyChecker<'_> {
             {
                 self.error_span(
                     "TYPE_MISMATCH",
-                    format!(
-                        "JSX child has type {:?}, expected {:?}",
-                        actual, element_type
-                    ),
+                    format!("JSX child has type {actual:?}, expected {element_type:?}"),
                     &self.jsx_child_origin(child),
                     "provide a compatible child value",
                 );
@@ -3067,6 +3062,7 @@ impl BodyChecker<'_> {
         self.resolve_type_name("Element").unwrap_or(Type::Unknown)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn resolve_jsx_runtime(
         &mut self,
         operation: &str,
@@ -3298,6 +3294,7 @@ impl BodyChecker<'_> {
         result.unwrap_or(Type::String)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_jsx_element(
         &mut self,
         component: Option<HirExpressionId>,
@@ -3313,6 +3310,17 @@ impl BodyChecker<'_> {
         let component_type = component
             .and_then(|id| self.hir_expressions.get(id.0 as usize))
             .map(|expression| expression.ty.clone());
+        let (component_type, properties_type, element_type) = if fragment {
+            (component_type, properties_type, element_type)
+        } else {
+            self.specialize_jsx_component(
+                component,
+                &properties,
+                properties_type,
+                element_type,
+                start,
+            )
+        };
         let operation = if fragment {
             "fragment"
         } else if children.len() > 1 {
@@ -3345,6 +3353,117 @@ impl BodyChecker<'_> {
             origin: self.span_from_tokens(start, self.index),
         });
         id
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn specialize_jsx_component(
+        &mut self,
+        component: Option<HirExpressionId>,
+        properties: &[HirJsxProperty],
+        properties_type: Type,
+        element_type: Type,
+        start: usize,
+    ) -> (Option<Type>, Type, Type) {
+        let Some(component) = component else {
+            return (None, properties_type, element_type);
+        };
+        let Some((expression_type, resolution)) = self
+            .hir_expressions
+            .get(component.0 as usize)
+            .map(|expression| (expression.ty.clone(), expression.resolution))
+        else {
+            return (None, properties_type, element_type);
+        };
+        let Type::Function(signature) = expression_type.clone() else {
+            return (Some(expression_type), properties_type, element_type);
+        };
+        if signature.generics.is_empty() {
+            return (Some(expression_type), properties_type, element_type);
+        }
+        let Some(ResolvedValue::Declaration(component_declaration)) = resolution else {
+            self.error_span(
+                "TYPE_JSX_COMPONENT_GENERIC_INFERENCE",
+                "generic JSX components must resolve to a named function",
+                &self.span_from_tokens(start, self.index),
+                "use a named generic component so its property type can be inferred",
+            );
+            return (Some(expression_type), properties_type, element_type);
+        };
+        let mut substitutions = BTreeMap::new();
+        let component_properties = if matches!(&properties_type, Type::Generic(_) | Type::Unknown) {
+            properties.iter().find_map(|property| {
+                if !property.spread {
+                    return None;
+                }
+                let HirJsxValue::Expression(expression) = property.value else {
+                    return None;
+                };
+                self.hir_expressions
+                    .get(expression.0 as usize)
+                    .map(|expression| expression.ty.clone())
+            })
+        } else {
+            Some(properties_type.clone())
+        };
+        if let Some(component_properties) = component_properties
+            && let Some(parameter) = signature.parameters.first()
+        {
+            infer_substitutions(parameter, &component_properties, &mut substitutions);
+        }
+        infer_substitutions(&signature.result, &element_type, &mut substitutions);
+        let unresolved = signature
+            .generics
+            .iter()
+            .filter(|generic| generic.namespace == tn_hir::Namespace::Type)
+            .filter(|generic| !substitutions.contains_key(&generic.name))
+            .map(|generic| generic.name.clone())
+            .collect::<Vec<_>>();
+        if !unresolved.is_empty() {
+            self.error_span(
+                "TYPE_JSX_COMPONENT_GENERIC_INFERENCE",
+                format!(
+                    "could not infer generic JSX component parameter(s): {}",
+                    unresolved.join(", ")
+                ),
+                &self.span_from_tokens(start, self.index),
+                "provide a spread value or an attribute type that determines every component generic",
+            );
+        }
+        let concrete = tn_hir::FunctionType {
+            parameters: signature
+                .parameters
+                .iter()
+                .map(|parameter| substitute_type(parameter, &substitutions))
+                .collect(),
+            result: Box::new(substitute_type(&signature.result, &substitutions)),
+            effects: signature.effects.clone(),
+            generics: Vec::new(),
+            is_async: signature.is_async,
+            is_unsafe: signature.is_unsafe,
+        };
+        if let Some(expression) = self.hir_expressions.get_mut(component.0 as usize) {
+            expression.ty = Type::Function(concrete.clone());
+        }
+        self.monomorphizations.insert(MonomorphizationInstance {
+            callable: CallableIdentity::Function(component_declaration),
+            arguments: signature
+                .generics
+                .iter()
+                .filter(|generic| generic.namespace == tn_hir::Namespace::Type)
+                .filter_map(|generic| substitutions.get(&generic.name).cloned())
+                .collect(),
+        });
+        let concrete_properties = concrete
+            .parameters
+            .first()
+            .cloned()
+            .unwrap_or(properties_type);
+        let concrete_element = (*concrete.result).clone();
+        (
+            Some(Type::Function(concrete)),
+            concrete_properties,
+            concrete_element,
+        )
     }
 
     fn hir_expression_id_for_range(&self, start: usize, end: usize) -> Option<HirExpressionId> {
@@ -5101,9 +5220,7 @@ impl BodyChecker<'_> {
         end: usize,
         expression: &ExpressionType,
     ) -> Option<HirExpressionId> {
-        let Some(first) = self.tokens.get(start) else {
-            return None;
-        };
+        let first = self.tokens.get(start)?;
         if start >= end || end > self.tokens.len() {
             return None;
         }
@@ -5768,9 +5885,9 @@ fn value_type(ty: Type) -> ExpressionType {
 
 fn is_jsx_key_type(ty: &Type) -> bool {
     match ty {
-        Type::String | Type::Str => true,
-        Type::Reference { referent, .. } => matches!(referent.as_ref(), Type::String | Type::Str),
-        Type::Primitive(
+        Type::String
+        | Type::Str
+        | Type::Primitive(
             PrimitiveType::I8
             | PrimitiveType::I16
             | PrimitiveType::I32
@@ -5784,6 +5901,7 @@ fn is_jsx_key_type(ty: &Type) -> bool {
             | PrimitiveType::U128
             | PrimitiveType::Usize,
         ) => true,
+        Type::Reference { referent, .. } => matches!(referent.as_ref(), Type::String | Type::Str),
         _ => false,
     }
 }

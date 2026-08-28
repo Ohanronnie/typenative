@@ -1,0 +1,16 @@
+import { Element } from "./jsx-runtime";
+struct GenericProps {
+  public value: i32;
+}
+function Generic<P>(props: P): Element {
+  return new Element({
+    marker: 7
+  });
+}
+function main(): i32 {
+  const props: GenericProps = {
+    value: 7
+  };
+  const result = <Generic {...props} />;
+  return result.marker === 7?0: 1;
+}

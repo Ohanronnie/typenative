@@ -1,0 +1,5 @@
+function App(): Element {
+  return <View {...props} enabled>
+    <Text>Hello</Text>
+  </View>;
+}

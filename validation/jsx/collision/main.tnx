@@ -1,0 +1,31 @@
+import { Element } from "./jsx-runtime";
+struct TextProps {
+  public value: &str;
+}
+struct ViewProps {
+  public enabled: bool;
+  public children: Element;
+}
+function Text(props: TextProps): Element {
+  if (props.value === "Hello") {
+    return new Element({
+      code: 1
+    });
+  }
+  return new Element({
+    code: 0
+  });
+}
+function View(props: ViewProps): Element {
+  return new Element({
+    code: props.enabled?props.children.code: 0,
+  });
+}
+function App(): Element {
+  return(<View enabled={true}>
+    <Text value="Hello" />
+  </View>);
+}
+function main(): i32 {
+  return App().code === 1?0: 1;
+}

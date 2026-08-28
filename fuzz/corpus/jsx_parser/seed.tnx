@@ -1,0 +1,6 @@
+function App(): Element {
+  return(<View enabled gap={12}>
+    <Text>Hello</Text> {
+      value}
+    </View>);
+  }

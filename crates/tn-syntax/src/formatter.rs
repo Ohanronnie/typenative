@@ -266,6 +266,7 @@ fn import_key(line: &str) -> (u8, &str, &str) {
 }
 
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct Writer {
     output: String,
     indent: usize,
@@ -276,6 +277,7 @@ struct Writer {
     jsx_indent_stack: Vec<bool>,
     jsx_object_pending: bool,
     jsx_object_depth: usize,
+    jsx_spread_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -464,20 +466,20 @@ impl Writer {
                 }
             }
             TokenKind::LeftParen => {
-                if previous == Some(TokenKind::Colon) {
-                    self.space();
-                } else if matches!(
-                    previous,
-                    Some(
-                        TokenKind::If
-                            | TokenKind::Await
-                            | TokenKind::While
-                            | TokenKind::For
-                            | TokenKind::Match
-                            | TokenKind::Macro
-                            | TokenKind::Catch
+                if previous == Some(TokenKind::Colon)
+                    || matches!(
+                        previous,
+                        Some(
+                            TokenKind::If
+                                | TokenKind::Await
+                                | TokenKind::While
+                                | TokenKind::For
+                                | TokenKind::Match
+                                | TokenKind::Macro
+                                | TokenKind::Catch
+                        )
                     )
-                ) {
+                {
                     self.space();
                 } else {
                     self.trim_space();
@@ -679,6 +681,17 @@ impl Writer {
         }
         if context.opening || context.fragment {
             match kind {
+                TokenKind::LeftBrace if next == Some(TokenKind::Ellipsis) => {
+                    self.space();
+                    self.write("{");
+                    self.jsx_spread_open = true;
+                }
+                TokenKind::RightBrace if self.jsx_spread_open => {
+                    self.trim_space();
+                    self.write("}");
+                    self.jsx_spread_open = false;
+                    self.pending_space = true;
+                }
                 TokenKind::Less => {
                     self.write("<");
                 }
@@ -1012,6 +1025,18 @@ mod tests {
         assert!(
             first.output.contains("onPress={() => save()}") || first.output.contains("onPress =")
         );
+        assert_eq!(
+            first.output,
+            format("app.tnx", first.output.as_bytes()).output
+        );
+    }
+
+    #[test]
+    fn formats_tnx_jsx_spreads_without_block_layout() {
+        let source = b"function App(): Element { return <View {...props} enabled />; }\n";
+        let first = format("app.tnx", source);
+        assert!(first.is_success(), "{:?}", first.diagnostics);
+        assert!(first.output.contains("<View {...props} enabled />"));
         assert_eq!(
             first.output,
             format("app.tnx", first.output.as_bytes()).output

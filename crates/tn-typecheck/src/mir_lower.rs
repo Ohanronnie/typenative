@@ -88,6 +88,7 @@ pub fn lower_mir_with_ownership(
     bodies
 }
 
+#[allow(clippy::too_many_lines)]
 fn lower_one(
     program: &Program,
     hir_bodies: &[BodyHir],
@@ -400,6 +401,7 @@ impl OwnershipMirLowerer<'_> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_binding_pattern(&mut self, pattern: &HirBindingPattern) {
         let Some(root) = self.hir_local_ids.get(&pattern.root).copied() else {
             return;
@@ -498,7 +500,7 @@ impl OwnershipMirLowerer<'_> {
                 self.lower_binding_default(
                     destination,
                     source,
-                    inner.as_ref().clone(),
+                    inner,
                     binding.default.as_ref(),
                     binding.local,
                 );
@@ -530,10 +532,11 @@ impl OwnershipMirLowerer<'_> {
         &mut self,
         destination: LocalId,
         source: Place,
-        value_type: Type,
+        value_type: &Type,
         default: Option<&SourceSpan>,
         binding: HirLocalId,
     ) {
+        let value_type = value_type.clone();
         let span = self.span_from_hir_local(binding);
         let present = self.new_block();
         let fallback = self.new_block();
@@ -1889,6 +1892,7 @@ impl OwnershipMirLowerer<'_> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_local(&mut self) {
         let mutable = self.kind() == Some(TokenKind::Let);
         let start = self.index;
@@ -2787,9 +2791,9 @@ impl OwnershipMirLowerer<'_> {
         expected: Option<&Type>,
         start: usize,
     ) -> Option<(Vec<Operand>, Type)> {
-        let expected_element = expected.and_then(|expected| match expected {
-            Type::Array(element, _) | Type::Slice(element) => Some(element.as_ref()),
-            _ => Some(expected),
+        let expected_element = expected.map(|expected| match expected {
+            Type::Array(element, _) | Type::Slice(element) => element.as_ref(),
+            _ => expected,
         });
         let mut operands = Vec::with_capacity(children.len());
         let mut child_type = None;
@@ -2877,6 +2881,7 @@ impl OwnershipMirLowerer<'_> {
         self.materialize_jsx_aggregate_with_types(ty, fields, field_types, start)
     }
 
+    #[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
     fn materialize_jsx_aggregate_with_types(
         &mut self,
         ty: Type,
@@ -2904,6 +2909,7 @@ impl OwnershipMirLowerer<'_> {
         Some(Operand::Move(Place::local(destination)))
     }
 
+    #[allow(clippy::option_option)]
     fn materialize_jsx_optional(
         &mut self,
         ty: Type,
@@ -5826,6 +5832,7 @@ impl OwnershipMirLowerer<'_> {
         Some((Operand::Move(Place::local(temporary)), result_type))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_member_chain(&mut self, start: usize, end: usize) -> Option<(Operand, Type)> {
         let dot = self.find_top_level(start, end, TokenKind::Dot)?;
         let first_member_end = dot + 2;

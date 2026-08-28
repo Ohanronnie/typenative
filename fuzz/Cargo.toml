@@ -37,6 +37,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "jsx_parser"
+path = "fuzz_targets/jsx_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jsx_formatter"
+path = "fuzz_targets/jsx_formatter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "hir_mir"
 path = "fuzz_targets/hir_mir.rs"
 test = false

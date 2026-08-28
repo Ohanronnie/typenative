@@ -2,6 +2,24 @@ import { Element, jsx } from "./jsx-runtime";
 struct TextProps {
   public value: string;
 }
+struct BorrowedProps {
+  public value: &str;
+}
+struct MoveProps {
+  public value: string;
+}
+struct SingleProps {
+  public children: Element;
+}
+struct GenericProps {
+  public value: i32;
+}
+struct GenericTextProps {
+  public value: &str;
+}
+struct Ref<T> {
+  public current: T;
+}
 struct ViewProps {
   public first: Element;
   public second: Element;
@@ -17,6 +35,46 @@ function Text(props: TextProps): Element {
   return new Element({
     marker: 0
   });
+}
+function Borrowed(props: BorrowedProps): Element {
+  if (props.value === "borrowed") {
+    return new Element({
+      marker: 8
+    });
+  }
+  return new Element({
+    marker: 0
+  });
+}
+function Move(props: MoveProps): Element {
+  if (props.value === "move") {
+    return new Element({
+      marker: 9
+    });
+  }
+  return new Element({
+    marker: 0
+  });
+}
+function Single(props: SingleProps): Element {
+  if (props.children.marker === 7) {
+    return new Element({
+      marker: 10
+    });
+  }
+  return new Element({
+    marker: 0
+  });
+}
+function Generic<P>(props: P): Element {
+  return new Element({
+    marker: 11
+  });
+}
+class Components {
+  public static Text(props: TextProps): Element {
+    return Text(props);
+  }
 }
 function View(props: ViewProps): Element {
   if (props.enabled && props.first.marker === 7 && props.second.marker === 7 && props.children[0].marker === 7 && props.children[1].marker === 7) {
@@ -38,8 +96,37 @@ function main(): i32 {
     first: first, second: second, enabled: true, children: [first, second],
   };
   const direct = jsx(View, direct_props, "direct");
-  const fragment: Element = <>
+  const member = <Components.Text value="Hello" />;
+  const single = <Single>
+    <Text value="Hello" />
+  </Single>;
+  const base: ViewProps = {
+    first: second, second: first, enabled: false, children: [second, first],
+  };
+  const overridden = <View {...base} first={first} second={second} enabled>
+    <Text value="Hello" /><Text value="Hello" />
+  </View>;
+  const borrowed = <Borrowed value="borrowed" />;
+  const moved = <Move value="move" />;
+  const generic_props: GenericProps = {
+    value: 11
+  };
+  const generic_text_props: GenericTextProps = {
+    value: "generic"
+  };
+  const generic = <Generic {...generic_props} />;
+  const generic_text = <Generic {...generic_text_props} />;
+  const reference: Ref<Element > = {
+    current: first
+  };
+  const referenced = <Text value="Hello" ref={reference} />;
+  const empty_fragment: Element = <>
+  </>;
+  const one_child_fragment: Element = <>
     <Text value="Hello" />
   </>;
-  return root.marker === 42 && direct.marker === 42 && fragment.marker === 0?0: 1;
+  const many_child_fragment: Element = <>
+    <Text value="Hello" /><Text value="Hello" />
+  </>;
+  return root.marker === 42 && direct.marker === 42 && member.marker === 7 && single.marker === 10 && overridden.marker === 42 && borrowed.marker === 8 && moved.marker === 9 && generic.marker === 11 && generic_text.marker === 11 && referenced.marker === 7 && empty_fragment.marker === 0 && one_child_fragment.marker === 0 && many_child_fragment.marker === 0?0: 1;
 }

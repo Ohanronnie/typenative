@@ -166,7 +166,7 @@ rm -r -- "$parallel_dir"
 time_stage benchmarks env TN_BIN="$compiler" scripts/verify-performance-budgets.sh
 
 if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list 2>/dev/null | rg -q '^nightly'; then
-  fuzz_targets='lexer parser formatter hir_mir node_bridge resp utf8 collections'
+  fuzz_targets='lexer parser formatter jsx_parser jsx_formatter hir_mir node_bridge resp utf8 collections'
   fuzz_corpus_root="$verification_dir/fuzz-corpus"
   fuzz_artifact_root=${TN_FUZZ_ARTIFACT_DIR:-$target_dir/verify-fuzz-artifacts}
   mkdir -p "$fuzz_corpus_root" "$fuzz_artifact_root"

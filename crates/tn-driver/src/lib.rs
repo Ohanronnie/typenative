@@ -251,7 +251,7 @@ pub(crate) fn validate_jsx_runtime(program: &tn_hir::Program) -> Vec<Diagnostic>
             program,
             operation,
             arity,
-            declaration.span.clone(),
+            &declaration.span,
             function,
             &mut diagnostics,
         );
@@ -276,7 +276,7 @@ fn validate_jsx_runtime_function(
     program: &tn_hir::Program,
     operation: &str,
     arity: usize,
-    span: SourceSpan,
+    span: &SourceSpan,
     function: &Function,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -287,7 +287,7 @@ fn validate_jsx_runtime_function(
                 "JSX runtime `{operation}` declares {} parameter(s), expected {arity}",
                 function.parameters.len()
             ),
-            &span,
+            span,
             "declare the runtime operation with the required callable arity",
         ));
     }
@@ -295,7 +295,7 @@ fn validate_jsx_runtime_function(
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_ASYNC",
             format!("JSX runtime `{operation}` cannot be asynchronous"),
-            &span,
+            span,
             "return an Element synchronously from the runtime operation",
         ));
     }
@@ -303,7 +303,7 @@ fn validate_jsx_runtime_function(
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_UNSAFE",
             format!("JSX runtime `{operation}` cannot be unsafe"),
-            &span,
+            span,
             "declare a safe TypeNative runtime operation",
         ));
     }
@@ -311,7 +311,7 @@ fn validate_jsx_runtime_function(
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_EFFECTS",
             format!("JSX runtime `{operation}` declares throwing effects"),
-            &span,
+            span,
             "make JSX runtime operations infallible; effect handling belongs in ordinary application code",
         ));
     }
@@ -319,7 +319,7 @@ fn validate_jsx_runtime_function(
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_NO_BODY",
             format!("JSX runtime `{operation}` has no TypeNative body"),
-            &span,
+            span,
             "implement the runtime operation in TypeNative source",
         ));
     }
@@ -332,7 +332,7 @@ fn validate_jsx_runtime_function(
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_COMPONENT_PARAMETER",
             format!("JSX runtime `{operation}` must accept a component callable"),
-            &span,
+            span,
             "make the first parameter a component function or an inferred generic component value",
         ));
     }
@@ -347,7 +347,7 @@ fn validate_jsx_runtime_function(
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_CHILDREN_PARAMETER",
             "JSX runtime `fragment` must accept an array, slice, or inferred children value",
-            &span,
+            span,
             "declare the fragment children parameter as a child collection",
         ));
     }
@@ -358,7 +358,7 @@ fn validate_jsx_runtime_function(
                 "JSX runtime `{operation}` must return the runtime `Element` type, found {:?}",
                 function.result
             ),
-            &span,
+            span,
             "return the exported Element type from every JSX runtime operation",
         ));
     }
@@ -375,7 +375,7 @@ fn validate_jsx_runtime_function(
                     "JSX runtime `{operation}` generic `{}` cannot be inferred",
                     generic.name
                 ),
-                &span,
+                span,
                 "use every runtime generic in a parameter or result type",
             ));
         }
@@ -383,14 +383,19 @@ fn validate_jsx_runtime_function(
 }
 
 fn type_named_element(program: &tn_hir::Program, ty: &Type) -> bool {
+    let Some(runtime_module) = program.graph.jsx_runtime_module else {
+        return false;
+    };
     matches!(
         ty,
         Type::Nominal(declaration, _)
             if program
                 .graph
                 .declaration(*declaration)
-                .and_then(|declaration| declaration.name.as_deref())
-                == Some("Element")
+                .is_some_and(|declaration| {
+                    declaration.module == runtime_module
+                        && declaration.name.as_deref() == Some("Element")
+                })
     ) || matches!(ty, Type::Generic(_))
 }
 
