@@ -2,6 +2,7 @@ use crate::lexer::{lex_range, template_interpolations};
 use crate::{Token, TokenKind, lex};
 use rowan::{GreenNode, GreenNodeBuilder, Language};
 use std::ops::Range;
+use std::path::Path;
 use tn_diagnostics::{Applicability, ConditionId, Diagnostic, Edit, Label, SourceSpan};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -107,7 +108,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Parse {
         cursor: 0,
         eof_offset: lexed.source.len(),
         recursion_depth: 0,
-        jsx_enabled: file.ends_with(".tnx"),
+        jsx_enabled: is_tnx_file(file),
         builder: GreenNodeBuilder::new(),
         diagnostics: lexed.diagnostics,
     };
@@ -116,6 +117,13 @@ pub fn parse(file: &str, bytes: &[u8]) -> Parse {
         green: parser.builder.finish(),
         diagnostics: parser.diagnostics,
     }
+}
+
+fn is_tnx_file(file: &str) -> bool {
+    Path::new(file)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tnx"))
 }
 
 struct Parser<'source, 'tokens> {
@@ -1561,9 +1569,9 @@ impl Parser<'_, '_> {
         self.start(SyntaxKind::JSX_TEXT);
         let before = self.cursor;
         while self.current().is_some()
-            && !self.at(TokenKind::LeftBrace)
-            && !self.jsx_child_starts_element()
-            && !(self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash))
+            && !(self.at(TokenKind::LeftBrace)
+                || self.jsx_child_starts_element()
+                || (self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash)))
         {
             self.bump();
         }
@@ -2047,7 +2055,7 @@ fn parse_expression_fragment(file: &str, source: &str, range: Range<usize>) -> V
         cursor: 0,
         eof_offset,
         recursion_depth: 0,
-        jsx_enabled: file.ends_with(".tnx"),
+        jsx_enabled: is_tnx_file(file),
         builder: GreenNodeBuilder::new(),
         diagnostics: lexed.diagnostics,
     };
@@ -2098,7 +2106,7 @@ function main(): void {
 
     #[test]
     fn parses_tnx_jsx_as_dedicated_lossless_nodes() {
-        let source = r#"function App(): Element {
+        let source = r"function App(): Element {
   return (
     <View gap={12} enabled>
       <Text>Hello</Text>
@@ -2107,7 +2115,7 @@ function main(): void {
     </View>
   );
 }
-"#;
+";
         let parsed = parse("test.tnx", source.as_bytes());
         assert!(
             parsed.is_success(),
@@ -2155,13 +2163,13 @@ function main(): void {
 
     #[test]
     fn keeps_tnx_generic_calls_and_comparisons_out_of_jsx_parsing() {
-        let source = r#"
+        let source = r"
 function identity<T>(value: T): T { return value; }
 function main(value: i32): bool {
   const result = identity<i32>(value);
   return result < 10;
 }
-"#;
+";
         let parsed = parse("test.tnx", source.as_bytes());
         assert!(
             parsed.is_success(),

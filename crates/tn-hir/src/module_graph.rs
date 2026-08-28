@@ -24,6 +24,11 @@ pub fn load_module_graph(
 }
 
 /// Loads a module graph while retaining the explicitly selected JSX runtime for typed lowering.
+///
+/// # Errors
+///
+/// Returns all syntax, resolution, and configured-runtime diagnostics together, or an I/O error
+/// when a source file cannot be read.
 #[allow(clippy::too_many_lines)]
 pub fn load_module_graph_with_jsx_runtime(
     root: &Path,
@@ -44,6 +49,23 @@ pub fn load_module_graph_with_jsx_runtime(
         }
     });
     let mut pending = VecDeque::from([entry.clone()]);
+    let mut diagnostics = Vec::new();
+    let runtime_path = match jsx_runtime.as_deref() {
+        Some(specifier) if !specifier.trim().is_empty() => {
+            match resolve_specifier(&entry, specifier, &standard_library) {
+                Ok(path) => {
+                    pending.push_back(path.clone());
+                    Some(path)
+                }
+                Err(message) => {
+                    let span = SourceSpan::new(entry.to_string_lossy(), 0..0, "");
+                    diagnostics_for_runtime_resolution(&mut diagnostics, &span, &message);
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     let string_prelude = standard_library.join("string.tn");
     if string_prelude.is_file() {
         pending.push_back(normalize_existing(&string_prelude)?);
@@ -54,7 +76,6 @@ pub fn load_module_graph_with_jsx_runtime(
     }
     let mut discovered = BTreeSet::new();
     let mut raw_modules = BTreeMap::new();
-    let mut diagnostics = Vec::new();
 
     while let Some(path) = pending.pop_front() {
         if !discovered.insert(path.clone()) {
@@ -121,15 +142,20 @@ pub fn load_module_graph_with_jsx_runtime(
         });
     }
     let entry_id = module_id(&entry, &root, &standard_library);
+    let jsx_runtime_module = runtime_path
+        .as_ref()
+        .map(|path| module_id(path, &root, &standard_library));
     let graph = ModuleGraph {
         root,
         standard_library,
         runtime_root,
         jsx_runtime,
+        jsx_runtime_module,
         entry: entry_id,
         modules,
     };
     validate_bindings(&graph, &mut diagnostics);
+    validate_jsx_runtime_cycles(&graph, &mut diagnostics);
     if diagnostics.is_empty() {
         Ok(graph)
     } else {
@@ -486,14 +512,119 @@ fn resolve_specifier(
     } else if specifier.starts_with("./") || specifier.starts_with("../") {
         importer.parent().unwrap_or(Path::new(".")).join(specifier)
     } else {
-        return Err(format!(
-            "bare package specifiers are not supported: {specifier}"
-        ));
+        let mut package_candidates = Vec::new();
+        for ancestor in importer.ancestors() {
+            package_candidates.push(ancestor.join("node_modules").join(specifier));
+        }
+        package_candidates.push(importer.parent().unwrap_or(Path::new(".")).join(specifier));
+        let Some(base) = package_candidates.into_iter().find(|candidate| {
+            candidate.with_extension("tn").is_file() || candidate.with_extension("tnx").is_file()
+        }) else {
+            return Err(format!(
+                "module specifier is neither a relative, standard-library, nor installed package module: {specifier}"
+            ));
+        };
+        return [base.with_extension("tn"), base.with_extension("tnx")]
+            .into_iter()
+            .find_map(|candidate| normalize_existing(&candidate).ok())
+            .ok_or_else(|| format!("module does not resolve to one source file: {specifier}"));
     };
     [base.with_extension("tn"), base.with_extension("tnx")]
         .into_iter()
         .find_map(|candidate| normalize_existing(&candidate).ok())
         .ok_or_else(|| format!("module does not resolve to one source file: {specifier}"))
+}
+
+fn diagnostics_for_runtime_resolution(
+    diagnostics: &mut Vec<Diagnostic>,
+    span: &SourceSpan,
+    message: &str,
+) {
+    diagnostics.push(diagnostic(
+        "RESOLVE_JSX_RUNTIME_MODULE",
+        format!("JSX runtime module cannot be resolved: {message}"),
+        span,
+        "configure `jsx.runtime` with a resolvable TypeNative module",
+    ));
+}
+
+fn validate_jsx_runtime_cycles(graph: &ModuleGraph, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(runtime) = graph.jsx_runtime_module else {
+        return;
+    };
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut stack = Vec::new();
+    let mut reported = BTreeSet::new();
+    visit_runtime_module(
+        graph,
+        runtime,
+        &mut visiting,
+        &mut visited,
+        &mut stack,
+        &mut reported,
+        diagnostics,
+    );
+}
+
+fn visit_runtime_module(
+    graph: &ModuleGraph,
+    module_id: ModuleId,
+    visiting: &mut BTreeSet<ModuleId>,
+    visited: &mut BTreeSet<ModuleId>,
+    stack: &mut Vec<ModuleId>,
+    reported: &mut BTreeSet<Vec<ModuleId>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if visited.contains(&module_id) {
+        return;
+    }
+    if !visiting.insert(module_id) {
+        return;
+    }
+    stack.push(module_id);
+    let imports = graph
+        .module(module_id)
+        .map(|module| {
+            module
+                .imports
+                .iter()
+                .map(|import| (import.target, import.span.clone()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (target, span) in imports {
+        if let Some(start) = stack.iter().position(|candidate| *candidate == target) {
+            let cycle = stack[start..].to_vec();
+            if reported.insert(cycle.clone()) {
+                let names = cycle
+                    .iter()
+                    .filter_map(|id| graph.module(*id))
+                    .map(|module| module.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                diagnostics.push(diagnostic(
+                    "RESOLVE_JSX_RUNTIME_IMPORT_CYCLE",
+                    format!("JSX runtime imports form a cycle: {names} -> {names}"),
+                    &span,
+                    "split the runtime cycle so the configured JSX runtime has an acyclic dependency graph",
+                ));
+            }
+            continue;
+        }
+        visit_runtime_module(
+            graph,
+            target,
+            visiting,
+            visited,
+            stack,
+            reported,
+            diagnostics,
+        );
+    }
+    stack.pop();
+    visiting.remove(&module_id);
+    visited.insert(module_id);
 }
 
 fn normalize_existing(path: &Path) -> std::io::Result<PathBuf> {

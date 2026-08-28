@@ -1,0 +1,45 @@
+import { Element, jsx } from "./jsx-runtime";
+struct TextProps {
+  public value: string;
+}
+struct ViewProps {
+  public first: Element;
+  public second: Element;
+  public enabled: bool;
+  public children: [Element; 2];
+}
+function Text(props: TextProps): Element {
+  if (props.value === "Hello") {
+    return new Element({
+      marker: 7
+    });
+  }
+  return new Element({
+    marker: 0
+  });
+}
+function View(props: ViewProps): Element {
+  if (props.enabled && props.first.marker === 7 && props.second.marker === 7 && props.children[0].marker === 7 && props.children[1].marker === 7) {
+    return new Element({
+      marker: 42
+    });
+  }
+  return new Element({
+    marker: 0
+  });
+}
+function main(): i32 {
+  const first = <Text value="Hello" key="first" />;
+  const second = <Text value="Hello" />;
+  const root = <View first={first} second={second} enabled>
+    <Text value="Hello" /><Text value="Hello" />
+  </View>;
+  const direct_props: ViewProps = {
+    first: first, second: second, enabled: true, children: [first, second],
+  };
+  const direct = jsx(View, direct_props, "direct");
+  const fragment: Element = <>
+    <Text value="Hello" />
+  </>;
+  return root.marker === 42 && direct.marker === 42 && fragment.marker === 0?0: 1;
+}

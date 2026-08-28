@@ -16,11 +16,16 @@ fn checked_tnx(source: &str) -> (tn_hir::Program, tn_typecheck::BodyCheckResult)
     let standard_library = directory.path().join("std");
     std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
     std::fs::write(&path, source).expect("write JSX fixture");
+    std::fs::write(
+        directory.path().join("jsx-runtime.tn"),
+        "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+    )
+    .expect("write JSX runtime fixture");
     let graph = tn_hir::load_module_graph_with_jsx_runtime(
         directory.path(),
         &path,
         &standard_library,
-        Some("@typenative/ui/jsx-runtime".into()),
+        Some("./jsx-runtime".into()),
     )
     .expect("load JSX fixture graph");
     let program = tn_hir::lower_program(graph).expect("lower JSX fixture declarations");
@@ -399,6 +404,12 @@ function App(): Element {
     let element = &body.jsx_elements[0];
     assert!(!element.fragment);
     assert!(element.component.is_some());
+    assert!(element.runtime.is_some());
+    assert!(element.runtime_signature.as_ref().is_some_and(|signature| {
+        signature.generics.is_empty()
+            && signature.parameters.len() == 3
+            && signature.result.as_ref() == &element.element_type
+    }));
     assert!(element.key.is_some());
     assert!(
         element
@@ -549,6 +560,74 @@ function App(base: Props): Element {
 }
 
 #[test]
+fn lowers_typed_jsx_children_into_array_props() {
+    let (program, result) = checked_tnx(
+        r#"
+struct Element { public marker: i32; }
+struct TextProps {}
+struct Props {
+  public first: Element;
+  public second: Element;
+  public children: [Element; 2usize];
+}
+function Text(props: TextProps): Element { return new Element({ marker: 7 }); }
+function View(props: Props): Element {
+  return new Element({ marker: props.children[0].marker });
+}
+function App(): Element {
+  const first = <Text />;
+  const second = <Text />;
+  return <View first={first} second={second}><Text /><Text /></View>;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    let view = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("View"))
+        .expect("View declaration")
+        .id;
+    let view_body = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == view)
+        .expect("lowered View body");
+    assert!(view_body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                tn_mir::StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), tn_mir::Rvalue::CheckedIndex { .. })
+            )
+        })
+    }));
+    tn_mir::validate(&lowered).expect("JSX children array lowers to valid MIR");
+    assert!(lowered.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                tn_mir::StatementKind::Assign(_, value)
+                    if matches!(value.as_ref(), tn_mir::Rvalue::Aggregate { ty: tn_hir::Type::Nominal(_, _), fields, .. } if fields.len() == 3)
+            )
+        })
+    }));
+}
+
+#[test]
 fn diagnoses_jsx_property_type_at_the_attribute_value() {
     let source = r#"
 struct TextProps {
@@ -603,9 +682,9 @@ function App(): Element {
         matches!(
             &block.terminator.kind,
             tn_mir::TerminatorKind::Call {
-                function: tn_mir::Operand::Constant(tn_mir::Constant::ExternalFunction { symbol, .. }),
+                function: tn_mir::Operand::Constant(tn_mir::Constant::Function(_, _)),
                 ..
-            } if symbol.ends_with("_jsx")
+            }
         )
     }));
     assert!(!body.blocks.iter().flat_map(|block| &block.statements).any(|statement| {

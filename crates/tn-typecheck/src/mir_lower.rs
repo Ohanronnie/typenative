@@ -2546,17 +2546,12 @@ impl OwnershipMirLowerer<'_> {
                 Type::Array(Box::new(child_type.clone()), element.children.len() as u64);
             let children =
                 self.materialize_jsx_aggregate(array_type.clone(), children, child_type, start)?;
-            let element_type = element.element_type.clone();
-            let signature = tn_hir::FunctionType {
-                parameters: vec![array_type],
-                result: Box::new(element_type.clone()),
-                effects: Vec::new(),
-                generics: Vec::new(),
-                is_async: false,
-                is_unsafe: false,
-            };
+            let signature = element.runtime_signature.clone()?;
             return self.emit_call(
-                self.jsx_runtime_function("fragment", signature.clone())?,
+                Operand::Constant(tn_mir::Constant::Function(
+                    element.runtime?,
+                    Type::Function(signature.clone()),
+                )),
                 None,
                 &signature,
                 vec![children],
@@ -2598,7 +2593,7 @@ impl OwnershipMirLowerer<'_> {
             }
             _ => self.lower_expression_range(component_start, component_end, None)?,
         };
-        let (component, component_type) = component;
+        let (component, _component_type) = component;
         let props = self.lower_jsx_properties(&element, start)?;
         let key = if let Some(key_id) = element.key {
             let origin = self.hir.expressions.get(key_id.0 as usize)?.origin.clone();
@@ -2615,25 +2610,12 @@ impl OwnershipMirLowerer<'_> {
                 key_type,
             )
         };
-        let function_name = if element.children.len() > 1 {
-            "jsxs"
-        } else {
-            "jsx"
-        };
-        let signature = tn_hir::FunctionType {
-            parameters: vec![
-                component_type,
-                element.properties_type.clone(),
-                key.1.clone(),
-            ],
-            result: Box::new(element.element_type.clone()),
-            effects: Vec::new(),
-            generics: Vec::new(),
-            is_async: false,
-            is_unsafe: false,
-        };
+        let signature = element.runtime_signature.clone()?;
         self.emit_call(
-            self.jsx_runtime_function(function_name, signature.clone())?,
+            Operand::Constant(tn_mir::Constant::Function(
+                element.runtime?,
+                Type::Function(signature.clone()),
+            )),
             None,
             &signature,
             vec![component, props, key.0],
@@ -2935,18 +2917,6 @@ impl OwnershipMirLowerer<'_> {
         let operand =
             self.materialize_jsx_aggregate_with_types(ty, vec![value], vec![inner], start)?;
         Some(Some(operand))
-    }
-
-    fn jsx_runtime_function(
-        &self,
-        operation: &str,
-        signature: tn_hir::FunctionType,
-    ) -> Option<Operand> {
-        let runtime = self.program.graph.jsx_runtime.as_deref()?;
-        Some(Operand::Constant(tn_mir::Constant::ExternalFunction {
-            symbol: jsx_runtime_symbol(runtime, operation),
-            ty: Type::Function(signature),
-        }))
     }
 
     fn token_range_for_bytes(&self, start: usize, end: usize) -> Option<(usize, usize)> {
@@ -5872,6 +5842,43 @@ impl OwnershipMirLowerer<'_> {
         let mut cursor = first_member_end;
         while cursor < end {
             match self.tokens[cursor].kind {
+                TokenKind::LeftBracket => {
+                    let close = self.matching_token(
+                        cursor,
+                        TokenKind::LeftBracket,
+                        TokenKind::RightBracket,
+                    )?;
+                    let index_type = Type::Primitive(PrimitiveType::Usize);
+                    let index = self
+                        .lower_expression_range(cursor + 1, close, Some(&index_type))?
+                        .0;
+                    let collection = operand_place(value)?;
+                    let element_type = self
+                        .hir_expression_range(start, close + 1)
+                        .map(|expression| expression.ty.clone())
+                        .or_else(|| match &value_type {
+                            Type::Array(element, _) | Type::Slice(element) => {
+                                Some(element.as_ref().clone())
+                            }
+                            _ => None,
+                        })?;
+                    let temporary =
+                        self.temporary(element_type.clone(), self.span(self.tokens[cursor]));
+                    self.statement(
+                        StatementKind::StorageLive(temporary),
+                        self.span(self.tokens[cursor]),
+                    );
+                    self.statement(
+                        StatementKind::Assign(
+                            Place::local(temporary),
+                            Box::new(Rvalue::CheckedIndex { collection, index }),
+                        ),
+                        self.span(self.tokens[cursor]),
+                    );
+                    value = Operand::Move(Place::local(temporary));
+                    value_type = element_type;
+                    cursor = close + 1;
+                }
                 TokenKind::Dot => {
                     let member_token = cursor + 1;
                     let member_end = member_token + 1;
@@ -7594,15 +7601,6 @@ fn replace_callable_type(operand: &mut Operand, ty: Type) {
         | tn_mir::Constant::Constructor { ty: function, .. } => *function = ty,
         _ => {}
     }
-}
-
-fn jsx_runtime_symbol(runtime: &str, operation: &str) -> String {
-    let hash = runtime
-        .bytes()
-        .fold(14_695_981_039_346_656_037_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
-        });
-    format!("tn_jsx_runtime_{hash:016x}_{operation}")
 }
 
 fn specialize_method_operand(lowerer: &mut OwnershipMirLowerer<'_>, operand: &Operand, ty: &Type) {

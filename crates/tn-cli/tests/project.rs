@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 #[test]
@@ -212,6 +213,127 @@ fn build_emits_verified_native_products_and_run_preserves_exit_status() {
         "{}",
         String::from_utf8_lossy(&run.stderr)
     );
+}
+
+fn jsx_runtime_diagnostic_conditions(runtime_source: &str) -> Vec<String> {
+    let directory = tempfile::tempdir().expect("temporary JSX diagnostic project");
+    std::fs::write(
+        directory.path().join("main.tnx"),
+        "function main(): i32 { return 0; }\n",
+    )
+    .expect("JSX diagnostic entry source");
+    std::fs::write(directory.path().join("jsx-runtime.tn"), runtime_source)
+        .expect("JSX diagnostic runtime source");
+    std::fs::write(
+        directory.path().join("typenative.json"),
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+    )
+    .expect("JSX diagnostic project configuration");
+    let output = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args([
+            "check",
+            directory.path().to_str().expect("UTF-8 JSX project path"),
+            "--json",
+        ])
+        .output()
+        .expect("tn check JSX diagnostic project");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON diagnostic"))
+        .filter_map(|record| record["condition"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn jsx_runtime_contract_failures_have_specific_diagnostics() {
+    let private_and_missing = jsx_runtime_diagnostic_conditions(
+        "export struct Element {}\nfunction jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\n",
+    );
+    assert!(private_and_missing.contains(&"DRIVER_JSX_RUNTIME_PRIVATE_EXPORT".into()));
+    assert_eq!(
+        private_and_missing
+            .iter()
+            .filter(|condition| condition.as_str() == "DRIVER_JSX_RUNTIME_MISSING_EXPORT")
+            .count(),
+        2
+    );
+
+    let wrong_shape = jsx_runtime_diagnostic_conditions(
+        "export struct Element {}\nexport struct jsx {}\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C, extra: C): Element { return new Element(); }\n",
+    );
+    assert!(wrong_shape.contains(&"DRIVER_JSX_RUNTIME_NOT_FUNCTION".into()));
+    assert!(wrong_shape.contains(&"DRIVER_JSX_RUNTIME_WRONG_ARITY".into()));
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn tnx_jsx_runtime_reaches_native_execution_in_debug_and_optimized_profiles() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../validation/jsx/runtime/typenative.json");
+    for profile in ["debug", "optimized"] {
+        let directory = tempfile::tempdir().expect("temporary JSX build directory");
+        let product = directory.path().join(format!("jsx-{profile}"));
+        let build = Command::new(env!("CARGO_BIN_EXE_tn"))
+            .args([
+                "build",
+                fixture.to_str().expect("UTF-8 JSX fixture path"),
+                "--profile",
+                profile,
+                "--out",
+                product.to_str().expect("UTF-8 JSX output path"),
+                "--timings",
+            ])
+            .output()
+            .expect("tn build JSX fixture");
+        assert!(
+            build.status.success(),
+            "{profile}: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&product)
+            .output()
+            .expect("run native JSX fixture");
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{profile}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn tnx_jsx_llvm_contains_ordinary_calls_without_hashed_runtime_externals() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../validation/jsx/runtime/typenative.json");
+    let directory = tempfile::tempdir().expect("temporary JSX LLVM directory");
+    let product = directory.path().join("jsx.ll");
+    let build = Command::new(env!("CARGO_BIN_EXE_tn"))
+        .args([
+            "build",
+            fixture.to_str().expect("UTF-8 JSX fixture path"),
+            "--emit",
+            "llvm-ir",
+            "--out",
+            product.to_str().expect("UTF-8 JSX LLVM path"),
+        ])
+        .output()
+        .expect("tn build JSX LLVM fixture");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let ir = std::fs::read_to_string(product).expect("JSX LLVM IR");
+    assert!(!ir.contains("tn_jsx_runtime"));
+    assert!(ir.contains("call { i32 } @tn_"), "{ir}");
 }
 
 #[test]

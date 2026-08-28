@@ -124,6 +124,7 @@ pub struct ModuleGraph {
     pub standard_library: PathBuf,
     pub runtime_root: Option<PathBuf>,
     pub jsx_runtime: Option<String>,
+    pub jsx_runtime_module: Option<ModuleId>,
     pub entry: ModuleId,
     pub modules: Vec<Module>,
 }
@@ -500,6 +501,8 @@ pub struct HirJsxElement {
     pub key: Option<HirExpressionId>,
     pub reference: Option<HirExpressionId>,
     pub fragment: bool,
+    pub runtime: Option<DeclarationId>,
+    pub runtime_signature: Option<FunctionType>,
     pub origin: SourceSpan,
 }
 
@@ -720,6 +723,39 @@ pub struct BodyHir {
 }
 
 impl Program {
+    /// Resolves an exported declaration from the configured JSX runtime module, regardless of its
+    /// declaration kind. The driver uses this to distinguish a missing export from an export that
+    /// exists but is not callable.
+    pub fn jsx_runtime_export(&self, operation: &str) -> Option<DeclarationId> {
+        let module = self.graph.jsx_runtime_module?;
+        self.graph
+            .module(module)?
+            .declarations
+            .iter()
+            .find(|declaration| {
+                declaration.exported && declaration.name.as_deref() == Some(operation)
+            })
+            .map(|declaration| declaration.id)
+    }
+
+    /// Resolves one of the callable declarations required by the configured JSX runtime.
+    ///
+    /// The declaration is looked up by resolved module identity, so a source declaration cannot
+    /// impersonate a runtime operation merely by using the same name.
+    pub fn jsx_runtime_declaration(&self, operation: &str) -> Option<DeclarationId> {
+        let module = self.graph.jsx_runtime_module?;
+        self.graph
+            .module(module)?
+            .declarations
+            .iter()
+            .find(|declaration| {
+                declaration.exported
+                    && declaration.kind == DeclarationKind::Function
+                    && declaration.name.as_deref() == Some(operation)
+            })
+            .map(|declaration| declaration.id)
+    }
+
     /// Resolves the external symbol name from the private compiler manifest. Ordinary exported
     /// user declarations use their source name; bundled runtime declarations retain their stable
     /// C ABI names without a source decorator.

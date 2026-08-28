@@ -5,9 +5,9 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
 use tn_hir::{
-    BindingPattern, BindingPatternKind, BodyHir, BodyOwner, DeclarationId, Definition,
-    DefinitionData, Function, HirBindingPattern, HirBindingPatternId, HirCaptureMode, HirClosure,
-    HirClosureCapture, HirClosureId, HirExpression, HirExpressionId, HirExpressionKind,
+    BindingPattern, BindingPatternKind, BodyHir, BodyOwner, DeclarationId, DeclarationKind,
+    Definition, DefinitionData, Function, HirBindingPattern, HirBindingPatternId, HirCaptureMode,
+    HirClosure, HirClosureCapture, HirClosureId, HirExpression, HirExpressionId, HirExpressionKind,
     HirJsxChild, HirJsxElement, HirJsxId, HirJsxProperty, HirJsxValue, HirLocal, HirLocalId,
     HirPattern, HirPatternBinding, HirPatternProjection, HirStatement, HirStatementId,
     HirStatementKind, HirTemplate, HirTemplateId, HirTemplatePart, HirTemplateStorage,
@@ -2668,6 +2668,10 @@ impl BodyChecker<'_> {
     }
 
     fn parse_jsx_children(&mut self, expected: Option<&Type>) -> Vec<HirJsxChild> {
+        let expected_child = expected.map(|expected| match expected {
+            Type::Array(element, _) | Type::Slice(element) => element.as_ref(),
+            _ => expected,
+        });
         let mut children = Vec::new();
         while self.kind().is_some() {
             if self.at(TokenKind::Less) && self.nth(1) == Some(TokenKind::Slash) {
@@ -2680,7 +2684,7 @@ impl BodyChecker<'_> {
                     continue;
                 }
                 let expression_start = self.index;
-                let expression = self.expression(0, expected);
+                let expression = self.expression(0, expected_child);
                 let expression_end = self.index;
                 if !self.eat(TokenKind::RightBrace) {
                     self.error_current(
@@ -2693,7 +2697,7 @@ impl BodyChecker<'_> {
                     && let Some(id) =
                         self.hir_expression_id_for_range(expression_start, expression_end)
                 {
-                    if let Some(expected) = expected
+                    if let Some(expected) = expected_child
                         && !compatible(self.program, &expression.ty, expected)
                     {
                         self.error_span(
@@ -2712,12 +2716,12 @@ impl BodyChecker<'_> {
             }
             if self.looks_like_jsx_start() && self.nth(1) != Some(TokenKind::Greater) {
                 let child_start = self.index;
-                if let Some(expression) = self.jsx_element_expression(expected)
+                if let Some(expression) = self.jsx_element_expression(expected_child)
                     && let Some(id) = expression.jsx
                 {
                     let child_type = expression.ty.clone();
                     children.push(HirJsxChild::Element(id));
-                    if let Some(expected) = expected
+                    if let Some(expected) = expected_child
                         && !compatible(self.program, &child_type, expected)
                     {
                         self.error_span(
@@ -3063,6 +3067,237 @@ impl BodyChecker<'_> {
         self.resolve_type_name("Element").unwrap_or(Type::Unknown)
     }
 
+    fn resolve_jsx_runtime(
+        &mut self,
+        operation: &str,
+        component_type: Option<&Type>,
+        properties_type: &Type,
+        children: &[HirJsxChild],
+        key: Option<HirExpressionId>,
+        element_type: &Type,
+        start: usize,
+    ) -> (Option<DeclarationId>, Option<tn_hir::FunctionType>) {
+        let span = self.span_from_tokens(start, self.index);
+        let Some(declaration) = self.program.jsx_runtime_export(operation) else {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_MISSING_EXPORT",
+                format!("configured JSX runtime does not export `{operation}`"),
+                &span,
+                "export this callable from the configured JSX runtime module",
+            );
+            return (None, None);
+        };
+        let Some(item) = self.program.graph.declaration(declaration) else {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_MISSING_DECLARATION",
+                format!("configured JSX runtime declaration `{operation}` is missing"),
+                &span,
+                "provide a resolved TypeNative declaration for this runtime operation",
+            );
+            return (Some(declaration), None);
+        };
+        if item.kind != DeclarationKind::Function {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_NOT_FUNCTION",
+                format!("JSX runtime export `{operation}` is not a TypeNative function"),
+                &item.span,
+                "export a function declaration for this runtime operation",
+            );
+            return (Some(declaration), None);
+        }
+        let Some(definition) = self.program.definition(declaration) else {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_MISSING_DECLARATION",
+                format!("configured JSX runtime declaration `{operation}` has no definition"),
+                &item.span,
+                "provide the function body in the configured runtime module",
+            );
+            return (Some(declaration), None);
+        };
+        let DefinitionData::Function(runtime_function) = &definition.data else {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_NOT_FUNCTION",
+                format!("JSX runtime export `{operation}` is not callable"),
+                &item.span,
+                "export a function declaration for this runtime operation",
+            );
+            return (Some(declaration), None);
+        };
+        let runtime_function = normalize_function_aliases(self.program, runtime_function);
+        let Type::Function(signature) = function_type(&runtime_function) else {
+            unreachable!("function declarations always have function types");
+        };
+        let expected_parameters = if operation == "fragment" {
+            vec![Type::Array(
+                Box::new(self.jsx_children_type(children)),
+                children.len() as u64,
+            )]
+        } else {
+            let properties_type = if *properties_type == Type::Unknown {
+                Type::Tuple(Vec::new())
+            } else {
+                properties_type.clone()
+            };
+            let key_type = key
+                .and_then(|id| self.hir_expressions.get(id.0 as usize))
+                .map_or_else(
+                    || Type::Optional(Box::new(Type::String)),
+                    |expression| optional_type(expression.ty.clone()),
+                );
+            vec![
+                component_type.cloned().unwrap_or(Type::Error),
+                properties_type,
+                key_type,
+            ]
+        };
+        if signature.parameters.len() != expected_parameters.len() {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_WRONG_ARITY",
+                format!(
+                    "JSX runtime `{operation}` expects {} parameter(s), but the export declares {}",
+                    expected_parameters.len(),
+                    signature.parameters.len()
+                ),
+                &item.span,
+                "declare the runtime operation with the required callable arity",
+            );
+            return (Some(declaration), None);
+        }
+        if signature.is_async {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_ASYNC",
+                format!("JSX runtime `{operation}` cannot be asynchronous"),
+                &item.span,
+                "return an Element synchronously from the runtime operation",
+            );
+        }
+        if signature.is_unsafe || item.kind == DeclarationKind::ExternFunction {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_FOREIGN_DECLARATION",
+                format!("JSX runtime `{operation}` must be an ordinary safe TypeNative function"),
+                &item.span,
+                "implement the JSX runtime in TypeNative source",
+            );
+        }
+        let mut substitutions = BTreeMap::new();
+        for (parameter, expected) in signature.parameters.iter().zip(&expected_parameters) {
+            infer_substitutions(parameter, expected, &mut substitutions);
+        }
+        infer_substitutions(&signature.result, element_type, &mut substitutions);
+        let unresolved = signature
+            .generics
+            .iter()
+            .filter(|generic| !substitutions.contains_key(&generic.name))
+            .map(|generic| generic.name.clone())
+            .collect::<Vec<_>>();
+        if !unresolved.is_empty() {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_GENERIC_INFERENCE",
+                format!(
+                    "could not infer JSX runtime generic parameter(s): {}",
+                    unresolved.join(", ")
+                ),
+                &span,
+                "make every runtime generic appear in an operation parameter or result",
+            );
+        }
+        let runtime_token = self.tokens.get(start).cloned();
+        self.validate_generic_bounds(&signature.generics, &substitutions, runtime_token.as_ref());
+        let concrete_parameters = signature
+            .parameters
+            .iter()
+            .map(|parameter| substitute_type(parameter, &substitutions))
+            .collect::<Vec<_>>();
+        for (index, (actual, expected)) in concrete_parameters
+            .iter()
+            .zip(&expected_parameters)
+            .enumerate()
+        {
+            if *expected == Type::Error || !compatible(self.program, expected, actual) {
+                let condition = match (operation, index) {
+                    ("fragment", 0) => "TYPE_JSX_RUNTIME_CHILDREN_PARAMETER",
+                    (_, 0) => "TYPE_JSX_RUNTIME_COMPONENT_PARAMETER",
+                    (_, 1) => "TYPE_JSX_RUNTIME_PROPERTIES_PARAMETER",
+                    _ => "TYPE_JSX_RUNTIME_KEY_PARAMETER",
+                };
+                self.error_span(
+                    condition,
+                    format!(
+                        "JSX runtime `{operation}` parameter {} has type {actual:?}, expected {expected:?}",
+                        index + 1
+                    ),
+                    &item.span,
+                    "make the runtime operation parameter compatible with the typed JSX value",
+                );
+            }
+        }
+        let concrete_result = substitute_type(&signature.result, &substitutions);
+        if *element_type != Type::Error && !compatible(self.program, &concrete_result, element_type)
+        {
+            self.error_span(
+                "TYPE_JSX_RUNTIME_RESULT_MISMATCH",
+                format!(
+                    "JSX runtime `{operation}` returns {concrete_result:?}, expected {element_type:?}"
+                ),
+                &item.span,
+                "return the Element type produced by the JSX component contract",
+            );
+        }
+        if !signature.effects.is_empty() {
+            if self.try_prefix_depth == 0 {
+                self.error_span(
+                    "TYPE_JSX_RUNTIME_EFFECTS",
+                    format!("JSX runtime `{operation}` has undeclared effects"),
+                    &span,
+                    "use an infallible runtime operation or handle its effects explicitly",
+                );
+            } else {
+                let runtime_token = self.tokens.get(start).cloned();
+                self.record_effects(&signature.effects, runtime_token.as_ref());
+            }
+        }
+        (
+            Some(declaration),
+            Some(tn_hir::FunctionType {
+                parameters: concrete_parameters,
+                result: Box::new(concrete_result),
+                effects: signature.effects,
+                generics: Vec::new(),
+                is_async: signature.is_async,
+                is_unsafe: signature.is_unsafe,
+            }),
+        )
+    }
+
+    fn jsx_children_type(&self, children: &[HirJsxChild]) -> Type {
+        let mut result = None;
+        for child in children {
+            let actual = match child {
+                HirJsxChild::Element(id) => self
+                    .hir_jsx_elements
+                    .get(id.0 as usize)
+                    .map_or(Type::Error, |element| element.element_type.clone()),
+                HirJsxChild::Expression(id) => self
+                    .hir_expressions
+                    .get(id.0 as usize)
+                    .map_or(Type::Error, |expression| expression.ty.clone()),
+                HirJsxChild::Text { .. } => Type::Reference {
+                    mutable: false,
+                    lifetime: "static".into(),
+                    referent: Box::new(Type::Str),
+                },
+            };
+            if let Some(previous) = &result
+                && *previous != actual
+                && !matches!(previous, Type::Unknown)
+            {
+                return Type::Error;
+            }
+            result = Some(actual);
+        }
+        result.unwrap_or(Type::String)
+    }
+
     fn push_jsx_element(
         &mut self,
         component: Option<HirExpressionId>,
@@ -3075,6 +3310,25 @@ impl BodyChecker<'_> {
         fragment: bool,
         start: usize,
     ) -> HirJsxId {
+        let component_type = component
+            .and_then(|id| self.hir_expressions.get(id.0 as usize))
+            .map(|expression| expression.ty.clone());
+        let operation = if fragment {
+            "fragment"
+        } else if children.len() > 1 {
+            "jsxs"
+        } else {
+            "jsx"
+        };
+        let (runtime, runtime_signature) = self.resolve_jsx_runtime(
+            operation,
+            component_type.as_ref(),
+            &properties_type,
+            &children,
+            key,
+            &element_type,
+            start,
+        );
         let id = HirJsxId(u32::try_from(self.hir_jsx_elements.len()).expect("HIR JSX limit"));
         self.hir_jsx_elements.push(HirJsxElement {
             id,
@@ -3086,6 +3340,8 @@ impl BodyChecker<'_> {
             key,
             reference,
             fragment,
+            runtime,
+            runtime_signature,
             origin: self.span_from_tokens(start, self.index),
         });
         id
@@ -5956,6 +6212,12 @@ fn infer_substitutions(parameter: &Type, argument: &Type, inferred: &mut BTreeMa
                 pointee: argument, ..
             },
         ) => infer_substitutions(parameter, argument, inferred),
+        (Type::Function(parameter), Type::Function(argument)) => {
+            for (parameter, argument) in parameter.parameters.iter().zip(&argument.parameters) {
+                infer_substitutions(parameter, argument, inferred);
+            }
+            infer_substitutions(&parameter.result, &argument.result, inferred);
+        }
         _ => {}
     }
 }

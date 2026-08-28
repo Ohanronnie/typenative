@@ -598,6 +598,7 @@ fn parse_parameters(
     parameters
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_binding_pattern(
     cursor: &mut Cursor<'_, '_>,
     diagnostics: &mut Vec<Diagnostic>,

@@ -10,6 +10,7 @@ mod test;
 use std::path::Path;
 use std::time::Instant;
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
+use tn_hir::{DeclarationKind, DefinitionData, Function, Type};
 
 pub use build::{BuildError, BuildOutput, build_project, build_project_with_timings};
 pub use docs::generate_docs;
@@ -170,23 +171,279 @@ pub(crate) fn validate_jsx_runtime(program: &tn_hir::Program) -> Vec<Diagnostic>
     }) else {
         return Vec::new();
     };
-    if program
-        .graph
-        .jsx_runtime
-        .as_deref()
-        .is_some_and(|runtime| !runtime.trim().is_empty())
-    {
-        return Vec::new();
+    let Some(runtime) = program.graph.jsx_runtime.as_deref() else {
+        return vec![jsx_runtime_required_diagnostic(module)];
+    };
+    if runtime.trim().is_empty() {
+        return vec![jsx_runtime_required_diagnostic(module)];
     }
-    vec![Diagnostic::error(
-        ConditionId::new("DRIVER_JSX_RUNTIME_REQUIRED").expect("static condition is valid"),
+    let Some(runtime_module) = program.graph.jsx_runtime_module else {
+        return vec![jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_MODULE_MISSING",
+            "the configured JSX runtime module was not loaded",
+            &module_start_span(module),
+            "configure `jsx.runtime` with a resolvable TypeNative module",
+        )];
+    };
+    let Some(runtime_module) = program.graph.module(runtime_module) else {
+        return vec![jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_MODULE_MISSING",
+            "the configured JSX runtime module is absent from the module graph",
+            &module_start_span(module),
+            "configure `jsx.runtime` with a resolvable TypeNative module",
+        )];
+    };
+    let mut diagnostics = Vec::new();
+    for (operation, arity) in [("jsx", 3_usize), ("jsxs", 3), ("fragment", 1)] {
+        let Some(declaration) = runtime_module
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name.as_deref() == Some(operation))
+        else {
+            diagnostics.push(jsx_runtime_diagnostic(
+                "DRIVER_JSX_RUNTIME_MISSING_EXPORT",
+                format!("configured JSX runtime does not export `{operation}`"),
+                &module_start_span(module),
+                "export jsx, jsxs, and fragment from the configured runtime module",
+            ));
+            continue;
+        };
+        if !declaration.exported {
+            diagnostics.push(jsx_runtime_diagnostic(
+                "DRIVER_JSX_RUNTIME_PRIVATE_EXPORT",
+                format!("JSX runtime export `{operation}` is private"),
+                &declaration.span,
+                "mark the runtime operation `export` so the compiler can resolve it",
+            ));
+            continue;
+        }
+        if declaration.kind == DeclarationKind::ExternFunction {
+            diagnostics.push(jsx_runtime_diagnostic(
+                "DRIVER_JSX_RUNTIME_FOREIGN_DECLARATION",
+                format!("JSX runtime `{operation}` must not be a foreign declaration"),
+                &declaration.span,
+                "implement the JSX runtime operation in TypeNative source",
+            ));
+            continue;
+        }
+        if declaration.kind != DeclarationKind::Function {
+            diagnostics.push(jsx_runtime_diagnostic(
+                "DRIVER_JSX_RUNTIME_NOT_FUNCTION",
+                format!("JSX runtime export `{operation}` is not a function"),
+                &declaration.span,
+                "export a TypeNative function for this runtime operation",
+            ));
+            continue;
+        }
+        let Some(DefinitionData::Function(function)) = program
+            .definition(declaration.id)
+            .map(|definition| &definition.data)
+        else {
+            diagnostics.push(jsx_runtime_diagnostic(
+                "DRIVER_JSX_RUNTIME_MISSING_DECLARATION",
+                format!("JSX runtime `{operation}` has no semantic definition"),
+                &declaration.span,
+                "provide the complete function declaration in the runtime module",
+            ));
+            continue;
+        };
+        validate_jsx_runtime_function(
+            program,
+            operation,
+            arity,
+            declaration.span.clone(),
+            function,
+            &mut diagnostics,
+        );
+    }
+    diagnostics
+}
+
+fn jsx_runtime_required_diagnostic(module: &tn_hir::Module) -> Diagnostic {
+    jsx_runtime_diagnostic(
+        "DRIVER_JSX_RUNTIME_REQUIRED",
         "a `.tnx` project must configure a JSX runtime",
+        &module_start_span(module),
+        "add `jsx.runtime` to typenative.json",
+    )
+}
+
+fn module_start_span(module: &tn_hir::Module) -> SourceSpan {
+    SourceSpan::new(module.path.to_string_lossy(), 0..0, &module.source)
+}
+
+fn validate_jsx_runtime_function(
+    program: &tn_hir::Program,
+    operation: &str,
+    arity: usize,
+    span: SourceSpan,
+    function: &Function,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if function.parameters.len() != arity {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_WRONG_ARITY",
+            format!(
+                "JSX runtime `{operation}` declares {} parameter(s), expected {arity}",
+                function.parameters.len()
+            ),
+            &span,
+            "declare the runtime operation with the required callable arity",
+        ));
+    }
+    if function.is_async {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_ASYNC",
+            format!("JSX runtime `{operation}` cannot be asynchronous"),
+            &span,
+            "return an Element synchronously from the runtime operation",
+        ));
+    }
+    if function.is_unsafe {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_UNSAFE",
+            format!("JSX runtime `{operation}` cannot be unsafe"),
+            &span,
+            "declare a safe TypeNative runtime operation",
+        ));
+    }
+    if !function.effects.is_empty() {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_EFFECTS",
+            format!("JSX runtime `{operation}` declares throwing effects"),
+            &span,
+            "make JSX runtime operations infallible; effect handling belongs in ordinary application code",
+        ));
+    }
+    if function.body_start == 0 || function.body_end <= function.body_start {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_NO_BODY",
+            format!("JSX runtime `{operation}` has no TypeNative body"),
+            &span,
+            "implement the runtime operation in TypeNative source",
+        ));
+    }
+    if operation != "fragment"
+        && function
+            .parameters
+            .first()
+            .is_some_and(|parameter| !matches!(parameter.ty, Type::Function(_) | Type::Generic(_)))
+    {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_COMPONENT_PARAMETER",
+            format!("JSX runtime `{operation}` must accept a component callable"),
+            &span,
+            "make the first parameter a component function or an inferred generic component value",
+        ));
+    }
+    if operation == "fragment"
+        && function.parameters.first().is_some_and(|parameter| {
+            !matches!(
+                parameter.ty,
+                Type::Array(_, _) | Type::Slice(_) | Type::Generic(_)
+            )
+        })
+    {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_CHILDREN_PARAMETER",
+            "JSX runtime `fragment` must accept an array, slice, or inferred children value",
+            &span,
+            "declare the fragment children parameter as a child collection",
+        ));
+    }
+    if !type_named_element(program, &function.result) {
+        diagnostics.push(jsx_runtime_diagnostic(
+            "DRIVER_JSX_RUNTIME_RESULT_MISMATCH",
+            format!(
+                "JSX runtime `{operation}` must return the runtime `Element` type, found {:?}",
+                function.result
+            ),
+            &span,
+            "return the exported Element type from every JSX runtime operation",
+        ));
+    }
+    for generic in &function.generics {
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| type_contains_generic(&parameter.ty, &generic.name))
+            && !type_contains_generic(&function.result, &generic.name)
+        {
+            diagnostics.push(jsx_runtime_diagnostic(
+                "DRIVER_JSX_RUNTIME_GENERIC_INFERENCE",
+                format!(
+                    "JSX runtime `{operation}` generic `{}` cannot be inferred",
+                    generic.name
+                ),
+                &span,
+                "use every runtime generic in a parameter or result type",
+            ));
+        }
+    }
+}
+
+fn type_named_element(program: &tn_hir::Program, ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Nominal(declaration, _)
+            if program
+                .graph
+                .declaration(*declaration)
+                .and_then(|declaration| declaration.name.as_deref())
+                == Some("Element")
+    ) || matches!(ty, Type::Generic(_))
+}
+
+fn type_contains_generic(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::Generic(candidate) | Type::Lifetime(candidate) => candidate == name,
+        Type::Promise { result, error, .. } => {
+            type_contains_generic(result, name) || type_contains_generic(error, name)
+        }
+        Type::Nominal(_, arguments)
+        | Type::DynamicInterface(_, arguments)
+        | Type::Tuple(arguments)
+        | Type::Template(arguments) => arguments
+            .iter()
+            .any(|argument| type_contains_generic(argument, name)),
+        Type::Optional(inner)
+        | Type::Array(inner, _)
+        | Type::Slice(inner)
+        | Type::Reference {
+            referent: inner, ..
+        }
+        | Type::RawPointer { pointee: inner, .. } => type_contains_generic(inner, name),
+        Type::Function(function) => {
+            function
+                .parameters
+                .iter()
+                .any(|parameter| type_contains_generic(parameter, name))
+                || type_contains_generic(&function.result, name)
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => false,
+    }
+}
+
+fn jsx_runtime_diagnostic(
+    id: &str,
+    message: impl Into<String>,
+    span: &SourceSpan,
+    label: &str,
+) -> Diagnostic {
+    Diagnostic::error(
+        ConditionId::new(id).expect("static condition is valid"),
+        message,
         Label {
-            span: SourceSpan::new(module.path.to_string_lossy(), 0..0, &module.source),
-            message: "add `jsx.runtime` to typenative.json".into(),
+            span: span.clone(),
+            message: label.into(),
         },
-        "driver/jsx/runtime-required",
-    )]
+        id.to_ascii_lowercase().replace('_', "/"),
+    )
 }
 
 #[derive(Clone, Debug)]

@@ -279,6 +279,7 @@ struct Writer {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct FormatContext {
     jsx: bool,
     opening: bool,
@@ -411,7 +412,14 @@ impl Writer {
             TokenKind::Semicolon => {
                 self.trim_space();
                 self.write(";");
-                self.newline();
+                if matches!(
+                    next,
+                    Some(TokenKind::IntegerLiteral | TokenKind::RightBracket)
+                ) {
+                    self.pending_space = true;
+                } else {
+                    self.newline();
+                }
             }
             TokenKind::Comma => {
                 self.trim_space();
@@ -456,7 +464,9 @@ impl Writer {
                 }
             }
             TokenKind::LeftParen => {
-                if matches!(
+                if previous == Some(TokenKind::Colon) {
+                    self.space();
+                } else if matches!(
                     previous,
                     Some(
                         TokenKind::If
@@ -488,7 +498,8 @@ impl Writer {
                             | TokenKind::Unsafe
                             | TokenKind::Async
                     )
-                ) {
+                ) || previous == Some(TokenKind::Colon)
+                {
                     self.space();
                 } else {
                     self.trim_space();
@@ -579,6 +590,7 @@ impl Writer {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn jsx_token(
         &mut self,
         kind: TokenKind,
@@ -617,6 +629,9 @@ impl Writer {
                 TokenKind::RightBrace if context.expression_closing => {
                     self.trim_space();
                     self.write("}");
+                    if matches!(next, Some(TokenKind::Identifier | TokenKind::From)) {
+                        self.pending_space = true;
+                    }
                     if matches!(next, Some(TokenKind::Less))
                         && self.jsx_indent_stack.last().copied().unwrap_or(false)
                     {
@@ -665,7 +680,6 @@ impl Writer {
         if context.opening || context.fragment {
             match kind {
                 TokenKind::Less => {
-                    self.trim_space();
                     self.write("<");
                 }
                 TokenKind::Greater => {
@@ -690,7 +704,9 @@ impl Writer {
                     }
                 }
                 TokenKind::Slash => {
-                    self.trim_space();
+                    if previous != Some(TokenKind::Less) {
+                        self.space();
+                    }
                     self.write("/");
                 }
                 TokenKind::Equal => {
