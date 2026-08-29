@@ -4739,8 +4739,10 @@ impl BodyChecker<'_> {
             .ends_with("runtime/runtime.tn")
             && is_numeric(&source.ty)
             && is_numeric(&target);
+        let float_numeric_cast = is_float_type(&source.ty) && is_float_type(&target);
         let valid = compatible(self.program, &source.ty, &target)
             || runtime_numeric_cast
+            || float_numeric_cast
             || raw_pointer_cast;
         let valid = valid
             || matches!(
@@ -6667,6 +6669,10 @@ fn is_integer(ty: &Type) -> bool {
 
 fn is_numeric(ty: &Type) -> bool {
     is_integer(ty) || matches!(ty, Type::Primitive(PrimitiveType::F32 | PrimitiveType::F64))
+}
+
+fn is_float_type(ty: &Type) -> bool {
+    matches!(ty, Type::Primitive(PrimitiveType::F32 | PrimitiveType::F64))
 }
 
 fn borrowed_field_type(facts: &OwnershipFacts, ty: Type, mutable: bool, lifetime: &str) -> Type {

@@ -6002,13 +6002,14 @@ impl OwnershipMirLowerer<'_> {
             ty => (ty, None),
         };
         let member_type = self.specialize_member_type(access_type, member_type);
-        if matches!(member_type, Type::Function(_)) {
+        if matches!(member_type, Type::Function(_))
+            && let Some(receiver_mode) = self.method_receiver(member)
+        {
             let mut owner =
                 self.materialize_operand(owner, owner_type.clone(), self.tokens[member_token]);
             if borrowed.is_some() {
                 owner.projection.push(tn_mir::Projection::Dereference);
             }
-            let receiver_mode = self.method_receiver(member)?;
             let bound_receiver = if receiver_mode == ReceiverMode::Move {
                 Operand::Move(owner.clone())
             } else {

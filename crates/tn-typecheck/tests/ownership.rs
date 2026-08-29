@@ -1915,6 +1915,47 @@ function moved(base: i32): i32 {
 }
 
 #[test]
+fn lowers_calls_through_function_valued_fields_inside_closures() {
+    let program = source_program(
+        r"
+struct Props { public onPress: () => void; }
+function make(props: Props): () => void {
+  return move (): void => { props.onPress(); };
+}
+",
+    );
+    let checked = tn_typecheck::check_bodies(&program);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let bodies = tn_typecheck::lower_mir(&program, &checked.bodies);
+    let make = bodies
+        .iter()
+        .find(|body| {
+            body.locals
+                .iter()
+                .any(|local| local.name.as_deref() == Some("props"))
+        })
+        .expect("function-valued field closure owner");
+    let closure = make
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match &statement.kind {
+            StatementKind::Assign(_, value) => match value.as_ref() {
+                Rvalue::Closure { body, .. } => Some(body),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("closure body");
+    assert!(
+        closure
+            .blocks
+            .iter()
+            .any(|block| matches!(block.terminator.kind, TerminatorKind::Call { .. }))
+    );
+}
+
+#[test]
 fn lowers_templates_with_ordered_owned_values_and_shared_borrows() {
     let program = source_program(
         r"

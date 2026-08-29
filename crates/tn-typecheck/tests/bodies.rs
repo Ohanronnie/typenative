@@ -1246,6 +1246,17 @@ function invalid(): void {
 }
 
 #[test]
+fn allows_explicit_float_width_conversions() {
+    let diagnostics = conditions(
+        r"
+function widen(value: f32): f64 { return value as f64; }
+function narrow(value: f64): f32 { return value as f32; }
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
 fn contextually_types_literals_after_explicit_generic_constructor_substitution() {
     let (program, checked) = checked_with_workspace_standard_library(
         r"
