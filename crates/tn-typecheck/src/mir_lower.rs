@@ -2315,17 +2315,24 @@ impl OwnershipMirLowerer<'_> {
                 value: parse_integer(self.text(token))?,
                 ty: ty.clone(),
             },
-            TokenKind::FloatLiteral => tn_mir::Constant::Float {
-                bits: self
+            TokenKind::FloatLiteral => {
+                let value = self
                     .text(token)
                     .trim_end_matches("f32")
                     .trim_end_matches("f64")
                     .replace('_', "")
                     .parse::<f64>()
-                    .ok()?
-                    .to_bits(),
-                ty: ty.clone(),
-            },
+                    .ok()?;
+                let bits = if matches!(ty, Type::Primitive(PrimitiveType::F32)) {
+                    u64::from((value as f32).to_bits())
+                } else {
+                    value.to_bits()
+                };
+                tn_mir::Constant::Float {
+                    bits,
+                    ty: ty.clone(),
+                }
+            }
             TokenKind::CharacterLiteral => {
                 let decoded = decode_quoted_literal(self.text(token))?;
                 let mut characters = decoded.chars();
