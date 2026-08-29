@@ -686,7 +686,7 @@ export function stringCompare(left: *const u8, leftLength: usize, right: *const 
         return 1;
       }
     }
-    return leftLength<rightLength? - 1i32:(leftLength > rightLength?1i32: 0i32);
+    return leftLength<rightLength? - 1i32: (leftLength > rightLength?1i32: 0i32);
   }
 }
 export function stringLength(text: *const u8): usize {
@@ -2246,6 +2246,20 @@ export function channelSendIndexBegin(handle: *mut u8): usize {
     return(channel.head + channel.length) % channel.capacity;
   }
 }
+export function channelTrySendIndexBegin(handle: *mut u8): usize {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return ~0usize;
+    }
+    const channel = channelRead(handle);
+    mutexLock(channel.mutex);
+    if (channel.closed !== 0i32 || channel.length === channel.capacity) {
+      mutexUnlock(channel.mutex);
+      return ~0usize;
+    }
+    return(channel.head + channel.length) % channel.capacity;
+  }
+}
 export function channelSendIndexCommit(handle: *mut u8): i32 {
   unsafe {
     if (isNullIntrinsic<u8>(handle as *const u8)) {
@@ -2276,6 +2290,25 @@ export function channelReceiveIndexBegin(handle: *mut u8): usize {
       conditionWait(channel.readable, channel.mutex);
       channel = channelRead(handle);
     }
+    if (channel.length === 0usize) {
+      mutexUnlock(channel.mutex);
+      return ~0usize;
+    }
+    const index = channel.head;
+    channel.head =(channel.head + 1usize) % channel.capacity;
+    channel.length = channel.length - 1usize;
+    channelWrite(handle, channel);
+    conditionSignal(channel.writable);
+    return index;
+  }
+}
+export function channelTryReceiveIndexBegin(handle: *mut u8): usize {
+  unsafe {
+    if (isNullIntrinsic<u8>(handle as *const u8)) {
+      return ~0usize;
+    }
+    let channel = channelRead(handle);
+    mutexLock(channel.mutex);
     if (channel.length === 0usize) {
       mutexUnlock(channel.mutex);
       return ~0usize;
@@ -2328,13 +2361,13 @@ export function channelDestroy(handle: *mut u8): i32 {
       runtimeFree(handle);
       return 0;
     }
-    return readableStatus !== 0i32?readableStatus:(writableStatus !== 0i32?writableStatus: mutexStatus);
+    return readableStatus !== 0i32?readableStatus: (writableStatus !== 0i32?writableStatus: mutexStatus);
   }
 }
 export function threadSleepNs(nanoseconds: u64): void {
   unsafe {
     let request: Timespec = {
-      seconds:(nanoseconds / 1000000000u64)as i64, nanoseconds:(nanoseconds % 1000000000u64)as i64
+      seconds: (nanoseconds / 1000000000u64)as i64, nanoseconds: (nanoseconds % 1000000000u64)as i64
     };
     nanosleep(( &mut request)as *mut u8, nullPointerIntrinsic<u8>());
   }
@@ -3060,7 +3093,7 @@ function reactorPendingRemove(handle: *mut ReactorState, descriptor: i32): void 
           storeRawIntrinsic<ReactorReady>(previous as *mut ReactorReady, previousNode);
         }
         runtimeFree(current);
-        current = isNullIntrinsic<u8>(previous as *const u8)?state.pending:( *(previous as *const ReactorReady)).next;
+        current = isNullIntrinsic<u8>(previous as *const u8)?state.pending: ( *(previous as *const ReactorReady)).next;
         continue;
       }
       previous = current;

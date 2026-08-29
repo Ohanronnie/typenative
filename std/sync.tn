@@ -24,8 +24,10 @@ declare extern "C" {
   function tn_channel_initialized(handle: *mut u8): *mut u8;
   function tn_channel_capacity(handle: *mut u8): c_size;
   function tn_channel_send_index_begin(handle: *mut u8): c_size;
+  function tn_channel_try_send_index_begin(handle: *mut u8): c_size;
   function tn_channel_send_index_commit(handle: *mut u8): i32;
   function tn_channel_receive_index_begin(handle: *mut u8): c_size;
+  function tn_channel_try_receive_index_begin(handle: *mut u8): c_size;
   function tn_channel_receive_index_commit(handle: *mut u8): i32;
   function tn_channel_close(handle: *mut u8): i32;
   function tn_channel_destroy(handle: *mut u8): i32;
@@ -171,12 +173,40 @@ export struct Channel<T> {
       return tn_channel_send_index_commit(this.handle);
     }
   }
+  public trySend(value: T): T | undefined {
+    if (this.closed || this.destroyed) {
+      return move value;
+    }
+    unsafe {
+      const index = tn_channel_try_send_index_begin(this.handle);
+      if (index === ~0) {
+        return move value;
+      }
+      storeElement<T>(this.storage as *mut T, index as usize, this.initialized, move value);
+      tn_channel_send_index_commit(this.handle);
+      return undefined;
+    }
+  }
   public receive(): T | undefined {
     if (this.destroyed) {
       return undefined;
     }
     unsafe {
       const index = tn_channel_receive_index_begin(this.handle);
+      if (index === ~0) {
+        return undefined;
+      }
+      const value = moveElement<T>(this.storage as *mut T, index as usize, this.initialized);
+      tn_channel_receive_index_commit(this.handle);
+      return value;
+    }
+  }
+  public tryReceive(): T | undefined {
+    if (this.destroyed) {
+      return undefined;
+    }
+    unsafe {
+      const index = tn_channel_try_receive_index_begin(this.handle);
       if (index === ~0) {
         return undefined;
       }

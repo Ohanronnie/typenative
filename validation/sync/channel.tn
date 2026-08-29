@@ -14,20 +14,43 @@ function main(): i32 {
     messages.destroy();
     return 3;
   }
-  if (messages.close() !== 0) {
+  if (messages.send(String("second")) !== 0) {
     messages.destroy();
     return 4;
   }
-  if (messages.receive() === undefined) {
+  const rejected = messages.trySend(String("full"));
+  if (rejected === undefined) {
     messages.destroy();
     return 5;
   }
-  if (messages.receive() !== undefined) {
+  const tryReceived = messages.tryReceive();
+  if (tryReceived === undefined || tryReceived! !== "queued") {
     messages.destroy();
     return 6;
   }
-  if (messages.destroy() !== 0) {
+  const secondTryReceived = messages.tryReceive();
+  if (secondTryReceived === undefined || secondTryReceived! !== "second") {
+    messages.destroy();
     return 7;
+  }
+  if (messages.tryReceive() !== undefined) {
+    messages.destroy();
+    return 8;
+  }
+  if (messages.close() !== 0) {
+    messages.destroy();
+    return 9;
+  }
+  if (messages.receive() !== undefined) {
+    messages.destroy();
+    return 10;
+  }
+  if (messages.receive() !== undefined) {
+    messages.destroy();
+    return 11;
+  }
+  if (messages.destroy() !== 0) {
+    return 12;
   }
   return 42;
 }
