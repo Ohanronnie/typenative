@@ -587,6 +587,7 @@ struct Generator<'ctx> {
     signatures: BTreeMap<Instance, FunctionType>,
     layouts: Layouts,
     globals: BTreeMap<DeclarationId, PointerValue<'ctx>>,
+    global_initialized: BTreeMap<DeclarationId, PointerValue<'ctx>>,
     constructors: Vec<ConstructorTarget<'ctx>>,
     descriptors: BTreeMap<(DeclarationId, Vec<Type>), PointerValue<'ctx>>,
     witnesses: BTreeMap<(DeclarationId, DeclarationId), PointerValue<'ctx>>,
@@ -5694,6 +5695,7 @@ impl<'ctx> Generator<'ctx> {
             signatures: BTreeMap::new(),
             layouts,
             globals: BTreeMap::new(),
+            global_initialized: BTreeMap::new(),
             constructors: Vec::new(),
             descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
@@ -6245,6 +6247,16 @@ impl<'ctx> Generator<'ctx> {
             global.set_linkage(Linkage::Private);
             global.set_initializer(&value_type.const_zero());
             self.globals.insert(*declaration, global.as_pointer_value());
+
+            let initialized = self.module.add_global(
+                self.context.bool_type(),
+                None,
+                &format!("{}_initialized", layout.name),
+            );
+            initialized.set_linkage(Linkage::Private);
+            initialized.set_initializer(&self.context.bool_type().const_zero());
+            self.global_initialized
+                .insert(*declaration, initialized.as_pointer_value());
         }
         Ok(())
     }
@@ -9682,23 +9694,83 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             }
             Rvalue::RawOperation { operation, ty, .. } if operation.starts_with("global_load:") => {
                 let pointer = self.global_pointer(operation)?;
-                Ok(self.builder.build_load(
+                let value = self.builder.build_load(
                     self.generator.basic_type(ty)?,
                     pointer,
                     "global.load",
-                )?)
+                )?;
+                self.lower_borrowed_global_value(ty, value)
             }
             Rvalue::RawOperation {
                 operation,
                 operands,
                 ..
             } if operation.starts_with("global_store:") => {
+                let declaration = operation
+                    .split_once(':')
+                    .and_then(|(_, value)| value.parse::<u64>().ok())
+                    .map(DeclarationId)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "invalid global store operation `{operation}`"
+                        ))
+                    })?;
                 let pointer = self.global_pointer(operation)?;
+                let initialized = self
+                    .generator
+                    .global_initialized
+                    .get(&declaration)
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "global declaration {declaration:?} has no initialization flag"
+                        ))
+                    })?;
                 let value = operands.first().ok_or_else(|| {
                     CodegenError::Unsupported("global_store operation lacks a value".into())
                 })?;
+
+                let initialized_value = self
+                    .builder
+                    .build_load(
+                        self.generator.context.bool_type(),
+                        initialized,
+                        "global.initialized",
+                    )?
+                    .into_int_value();
+                let drop_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "global.drop");
+                let store_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "global.store");
+                self.builder.build_conditional_branch(
+                    initialized_value,
+                    drop_block,
+                    store_block,
+                )?;
+                self.builder.position_at_end(drop_block);
+                let layout = self
+                    .generator
+                    .layouts
+                    .globals
+                    .get(&declaration)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "global declaration {declaration:?} has no layout"
+                        ))
+                    })?;
+                self.lower_drop_value_at_pointer(pointer, &layout.ty)?;
+                self.builder.build_unconditional_branch(store_block)?;
+                self.builder.position_at_end(store_block);
                 self.builder
                     .build_store(pointer, self.lower_operand(value)?)?;
+                self.builder.build_store(
+                    initialized,
+                    self.generator.context.bool_type().const_all_ones(),
+                )?;
                 Ok(self.generator.context.bool_type().const_all_ones().into())
             }
             Rvalue::RawOperation {
@@ -14680,6 +14752,49 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     "global declaration {declaration:?} was not emitted"
                 ))
             })
+    }
+
+    /// A global load is a borrowed read. Owned values loaded from a static must not
+    /// destroy the same allocation when the temporary local goes out of scope; the
+    /// global store remains the owner and releases the previous value on replacement.
+    fn lower_borrowed_global_value(
+        &self,
+        ty: &Type,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match ty {
+            Type::Function(_) => {
+                let callable = value.into_struct_value();
+                let borrowed = self
+                    .builder
+                    .build_insert_value(
+                        callable,
+                        self.generator
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null(),
+                        2,
+                        "global.borrowed.callable.drop",
+                    )?
+                    .into_struct_value();
+                Ok(borrowed.into())
+            }
+            Type::Optional(inner) => {
+                let optional = value.into_struct_value();
+                let payload = self.builder.build_extract_value(
+                    optional,
+                    1,
+                    "global.borrowed.optional.payload",
+                )?;
+                let payload = self.lower_borrowed_global_value(inner, payload)?;
+                let borrowed = self
+                    .builder
+                    .build_insert_value(optional, payload, 1, "global.borrowed.optional.value")?
+                    .into_struct_value();
+                Ok(borrowed.into())
+            }
+            _ => Ok(value),
+        }
     }
 
     #[allow(clippy::too_many_lines)]

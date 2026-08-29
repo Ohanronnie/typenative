@@ -405,6 +405,65 @@ fn lowers_integer_constants_into_present_optional_values() {
 }
 
 #[test]
+fn loads_global_callables_as_borrowed_values() {
+    let optional_callback = Type::Optional(Box::new(Type::Function(closure_function())));
+    let body = Body {
+        declaration: DeclarationId(1000),
+        member: None,
+        locals: vec![local("callback", optional_callback.clone(), false)],
+        blocks: vec![BasicBlock {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::StorageLive(LocalId(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(LocalId(0)),
+                        Box::new(Rvalue::RawOperation {
+                            operation: "global_load:1001".into(),
+                            operands: Vec::new(),
+                            ty: optional_callback.clone(),
+                        }),
+                    ),
+                    span: span(),
+                },
+            ],
+            terminator: Terminator {
+                kind: TerminatorKind::Return(None),
+                span: span(),
+            },
+        }],
+        return_type: Type::Primitive(PrimitiveType::Void),
+        effects: Vec::new(),
+    };
+    let mut layouts = tn_codegen_llvm::Layouts::default();
+    layouts.globals.insert(
+        DeclarationId(1001),
+        tn_codegen_llvm::GlobalLayout {
+            name: "global_callback".into(),
+            ty: optional_callback.clone(),
+            mutable_static: true,
+        },
+    );
+    let units = vec![MonomorphizedBody {
+        instance: Instance::concrete(Callable::function(DeclarationId(1000))),
+        body: lower_typed_errors(&body),
+    }];
+    let ir = tn_codegen_llvm::compile_program_to_llvm_ir(
+        "borrowed_global",
+        &units,
+        &layouts,
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("global callback load emits valid LLVM");
+    assert!(ir.contains("global.borrowed.optional.payload"), "{ir}");
+    assert!(ir.contains("global.borrowed.callable.drop"), "{ir}");
+    assert!(ir.contains("ptr null"), "{ir}");
+}
+
+#[test]
 fn lowers_owned_string_ordering_through_content_comparison() {
     let boolean = Type::Primitive(PrimitiveType::Bool);
     let body = Body {
