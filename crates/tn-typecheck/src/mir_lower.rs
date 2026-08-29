@@ -2787,9 +2787,48 @@ impl OwnershipMirLowerer<'_> {
                     Type::Array(_, length) => Type::Array(Box::new(child_type.clone()), *length),
                     _ => Type::Array(Box::new(child_type.clone()), children.len() as u64),
                 };
-                self.materialize_jsx_aggregate(array_type, operands, child_type, start)
+                let children = self.materialize_jsx_aggregate(
+                    array_type.clone(),
+                    operands,
+                    child_type,
+                    start,
+                )?;
+                if !matches!(expected, Type::Array(_, _) | Type::Slice(_)) {
+                    return self
+                        .lower_jsx_fragment(children, array_type, expected.clone(), start)
+                        .map(|(operand, _)| operand);
+                }
+                Some(children)
             }
         }
+    }
+
+    fn lower_jsx_fragment(
+        &mut self,
+        children: Operand,
+        children_type: Type,
+        result_type: Type,
+        start: usize,
+    ) -> Option<(Operand, Type)> {
+        let runtime = self.program.jsx_runtime_declaration("fragment")?;
+        let signature = tn_hir::FunctionType {
+            parameters: vec![children_type],
+            result: Box::new(result_type),
+            effects: Vec::new(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: false,
+        };
+        self.emit_call(
+            Operand::Constant(tn_mir::Constant::Function(
+                runtime,
+                Type::Function(signature.clone()),
+            )),
+            None,
+            &signature,
+            vec![children],
+            start,
+        )
     }
 
     fn lower_jsx_children(

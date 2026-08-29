@@ -572,6 +572,7 @@ struct Props {
   public second: Element;
   public children: [Element; 2usize];
 }
+
 function Text(props: TextProps): Element { return new Element({ marker: 7 }); }
 function View(props: Props): Element {
   return new Element({ marker: props.children[0].marker });
@@ -627,6 +628,38 @@ function App(): Element {
             )
         })
     }));
+}
+
+#[test]
+fn lowers_multiple_element_children_into_the_configured_fragment_runtime() {
+    let (program, result) = checked_tnx(
+        r#"
+struct Element { public marker: i32; }
+struct TextProps {}
+struct ViewProps {
+  public children: Element;
+}
+function Text(props: TextProps): Element { return new Element({ marker: 7 }); }
+function View(props: ViewProps): Element { return props.children; }
+function App(): Element {
+  return <View><Text /><Text /></View>;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    tn_mir::validate(&lowered).expect("multiple JSX children lower to valid MIR");
 }
 
 #[test]
