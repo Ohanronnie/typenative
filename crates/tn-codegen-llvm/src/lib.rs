@@ -594,7 +594,7 @@ struct Generator<'ctx> {
     debug_info: DebugInfoState<'ctx>,
     async_wrappers: Vec<AsyncWrapper<'ctx>>,
     abi_wrappers: Vec<AbiWrapper<'ctx>>,
-    closures: BTreeMap<HirClosureId, ClosureTarget<'ctx>>,
+    closures: BTreeMap<ClosureKey, ClosureTarget<'ctx>>,
     is_macos: bool,
     sanitizers: BTreeSet<Sanitizer>,
 }
@@ -5659,6 +5659,12 @@ struct ClosureTarget<'ctx> {
     consumes_environment: bool,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ClosureKey {
+    instance: Instance,
+    id: HirClosureId,
+}
+
 impl<'ctx> Generator<'ctx> {
     fn add_inline_hint(&self, function: FunctionValue<'ctx>) {
         let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("inlinehint");
@@ -5911,12 +5917,16 @@ impl<'ctx> Generator<'ctx> {
 
     fn declare_closures(&mut self, units: &[MonomorphizedBody]) -> Result<(), CodegenError> {
         for unit in units {
-            self.declare_closures_in_body(&unit.body)?;
+            self.declare_closures_in_body(&unit.instance, &unit.body)?;
         }
         Ok(())
     }
 
-    fn declare_closures_in_body(&mut self, body: &Body) -> Result<(), CodegenError> {
+    fn declare_closures_in_body(
+        &mut self,
+        instance: &Instance,
+        body: &Body,
+    ) -> Result<(), CodegenError> {
         for block in &body.blocks {
             for statement in &block.statements {
                 let StatementKind::Assign(_, value) = &statement.kind else {
@@ -5931,7 +5941,11 @@ impl<'ctx> Generator<'ctx> {
                 else {
                     continue;
                 };
-                if !self.closures.contains_key(id) {
+                let key = ClosureKey {
+                    instance: instance.clone(),
+                    id: *id,
+                };
+                if !self.closures.contains_key(&key) {
                     let capture_types = captures
                         .iter()
                         .map(|capture| closure_operand_type(body, capture))
@@ -5982,7 +5996,7 @@ impl<'ctx> Generator<'ctx> {
                         function
                     });
                     self.closures.insert(
-                        *id,
+                        key,
                         ClosureTarget {
                             body: body_function,
                             trampoline,
@@ -5995,7 +6009,7 @@ impl<'ctx> Generator<'ctx> {
                                 .any(|capture| !self.is_copy_type(capture)),
                         },
                     );
-                    self.declare_closures_in_body(closure_body)?;
+                    self.declare_closures_in_body(instance, closure_body)?;
                 }
             }
         }
@@ -6004,12 +6018,12 @@ impl<'ctx> Generator<'ctx> {
 
     fn lower_closures(&self, units: &[MonomorphizedBody]) -> Result<(), CodegenError> {
         for unit in units {
-            self.lower_closures_in_body(&unit.body)?;
+            self.lower_closures_in_body(&unit.instance, &unit.body)?;
         }
         Ok(())
     }
 
-    fn lower_closures_in_body(&self, body: &Body) -> Result<(), CodegenError> {
+    fn lower_closures_in_body(&self, instance: &Instance, body: &Body) -> Result<(), CodegenError> {
         for block in &body.blocks {
             for statement in &block.statements {
                 let StatementKind::Assign(_, value) = &statement.kind else {
@@ -6026,16 +6040,19 @@ impl<'ctx> Generator<'ctx> {
                 };
                 let target = self
                     .closures
-                    .get(id)
+                    .get(&ClosureKey {
+                        instance: instance.clone(),
+                        id: *id,
+                    })
                     .ok_or_else(|| CodegenError::Unsupported("closure target is missing".into()))?;
-                FunctionGenerator::new(self, closure_body, target.body)
+                FunctionGenerator::new(self, instance, closure_body, target.body)
                     .and_then(|generator| generator.lower())?;
                 self.lower_closure_trampoline(target, closure_body)?;
                 if let Some(drop) = target.drop {
-                    self.lower_closure_drop(target, drop, closure_body)?;
+                    self.lower_closure_drop(target, drop, closure_body, instance)?;
                 }
                 let _ = captures;
-                self.lower_closures_in_body(closure_body)?;
+                self.lower_closures_in_body(instance, closure_body)?;
             }
         }
         Ok(())
@@ -6120,6 +6137,7 @@ impl<'ctx> Generator<'ctx> {
         target: &ClosureTarget<'ctx>,
         function: FunctionValue<'ctx>,
         body: &Body,
+        instance: &Instance,
     ) -> Result<(), CodegenError> {
         let entry = self.context.append_basic_block(function, "entry");
         let drop_block = self.context.append_basic_block(function, "drop");
@@ -6144,6 +6162,7 @@ impl<'ctx> Generator<'ctx> {
         builder.position_at_end(drop_block);
         let lightweight = FunctionGenerator {
             generator: self,
+            instance,
             body,
             function,
             builder,
@@ -7429,7 +7448,7 @@ impl<'ctx> Generator<'ctx> {
                 .get(&unit.instance)
                 .copied()
                 .ok_or_else(|| CodegenError::Unsupported("body function is missing".into()))?;
-            FunctionGenerator::new(self, &unit.body, function)
+            FunctionGenerator::new(self, &unit.instance, &unit.body, function)
                 .and_then(|generator| generator.lower())
                 .map_err(|error| {
                     let unresolved_locals = unit
@@ -8658,6 +8677,7 @@ fn return_constructor_success<'ctx>(
 
 struct FunctionGenerator<'a, 'ctx> {
     generator: &'a Generator<'ctx>,
+    instance: &'a Instance,
     body: &'a Body,
     function: FunctionValue<'ctx>,
     builder: Builder<'ctx>,
@@ -8669,6 +8689,7 @@ struct FunctionGenerator<'a, 'ctx> {
 impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn new(
         generator: &'a Generator<'ctx>,
+        instance: &'a Instance,
         body: &'a Body,
         function: FunctionValue<'ctx>,
     ) -> Result<Self, CodegenError> {
@@ -8738,6 +8759,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         builder.build_unconditional_branch(blocks[0])?;
         Ok(Self {
             generator,
+            instance,
             body,
             function,
             builder,
@@ -9147,10 +9169,14 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 ..
             } => self.lower_aggregate(ty, *variant, fields),
             Rvalue::Closure { id, captures, .. } => {
-                let target =
-                    self.generator.closures.get(id).ok_or_else(|| {
-                        CodegenError::Unsupported("closure target is missing".into())
-                    })?;
+                let target = self
+                    .generator
+                    .closures
+                    .get(&ClosureKey {
+                        instance: self.instance.clone(),
+                        id: *id,
+                    })
+                    .ok_or_else(|| CodegenError::Unsupported("closure target is missing".into()))?;
                 let pointer = self.generator.context.ptr_type(AddressSpace::default());
                 let (environment, drop) = if let Some(environment_type) = target.environment {
                     let size = environment_type.size_of().ok_or_else(|| {

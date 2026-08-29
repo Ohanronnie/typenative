@@ -1,5 +1,5 @@
 use tn_diagnostics::SourceSpan;
-use tn_hir::{DeclarationId, FunctionType, PrimitiveType, Type};
+use tn_hir::{DeclarationId, FunctionType, HirClosureId, PrimitiveType, Type};
 use tn_mir::{
     BasicBlock, BasicBlockId, BinaryOperator, Body, Callable, Constant, Instance, Local, LocalId,
     MonomorphizedBody, Operand, Place, Rvalue, Statement, StatementKind, Terminator,
@@ -630,4 +630,101 @@ fn lowers_aggregate_array_indexing_with_a_dominating_bounds_check() {
     assert!(ir.contains("getelementptr [3 x i32]"));
     assert!(!ir.contains("getelementptr inbounds"));
     assert!(ir.contains("tn_runtime_abort"));
+}
+
+fn closure_function() -> FunctionType {
+    FunctionType {
+        parameters: Vec::new(),
+        result: Box::new(Type::Primitive(PrimitiveType::Void)),
+        effects: Vec::new(),
+        generics: Vec::new(),
+        is_async: false,
+        is_unsafe: false,
+    }
+}
+
+fn closure_body(captured: Type) -> Body {
+    Body {
+        declaration: DeclarationId(901),
+        member: None,
+        locals: vec![local("captured", captured, true)],
+        blocks: vec![BasicBlock {
+            statements: Vec::new(),
+            terminator: Terminator {
+                kind: TerminatorKind::Return(None),
+                span: span(),
+            },
+        }],
+        return_type: Type::Primitive(PrimitiveType::Void),
+        effects: Vec::new(),
+    }
+}
+
+fn body_with_closure(captured: Type) -> Body {
+    let function = closure_function();
+    Body {
+        declaration: DeclarationId(900),
+        member: None,
+        locals: vec![
+            local("captured", captured.clone(), true),
+            local("callback", Type::Function(function.clone()), false),
+        ],
+        blocks: vec![BasicBlock {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    Place::local(LocalId(1)),
+                    Box::new(Rvalue::Closure {
+                        id: HirClosureId(0),
+                        function,
+                        captures: vec![Operand::Copy(Place::local(LocalId(0)))],
+                        body: Box::new(closure_body(captured)),
+                    }),
+                ),
+                span: span(),
+            }],
+            terminator: Terminator {
+                kind: TerminatorKind::Return(None),
+                span: span(),
+            },
+        }],
+        return_type: Type::Primitive(PrimitiveType::Void),
+        effects: Vec::new(),
+    }
+}
+
+#[test]
+fn specializes_closure_targets_per_monomorphized_instance() {
+    let callable = Callable::function(DeclarationId(900));
+    let units = vec![
+        MonomorphizedBody {
+            instance: Instance {
+                callable,
+                type_arguments: vec![Type::Primitive(PrimitiveType::Bool)],
+                effects: Vec::new(),
+            },
+            body: lower_typed_errors(&body_with_closure(Type::Primitive(PrimitiveType::Bool))),
+        },
+        MonomorphizedBody {
+            instance: Instance {
+                callable,
+                type_arguments: vec![Type::Primitive(PrimitiveType::I32)],
+                effects: Vec::new(),
+            },
+            body: lower_typed_errors(&body_with_closure(Type::Primitive(PrimitiveType::I32))),
+        },
+    ];
+    let ir = tn_codegen_llvm::compile_program_to_llvm_ir(
+        "closure-specialization",
+        &units,
+        &tn_codegen_llvm::Layouts::default(),
+        host_triple(),
+        tn_codegen_llvm::CodegenProfile::Debug,
+    )
+    .expect("specialized closure targets emit valid LLVM");
+    let closure_bodies = ir
+        .lines()
+        .filter(|line| line.starts_with("define internal void @tn_closure_0_body"))
+        .count();
+    assert_eq!(closure_bodies, 2, "{ir}");
+    assert!(!ir.contains("No predecessors!"), "{ir}");
 }
