@@ -97,7 +97,7 @@ function borrowShared<T>(pointer: *const T): &T {
 export unsafe function storeRaw<T>(pointer: *mut T, value: T): bool {
   return false;
 }
-function dropValue<T>(pointer: *mut T): bool {
+export unsafe function dropValue<T>(pointer: *mut T): bool {
   return false;
 }
 export function u64ToUsize(value: u64): usize {
@@ -105,6 +105,23 @@ export function u64ToUsize(value: u64): usize {
 }
 export function usizeToU64(value: usize): u64 {
   return 0;
+}
+export function usizeToF32(value: usize): f32 {
+  return 0.0f32;
+}
+export function f64ToUsize(value: f64): usize {
+  return 0usize;
+}
+// The compiler lowers this to the stable compiler identity of a callable. It
+// is intentionally independent of the callable's captured environment, so a
+// component's type identity remains stable across renders.
+export function componentIdentity<T>(value: T): u64 {
+  return 0;
+}
+export unsafe function borrowCallable<T>(pointer: *const T): T {
+  unsafe {
+    return *pointer;
+  }
 }
 function arcClone<T>(value: &mut Arc<T >): Arc<T> {
   unsafe {
@@ -176,6 +193,11 @@ export struct Weak<T> {
 export unsafe function rawAlloc(size: usize): *mut u8 {
   unsafe {
     return tn_runtime_alloc(size);
+  }
+}
+export unsafe function byteAddress(pointer: *const u8, offset: usize): *mut u8 {
+  unsafe {
+    return pointer as *mut u8;
   }
 }
 export unsafe function rawFree(pointer: *mut u8): void {

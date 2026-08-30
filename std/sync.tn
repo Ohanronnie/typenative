@@ -98,6 +98,9 @@ export class Mutex<T> {
       };
     }
   }
+  public unsafe rawHandle(): *mut u8 {
+    return this.handle;
+  }
   public destroy(): void {
     if (!this.closed) {
       unsafe {
@@ -251,9 +254,9 @@ export struct Condition {
       }
     }
   }
-  public unsafe wait(mutex: &mut u8): i32 {
+  public unsafe wait(mutex: *mut u8): i32 {
     unsafe {
-      return tn_cond_wait(this.handle, mutex as *mut u8);
+      return tn_cond_wait(this.handle, mutex);
     }
   }
   public signal(): i32 {

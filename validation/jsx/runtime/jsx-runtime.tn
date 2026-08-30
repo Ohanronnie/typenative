@@ -1,13 +1,15 @@
+import { Array } from "std/collections";
+
 export struct Element {
   public marker: i32;
 }
-export function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E {
+export function jsx<P>(component: (P) => Element, properties: P, key: &str | undefined): Element {
   return component(properties);
 }
-export function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E {
+export function jsxs<P>(component: (P) => Element, properties: P, key: &str | undefined): Element {
   return component(properties);
 }
-export function fragment<C>(children: C): Element {
+export function fragment(children: Array<Element>): Element {
   return new Element({
     marker: 0
   });

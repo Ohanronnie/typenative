@@ -686,6 +686,52 @@ function App(): Element {
 }
 
 #[test]
+fn lowers_present_jsx_optional_properties_with_a_present_discriminant() {
+    let (program, result) = checked_tnx(
+        r#"
+struct TextProps {
+  public value?: i32;
+}
+struct Element {}
+function Text(props: TextProps): Element { return new Element(); }
+function App(): Element {
+  return <Text value={1} />;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
+        .into_iter()
+        .find(|body| body.declaration == app)
+        .expect("lowered App body");
+    assert!(lowered.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                tn_mir::StatementKind::Assign(_, value)
+                    if matches!(
+                        value.as_ref(),
+                        tn_mir::Rvalue::Aggregate {
+                            ty: tn_hir::Type::Optional(_),
+                            variant: Some(1),
+                            ..
+                        }
+                    )
+            )
+        })
+    }));
+    tn_mir::validate(&lowered).expect("present JSX optional property MIR validates");
+}
+
+#[test]
 fn lowers_jsx_to_an_ordinary_configured_runtime_call() {
     let (program, result) = checked_tnx(
         r#"

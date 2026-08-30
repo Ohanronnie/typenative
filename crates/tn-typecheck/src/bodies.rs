@@ -3123,11 +3123,27 @@ impl BodyChecker<'_> {
         let Type::Function(signature) = function_type(&runtime_function) else {
             unreachable!("function declarations always have function types");
         };
+        if operation != "fragment"
+            && signature
+                .parameters
+                .get(2)
+                .is_some_and(|parameter| !is_jsx_runtime_key_parameter(self.program, parameter))
+        {
+            let parameter = signature
+                .parameters
+                .get(2)
+                .expect("key parameter checked above");
+            self.error_span(
+                "TYPE_JSX_RUNTIME_KEY_PARAMETER",
+                format!(
+                    "JSX runtime `{operation}` key parameter has unsupported type {parameter:?}"
+                ),
+                &item.span,
+                "make the runtime key parameter accept a supported key or optional key value",
+            );
+        }
         let expected_parameters = if operation == "fragment" {
-            vec![Type::Array(
-                Box::new(self.jsx_children_type(children)),
-                children.len() as u64,
-            )]
+            vec![self.jsx_fragment_parameter_type(children, signature.parameters.first())]
         } else {
             let properties_type = if *properties_type == Type::Unknown {
                 Type::Tuple(Vec::new())
@@ -3137,7 +3153,18 @@ impl BodyChecker<'_> {
             let key_type = key
                 .and_then(|id| self.hir_expressions.get(id.0 as usize))
                 .map_or_else(
-                    || Type::Optional(Box::new(Type::String)),
+                    || {
+                        let declared = signature
+                            .parameters
+                            .get(2)
+                            .cloned()
+                            .unwrap_or_else(|| Type::Optional(Box::new(Type::String)));
+                        if type_contains_generic(&declared) {
+                            Type::Optional(Box::new(Type::Str))
+                        } else {
+                            declared
+                        }
+                    },
                     |expression| optional_type(expression.ty.clone()),
                 );
             vec![
@@ -3291,7 +3318,31 @@ impl BodyChecker<'_> {
             }
             result = Some(actual);
         }
-        result.unwrap_or(Type::String)
+        result.unwrap_or_else(|| self.jsx_element_type())
+    }
+
+    fn jsx_fragment_parameter_type(
+        &self,
+        children: &[HirJsxChild],
+        runtime_parameter: Option<&Type>,
+    ) -> Type {
+        let child_type = self.jsx_children_type(children);
+        let array = runtime_parameter.and_then(|parameter| match parameter {
+            Type::Nominal(array, _) => self
+                .program
+                .graph
+                .declaration(*array)
+                .filter(|declaration| {
+                    declaration.name.as_deref() == Some("Array")
+                        && declaration.kind == DeclarationKind::Class
+                })
+                .map(|_| *array),
+            _ => None,
+        });
+        array.map_or_else(
+            || Type::Array(Box::new(child_type.clone()), children.len() as u64),
+            |array| Type::Nominal(array, vec![child_type.clone()]),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5905,6 +5956,53 @@ fn is_jsx_key_type(ty: &Type) -> bool {
         ) => true,
         Type::Reference { referent, .. } => matches!(referent.as_ref(), Type::String | Type::Str),
         _ => false,
+    }
+}
+
+fn is_jsx_runtime_key_parameter(program: &Program, ty: &Type) -> bool {
+    let ty = normalize_alias(program, ty);
+    match ty {
+        Type::Optional(inner) => is_jsx_runtime_key_parameter(program, inner.as_ref()),
+        Type::Generic(_) => true,
+        Type::Nominal(declaration, _) => declaration_name(program, declaration) == Some("Key"),
+        Type::Reference { referent, .. } => {
+            matches!(
+                normalize_alias(program, referent.as_ref()),
+                Type::String | Type::Str
+            )
+        }
+        _ => is_jsx_key_type(&ty),
+    }
+}
+
+fn type_contains_generic(ty: &Type) -> bool {
+    match ty {
+        Type::Generic(_) => true,
+        Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
+            arguments.iter().any(type_contains_generic)
+        }
+        Type::Optional(inner)
+        | Type::Array(inner, _)
+        | Type::Slice(inner)
+        | Type::RawPointer { pointee: inner, .. } => type_contains_generic(inner),
+        Type::Tuple(elements) | Type::Template(elements) => {
+            elements.iter().any(type_contains_generic)
+        }
+        Type::Reference { referent, .. } => type_contains_generic(referent),
+        Type::Promise { result, error, .. } => {
+            type_contains_generic(result) || type_contains_generic(error)
+        }
+        Type::Function(function) => {
+            function.parameters.iter().any(type_contains_generic)
+                || type_contains_generic(&function.result)
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::Lifetime(_)
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => false,
     }
 }
 

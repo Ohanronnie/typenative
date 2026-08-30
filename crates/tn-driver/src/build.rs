@@ -2,7 +2,7 @@ use crate::project::SupportMode;
 use crate::{Emit, LinkConfig, Profile, Project, ProjectConfig, Sanitizer, Target};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -395,6 +395,20 @@ pub fn build_project_with_timings(
     roots.sort();
     roots.dedup();
     let drop_implementations = drop_implementations(&program);
+    let mut nested_drop_types = BTreeSet::new();
+    for generic_body in &generic {
+        for local in &generic_body.body.locals {
+            push_nested_drop_roots(
+                &program,
+                &drop_callables,
+                &local.ty,
+                &mut roots,
+                &mut nested_drop_types,
+            );
+        }
+    }
+    roots.sort();
+    roots.dedup();
     let started = Instant::now();
     let units = tn_mir::monomorphize_with_drops(&generic, roots, &drop_implementations)
         .map_err(|error| BuildError::Message(error.to_string()))?;
@@ -724,6 +738,9 @@ fn push_node_drop_roots(
         | Type::Slice(result)
         | Type::Reference {
             referent: result, ..
+        }
+        | Type::RawPointer {
+            pointee: result, ..
         } => push_node_drop_roots(program, drops, result, roots),
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {
@@ -733,7 +750,6 @@ fn push_node_drop_roots(
         Type::Primitive(_)
         | Type::String
         | Type::Str
-        | Type::RawPointer { .. }
         | Type::Function(_)
         | Type::DynamicInterface(_, _)
         | Type::Generic(_)
@@ -741,6 +757,237 @@ fn push_node_drop_roots(
         | Type::ErrorUnion(_)
         | Type::Error
         | Type::Unknown => {}
+    }
+}
+
+/// Adds concrete destructor instances required by nested fields.  MIR can discover a drop for a
+/// directly-owned nominal value, but a non-disposable aggregate such as `MountedNode` may contain
+/// a generic disposable field such as `Array<i32>`.  Codegen must have that specialized drop
+/// method available when it recursively destroys the aggregate.
+fn push_nested_drop_roots(
+    program: &Program,
+    drops: &BTreeMap<DeclarationId, Callable>,
+    ty: &Type,
+    roots: &mut Vec<Instance>,
+    visited: &mut BTreeSet<Type>,
+) {
+    if !visited.insert(ty.clone()) {
+        return;
+    }
+    match ty {
+        Type::Nominal(declaration, arguments) => {
+            if let Some(callable) = drops.get(declaration)
+                && !arguments.iter().any(type_contains_generic)
+            {
+                roots.push(Instance {
+                    callable: *callable,
+                    type_arguments: arguments.clone(),
+                    effects: function_effects(program, *callable),
+                });
+            }
+            for argument in arguments {
+                push_nested_drop_roots(program, drops, argument, roots, visited);
+            }
+            let Some(definition) = program.definition(*declaration) else {
+                return;
+            };
+            let substitutions = definition
+                .generics
+                .iter()
+                .filter(|parameter| parameter.namespace == Namespace::Type)
+                .map(|parameter| parameter.name.clone())
+                .zip(arguments.iter().cloned())
+                .collect::<BTreeMap<_, _>>();
+            if definition
+                .generics
+                .iter()
+                .filter(|parameter| parameter.namespace == Namespace::Type)
+                .count()
+                != arguments.len()
+                || arguments.iter().any(type_contains_generic)
+            {
+                return;
+            }
+            let fields = match &definition.data {
+                DefinitionData::Struct { fields, .. } | DefinitionData::Class { fields, .. } => {
+                    fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect::<Vec<_>>()
+                }
+                DefinitionData::Enum { variants, .. } => variants
+                    .iter()
+                    .flat_map(|variant| variant.fields.iter().map(|field| field.ty.clone()))
+                    .collect::<Vec<_>>(),
+                DefinitionData::TypeAlias(body) => vec![body.clone()],
+                DefinitionData::Constant { .. }
+                | DefinitionData::Function(_)
+                | DefinitionData::Interface { .. }
+                | DefinitionData::Implementation { .. }
+                | DefinitionData::Extern { .. } => Vec::new(),
+            };
+            for field in fields {
+                let field = substitute_drop_type(&field, &substitutions);
+                push_nested_drop_roots(program, drops, &field, roots, visited);
+            }
+        }
+        Type::Promise { result, error, .. } => {
+            push_nested_drop_roots(program, drops, result, roots, visited);
+            push_nested_drop_roots(program, drops, error, roots, visited);
+        }
+        Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+            push_nested_drop_roots(program, drops, inner, roots, visited);
+        }
+        Type::Tuple(elements) | Type::Template(elements) => {
+            for element in elements {
+                push_nested_drop_roots(program, drops, element, roots, visited);
+            }
+        }
+        Type::Reference { referent, .. }
+        | Type::RawPointer {
+            pointee: referent, ..
+        } => {
+            push_nested_drop_roots(program, drops, referent, roots, visited);
+        }
+        Type::DynamicInterface(_, arguments) => {
+            for argument in arguments {
+                push_nested_drop_roots(program, drops, argument, roots, visited);
+            }
+        }
+        Type::ErrorUnion(effects) => {
+            for effect in effects {
+                push_nested_drop_roots(
+                    program,
+                    drops,
+                    &Type::Nominal(*effect, Vec::new()),
+                    roots,
+                    visited,
+                );
+            }
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::Function(_)
+        | Type::Generic(_)
+        | Type::Lifetime(_)
+        | Type::Error
+        | Type::Unknown => {}
+    }
+}
+
+fn type_contains_generic(ty: &Type) -> bool {
+    match ty {
+        Type::Generic(_) | Type::Lifetime(_) => true,
+        Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
+            arguments.iter().any(type_contains_generic)
+        }
+        Type::Promise { result, error, .. } => {
+            type_contains_generic(result) || type_contains_generic(error)
+        }
+        Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
+            type_contains_generic(inner)
+        }
+        Type::Tuple(elements) | Type::Template(elements) => {
+            elements.iter().any(type_contains_generic)
+        }
+        Type::Reference { referent, .. }
+        | Type::RawPointer {
+            pointee: referent, ..
+        } => type_contains_generic(referent),
+        Type::Function(function) => {
+            function.parameters.iter().any(type_contains_generic)
+                || type_contains_generic(&function.result)
+        }
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => false,
+    }
+}
+
+fn substitute_drop_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
+    match ty {
+        Type::Generic(name) | Type::Lifetime(name) => substitutions
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        Type::Nominal(declaration, arguments) => Type::Nominal(
+            *declaration,
+            arguments
+                .iter()
+                .map(|argument| substitute_drop_type(argument, substitutions))
+                .collect(),
+        ),
+        Type::DynamicInterface(declaration, arguments) => Type::DynamicInterface(
+            *declaration,
+            arguments
+                .iter()
+                .map(|argument| substitute_drop_type(argument, substitutions))
+                .collect(),
+        ),
+        Type::Promise {
+            result,
+            error,
+            effects,
+        } => Type::Promise {
+            result: Box::new(substitute_drop_type(result, substitutions)),
+            error: Box::new(substitute_drop_type(error, substitutions)),
+            effects: effects.clone(),
+        },
+        Type::Optional(inner) => {
+            Type::Optional(Box::new(substitute_drop_type(inner, substitutions)))
+        }
+        Type::Array(inner, length) => Type::Array(
+            Box::new(substitute_drop_type(inner, substitutions)),
+            *length,
+        ),
+        Type::Slice(inner) => Type::Slice(Box::new(substitute_drop_type(inner, substitutions))),
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| substitute_drop_type(element, substitutions))
+                .collect(),
+        ),
+        Type::Reference {
+            mutable,
+            lifetime,
+            referent,
+        } => Type::Reference {
+            mutable: *mutable,
+            lifetime: lifetime.clone(),
+            referent: Box::new(substitute_drop_type(referent, substitutions)),
+        },
+        Type::RawPointer { mutable, pointee } => Type::RawPointer {
+            mutable: *mutable,
+            pointee: Box::new(substitute_drop_type(pointee, substitutions)),
+        },
+        Type::Function(function) => Type::Function(tn_hir::FunctionType {
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| substitute_drop_type(parameter, substitutions))
+                .collect(),
+            result: Box::new(substitute_drop_type(&function.result, substitutions)),
+            effects: function.effects.clone(),
+            generics: function.generics.clone(),
+            is_async: function.is_async,
+            is_unsafe: function.is_unsafe,
+        }),
+        Type::Template(elements) => Type::Template(
+            elements
+                .iter()
+                .map(|element| substitute_drop_type(element, substitutions))
+                .collect(),
+        ),
+        Type::Primitive(_)
+        | Type::String
+        | Type::Str
+        | Type::ErrorUnion(_)
+        | Type::Error
+        | Type::Unknown => ty.clone(),
     }
 }
 

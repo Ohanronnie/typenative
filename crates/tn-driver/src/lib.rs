@@ -341,7 +341,7 @@ fn validate_jsx_runtime_function(
             !matches!(
                 parameter.ty,
                 Type::Array(_, _) | Type::Slice(_) | Type::Generic(_)
-            )
+            ) && !type_named_array(program, &parameter.ty)
         })
     {
         diagnostics.push(jsx_runtime_diagnostic(
@@ -397,6 +397,17 @@ fn type_named_element(program: &tn_hir::Program, ty: &Type) -> bool {
                         && declaration.name.as_deref() == Some("Element")
                 })
     ) || matches!(ty, Type::Generic(_))
+}
+
+fn type_named_array(program: &tn_hir::Program, ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Nominal(declaration, _)
+            if program
+                .graph
+                .declaration(*declaration)
+                .is_some_and(|declaration| declaration.name.as_deref() == Some("Array"))
+    )
 }
 
 fn type_contains_generic(ty: &Type, name: &str) -> bool {

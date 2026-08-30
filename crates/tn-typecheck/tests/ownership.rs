@@ -776,6 +776,7 @@ fn rejects_returned_local_references_and_partial_moves_from_drop_types() {
         TerminatorKind::Return(None),
         Type::Primitive(PrimitiveType::Void),
     );
+    facts.explicit_drop.insert(nominal);
     assert!(conditions(&partial, &facts).contains(&"OWNERSHIP_PARTIAL_MOVE_FROM_DROP_TYPE".into()));
 }
 

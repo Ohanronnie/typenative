@@ -152,6 +152,9 @@ fn discover_instances(
     drop_implementations: &[DropImplementation],
 ) -> Result<BTreeSet<Instance>, MonomorphizationError> {
     let mut discovered = BTreeSet::new();
+    for local in &body.locals {
+        discover_drop_instance(&local.ty, registry, drop_implementations, &mut discovered)?;
+    }
     for block in &body.blocks {
         for statement in &block.statements {
             if let StatementKind::Assign(_, value) = &statement.kind {
@@ -206,8 +209,7 @@ fn visit_rvalue(
         Rvalue::CheckedIndex { index, .. } => {
             visit_operand(index, registry, drop_implementations, discovered)
         }
-        Rvalue::Aggregate { fields, .. }
-        | Rvalue::Closure {
+        Rvalue::Closure {
             captures: fields, ..
         }
         | Rvalue::Template {
@@ -221,6 +223,21 @@ fn visit_rvalue(
             }
             if let Rvalue::Closure { body, .. } = value {
                 discovered.extend(discover_instances(body, registry, drop_implementations)?);
+            }
+            Ok(())
+        }
+        Rvalue::Aggregate {
+            ty,
+            fields,
+            field_types,
+            ..
+        } => {
+            for operand in fields {
+                visit_operand(operand, registry, drop_implementations, discovered)?;
+            }
+            discover_drop_instance(ty, registry, drop_implementations, discovered)?;
+            for field_type in field_types {
+                discover_drop_instance(field_type, registry, drop_implementations, discovered)?;
             }
             Ok(())
         }
@@ -377,38 +394,47 @@ fn visit_terminator(
             let Some(ty) = place_type(body, place) else {
                 return Ok(());
             };
-            for implementation in drop_implementations {
-                let mut inferred = BTreeMap::new();
-                if !matches_target(&implementation.target, &ty, &mut inferred) {
-                    continue;
-                }
-                let Some(generic) = registry.get(&implementation.callable) else {
-                    continue;
-                };
-                let type_arguments = generic
-                    .type_parameters
-                    .iter()
-                    .map(|parameter| {
-                        inferred.get(parameter).cloned().ok_or_else(|| {
-                            MonomorphizationError::UnresolvedTypeParameter {
-                                callable: implementation.callable,
-                                parameter: parameter.clone(),
-                            }
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                if type_arguments.iter().any(contains_generic) {
-                    continue;
-                }
-                discovered.insert(Instance {
-                    callable: implementation.callable,
-                    type_arguments,
-                    effects: Vec::new(),
-                });
-            }
-            Ok(())
+            discover_drop_instance(&ty, registry, drop_implementations, discovered)
         }
     }
+}
+
+fn discover_drop_instance(
+    ty: &Type,
+    registry: &BTreeMap<Callable, &GenericBody>,
+    drop_implementations: &[DropImplementation],
+    discovered: &mut BTreeSet<Instance>,
+) -> Result<(), MonomorphizationError> {
+    for implementation in drop_implementations {
+        let mut inferred = BTreeMap::new();
+        if !matches_target(&implementation.target, ty, &mut inferred) {
+            continue;
+        }
+        let Some(generic) = registry.get(&implementation.callable) else {
+            continue;
+        };
+        let type_arguments = generic
+            .type_parameters
+            .iter()
+            .map(|parameter| {
+                inferred.get(parameter).cloned().ok_or_else(|| {
+                    MonomorphizationError::UnresolvedTypeParameter {
+                        callable: implementation.callable,
+                        parameter: parameter.clone(),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if type_arguments.iter().any(contains_generic) {
+            continue;
+        }
+        discovered.insert(Instance {
+            callable: implementation.callable,
+            type_arguments,
+            effects: Vec::new(),
+        });
+    }
+    Ok(())
 }
 
 fn visit_operand(

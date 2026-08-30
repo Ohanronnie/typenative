@@ -636,6 +636,7 @@ impl OwnershipMirLowerer<'_> {
         };
         let array_type = Type::Nominal(array, vec![item_type.clone()]);
         let options_type = Type::Nominal(options, Vec::new());
+        let optional_options_type = Type::Optional(Box::new(options_type.clone()));
         let buffer = self.add_local(
             "$generator_buffer".into(),
             array_type.clone(),
@@ -645,14 +646,14 @@ impl OwnershipMirLowerer<'_> {
         );
         self.generator_buffer = Some(buffer);
         self.statement(StatementKind::StorageLive(buffer), self.span(token));
-        let options_local = self.temporary(options_type.clone(), self.span(token));
+        let options_local = self.temporary(optional_options_type.clone(), self.span(token));
         self.statement(StatementKind::StorageLive(options_local), self.span(token));
         self.statement(
             StatementKind::Assign(
                 Place::local(options_local),
                 Box::new(Rvalue::Aggregate {
-                    ty: options_type.clone(),
-                    variant: None,
+                    ty: optional_options_type.clone(),
+                    variant: Some(1),
                     fields: vec![Operand::Constant(tn_mir::Constant::Integer {
                         value: 0,
                         ty: Type::Primitive(PrimitiveType::Usize),
@@ -660,6 +661,10 @@ impl OwnershipMirLowerer<'_> {
                     field_types: vec![Type::Primitive(PrimitiveType::Usize)],
                 }),
             ),
+            self.span(token),
+        );
+        self.statement(
+            StatementKind::SetDiscriminant(Place::local(options_local), 1),
             self.span(token),
         );
         let Some(DefinitionData::Class { constructor, .. }) = self
@@ -673,7 +678,7 @@ impl OwnershipMirLowerer<'_> {
             return;
         };
         let signature = tn_hir::FunctionType {
-            parameters: vec![options_type],
+            parameters: vec![optional_options_type],
             result: Box::new(array_type.clone()),
             effects: constructor.function.effects.clone(),
             generics: Vec::new(),
@@ -2552,12 +2557,29 @@ impl OwnershipMirLowerer<'_> {
     fn lower_jsx(&mut self, id: tn_hir::HirJsxId, start: usize) -> Option<(Operand, Type)> {
         let element = self.hir.jsx_elements.get(id.0 as usize)?.clone();
         if element.fragment {
-            let (children, child_type) = self.lower_jsx_children(&element.children, None, start)?;
-            let array_type =
-                Type::Array(Box::new(child_type.clone()), element.children.len() as u64);
-            let children =
-                self.materialize_jsx_aggregate(array_type.clone(), children, child_type, start)?;
             let signature = element.runtime_signature.clone()?;
+            let expected_child =
+                signature
+                    .parameters
+                    .first()
+                    .and_then(|parameter| match parameter {
+                        Type::Array(element, _) | Type::Slice(element) => Some(element.as_ref()),
+                        Type::Nominal(_, arguments) => arguments.first(),
+                        _ => None,
+                    });
+            let (children, child_type) =
+                self.lower_jsx_children(&element.children, expected_child, start)?;
+            let children = if signature
+                .parameters
+                .first()
+                .is_some_and(|parameter| self.is_dynamic_array_type(parameter))
+            {
+                self.materialize_jsx_dynamic_array(children, child_type, start)?
+            } else {
+                let array_type =
+                    Type::Array(Box::new(child_type.clone()), element.children.len() as u64);
+                self.materialize_jsx_aggregate(array_type, children, child_type, start)?
+            };
             return self.emit_call(
                 Operand::Constant(tn_mir::Constant::Function(
                     element.runtime?,
@@ -2606,22 +2628,34 @@ impl OwnershipMirLowerer<'_> {
         };
         let (component, _component_type) = component;
         let props = self.lower_jsx_properties(&element, start)?;
+        let signature = element.runtime_signature.clone()?;
         let key = if let Some(key_id) = element.key {
             let origin = self.hir.expressions.get(key_id.0 as usize)?.origin.clone();
             let (key_start, key_end) =
                 self.token_range_for_bytes(origin.byte_start as usize, origin.byte_end as usize)?;
             let (value, value_type) = self.lower_expression_range(key_start, key_end, None)?;
-            let optional_type = Type::Optional(Box::new(value_type.clone()));
-            self.materialize_jsx_optional(optional_type.clone(), value, start)?
-                .map(|value| (value, optional_type))?
+            let key_type = signature
+                .parameters
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| Type::Optional(Box::new(value_type.clone())));
+            if matches!(key_type, Type::Optional(_)) && !matches!(value_type, Type::Optional(_)) {
+                let value = self.materialize_jsx_optional(key_type.clone(), value, start)?;
+                (value, key_type)
+            } else {
+                (value, value_type)
+            }
         } else {
-            let key_type = Type::Optional(Box::new(Type::String));
+            let key_type = signature
+                .parameters
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| Type::Optional(Box::new(Type::String)));
             (
                 Operand::Constant(tn_mir::Constant::Undefined(key_type.clone())),
                 key_type,
             )
         };
-        let signature = element.runtime_signature.clone()?;
         self.emit_call(
             Operand::Constant(tn_mir::Constant::Function(
                 element.runtime?,
@@ -2702,9 +2736,11 @@ impl OwnershipMirLowerer<'_> {
                         }
                     });
             let value = match property_index {
-                Some(index) if !element.properties[index].spread => {
-                    self.lower_jsx_value(&element.properties[index].value, field_type, start)?
-                }
+                Some(index) if !element.properties[index].spread => self.lower_jsx_property_value(
+                    &element.properties[index].value,
+                    field_type,
+                    start,
+                )?,
                 Some(index) => {
                     let (place, source_type) = spread_sources[index].as_ref()?;
                     let source_field_index = self
@@ -2728,6 +2764,19 @@ impl OwnershipMirLowerer<'_> {
             schema.into_iter().map(|(_, ty)| ty).collect(),
             start,
         )
+    }
+
+    fn lower_jsx_property_value(
+        &mut self,
+        value: &HirJsxValue,
+        expected: &Type,
+        start: usize,
+    ) -> Option<Operand> {
+        if let Type::Optional(inner) = expected {
+            let value = self.lower_jsx_value(value, inner.as_ref(), start)?;
+            return self.materialize_jsx_optional(expected.clone(), value, start);
+        }
+        self.lower_jsx_value(value, expected, start)
     }
 
     fn lower_jsx_value(
@@ -2783,21 +2832,17 @@ impl OwnershipMirLowerer<'_> {
                 if children.len() == 1 && !matches!(expected, Type::Array(_, _) | Type::Slice(_)) {
                     return operands.into_iter().next();
                 }
+                if !matches!(expected, Type::Array(_, _) | Type::Slice(_)) {
+                    return self
+                        .lower_jsx_fragment(operands, child_type, expected.clone(), start)
+                        .map(|(operand, _)| operand);
+                }
                 let array_type = match expected {
                     Type::Array(_, length) => Type::Array(Box::new(child_type.clone()), *length),
                     _ => Type::Array(Box::new(child_type.clone()), children.len() as u64),
                 };
-                let children = self.materialize_jsx_aggregate(
-                    array_type.clone(),
-                    operands,
-                    child_type,
-                    start,
-                )?;
-                if !matches!(expected, Type::Array(_, _) | Type::Slice(_)) {
-                    return self
-                        .lower_jsx_fragment(children, array_type, expected.clone(), start)
-                        .map(|(operand, _)| operand);
-                }
+                let children =
+                    self.materialize_jsx_aggregate(array_type, operands, child_type, start)?;
                 Some(children)
             }
         }
@@ -2805,19 +2850,40 @@ impl OwnershipMirLowerer<'_> {
 
     fn lower_jsx_fragment(
         &mut self,
-        children: Operand,
-        children_type: Type,
+        values: Vec<Operand>,
+        element_type: Type,
         result_type: Type,
         start: usize,
     ) -> Option<(Operand, Type)> {
         let runtime = self.program.jsx_runtime_declaration("fragment")?;
+        let runtime_accepts_dynamic_array = self
+            .program
+            .definition(runtime)
+            .filter(|definition| definition.generics.is_empty())
+            .and_then(|definition| match &definition.data {
+                DefinitionData::Function(function) if function.generics.is_empty() => {
+                    function.parameters.first()
+                }
+                _ => None,
+            })
+            .is_some_and(|parameter| self.is_dynamic_array_type(&parameter.ty));
+        let children_type = if runtime_accepts_dynamic_array {
+            Type::Nominal(self.nominal_named("Array")?, vec![element_type.clone()])
+        } else {
+            Type::Array(Box::new(element_type.clone()), values.len() as u64)
+        };
         let signature = tn_hir::FunctionType {
-            parameters: vec![children_type],
+            parameters: vec![children_type.clone()],
             result: Box::new(result_type),
             effects: Vec::new(),
             generics: Vec::new(),
             is_async: false,
             is_unsafe: false,
+        };
+        let children = if self.is_dynamic_array_type(&children_type) {
+            self.materialize_jsx_dynamic_array(values, element_type, start)?
+        } else {
+            self.materialize_jsx_aggregate(children_type.clone(), values, element_type, start)?
         };
         self.emit_call(
             Operand::Constant(tn_mir::Constant::Function(
@@ -2829,6 +2895,149 @@ impl OwnershipMirLowerer<'_> {
             vec![children],
             start,
         )
+    }
+
+    fn is_dynamic_array_type(&self, ty: &Type) -> bool {
+        let Type::Nominal(declaration, _) = ty else {
+            return false;
+        };
+        self.program
+            .graph
+            .declaration(*declaration)
+            .is_some_and(|declaration| declaration.name.as_deref() == Some("Array"))
+    }
+
+    fn array_method(&self, declaration: DeclarationId, name: &str) -> Option<tn_hir::Method> {
+        let DefinitionData::Class { methods, .. } = &self.program.definition(declaration)?.data
+        else {
+            return None;
+        };
+        methods.iter().find(|method| method.name == name).cloned()
+    }
+
+    fn materialize_jsx_dynamic_array(
+        &mut self,
+        values: Vec<Operand>,
+        element_type: Type,
+        start: usize,
+    ) -> Option<Operand> {
+        let array = self.nominal_named("Array")?;
+        let options = self.nominal_named("ArrayOptions")?;
+        let array_type = Type::Nominal(array, vec![element_type.clone()]);
+        let options_type = Type::Nominal(options, Vec::new());
+        let optional_options_type = Type::Optional(Box::new(options_type.clone()));
+        let options_local =
+            self.temporary(optional_options_type.clone(), self.span(self.tokens[start]));
+        self.statement(
+            StatementKind::StorageLive(options_local),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(options_local),
+                Box::new(Rvalue::Aggregate {
+                    ty: optional_options_type.clone(),
+                    variant: Some(1),
+                    fields: vec![Operand::Constant(tn_mir::Constant::Integer {
+                        value: values.len() as i128,
+                        ty: Type::Primitive(PrimitiveType::Usize),
+                    })],
+                    field_types: vec![Type::Primitive(PrimitiveType::Usize)],
+                }),
+            ),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::SetDiscriminant(Place::local(options_local), 1),
+            self.span(self.tokens[start]),
+        );
+        let DefinitionData::Class {
+            constructor: Some(constructor),
+            ..
+        } = &self.program.definition(array)?.data
+        else {
+            return None;
+        };
+        let constructor_signature = tn_hir::FunctionType {
+            parameters: vec![optional_options_type],
+            result: Box::new(array_type.clone()),
+            effects: constructor.function.effects.clone(),
+            generics: Vec::new(),
+            is_async: false,
+            is_unsafe: constructor.function.is_unsafe,
+        };
+        let constructor_value = Operand::Constant(tn_mir::Constant::Constructor {
+            owner: array,
+            member: Some(constructor.id),
+            ty: Type::Function(constructor_signature.clone()),
+        });
+        let array_value = self
+            .emit_call(
+                constructor_value,
+                None,
+                &constructor_signature,
+                vec![Operand::Move(Place::local(options_local))],
+                start,
+            )?
+            .0;
+        let array_local = self.add_local(
+            "$jsx_children".into(),
+            array_type.clone(),
+            true,
+            false,
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::StorageLive(array_local),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(array_local),
+                Box::new(Rvalue::Use(array_value)),
+            ),
+            self.span(self.tokens[start]),
+        );
+        let push = self.array_method(array, "push")?;
+        let substitutions = self
+            .program
+            .definition(array)
+            .map(|definition| {
+                definition
+                    .generics
+                    .iter()
+                    .filter(|parameter| parameter.namespace == Namespace::Type)
+                    .map(|parameter| (parameter.name.clone(), element_type.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let push_signature = tn_hir::FunctionType {
+            parameters: push
+                .function
+                .parameters
+                .iter()
+                .map(|parameter| substitute_mir_type(&parameter.ty, &substitutions))
+                .collect(),
+            result: Box::new(substitute_mir_type(&push.function.result, &substitutions)),
+            effects: push.function.effects.clone(),
+            generics: Vec::new(),
+            is_async: push.function.is_async,
+            is_unsafe: push.function.is_unsafe,
+        };
+        for value in values {
+            let (method, method_type) = self.lower_member_from(
+                Operand::Copy(Place::local(array_local)),
+                &array_type,
+                push.id,
+                Type::Function(push_signature.clone()),
+                start,
+            )?;
+            let receiver = operand_place(method.clone())
+                .and_then(|place| self.bound_receivers.get(&place.local).cloned());
+            self.emit_call(method, receiver, &push_signature, vec![value], start);
+            let _ = method_type;
+        }
+        Some(Operand::Move(Place::local(array_local)))
     }
 
     fn lower_jsx_children(
@@ -2955,20 +3164,38 @@ impl OwnershipMirLowerer<'_> {
         Some(Operand::Move(Place::local(destination)))
     }
 
-    #[allow(clippy::option_option)]
     fn materialize_jsx_optional(
         &mut self,
         ty: Type,
         value: Operand,
         start: usize,
-    ) -> Option<Option<Operand>> {
+    ) -> Option<Operand> {
         let Type::Optional(inner) = &ty else {
             return None;
         };
         let inner = inner.as_ref().clone();
-        let operand =
-            self.materialize_jsx_aggregate_with_types(ty, vec![value], vec![inner], start)?;
-        Some(Some(operand))
+        let destination = self.temporary(ty.clone(), self.span(self.tokens[start]));
+        self.statement(
+            StatementKind::StorageLive(destination),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(destination),
+                Box::new(Rvalue::Aggregate {
+                    ty: ty.clone(),
+                    variant: Some(1),
+                    fields: vec![value],
+                    field_types: vec![inner],
+                }),
+            ),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::SetDiscriminant(Place::local(destination), 1),
+            self.span(self.tokens[start]),
+        );
+        Some(Operand::Move(Place::local(destination)))
     }
 
     fn token_range_for_bytes(&self, start: usize, end: usize) -> Option<(usize, usize)> {
@@ -3194,6 +3421,14 @@ impl OwnershipMirLowerer<'_> {
                     && matches!(target, Type::RawPointer { .. })
                     && let Some(place) = operand_place(operand.clone())
                 {
+                    operand = Operand::Copy(place);
+                }
+                if matches!(source_type, Type::Function(_) | Type::String | Type::Str)
+                    && matches!(target, Type::RawPointer { .. })
+                    && let Some(place) = operand_place(operand.clone())
+                {
+                    // A plain function-to-pointer conversion observes the function identity;
+                    // it must not consume the callable that will be stored or invoked next.
                     operand = Operand::Copy(place);
                 }
                 source_type.clone()
@@ -4598,7 +4833,7 @@ impl OwnershipMirLowerer<'_> {
         let Type::Function(signature) = function_type else {
             return None;
         };
-        let (arguments, argument_types) = match prelowered_arguments {
+        let (mut arguments, argument_types) = match prelowered_arguments {
             Some(arguments) => arguments,
             None => {
                 self.lower_call_arguments(self.argument_ranges(open + 1, end - 1), &signature)?
@@ -4654,6 +4889,14 @@ impl OwnershipMirLowerer<'_> {
             && matches!(actual, Type::Promise { .. })
         {
             concrete.parameters[0] = actual.clone();
+        }
+        if self.is_intrinsic_operation(start, callee_end, "component_identity")
+            && let Some(argument) = arguments.first_mut()
+            && let Operand::Move(place) = argument
+        {
+            // Reading a callable's code identity does not consume the callable; the
+            // runtime may immediately store and invoke the same component value.
+            *argument = Operand::Copy(place.clone());
         }
         if self.is_intrinsic_operation(start, callee_end, "thread_spawn") {
             let result_type = concrete.result.as_ref().clone();
@@ -4808,6 +5051,26 @@ impl OwnershipMirLowerer<'_> {
                     Place::local(destination),
                     Box::new(Rvalue::RawOperation {
                         operation: "is_null".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "component_identity") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "component_identity".into(),
                         operands: arguments,
                         ty: result_type.clone(),
                     }),
@@ -5254,6 +5517,46 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
+        if self.is_intrinsic_operation(start, callee_end, "usize_to_f32") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "usize_to_f32".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "f64_to_usize") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "f64_to_usize".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
         if self.is_intrinsic_operation(start, callee_end, "arc_clone") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
@@ -5266,6 +5569,26 @@ impl OwnershipMirLowerer<'_> {
                     Place::local(destination),
                     Box::new(Rvalue::RawOperation {
                         operation: "arc_clone".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "borrow_callable") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "borrow_callable".into(),
                         operands: arguments,
                         ty: result_type.clone(),
                     }),
@@ -5339,7 +5662,18 @@ impl OwnershipMirLowerer<'_> {
             let expected = signature.parameters.get(index);
             let (argument, actual) =
                 self.lower_expression_range(argument_start, argument_end, expected)?;
-            arguments.push(self.reborrow_argument(argument, &actual, expected, argument_start));
+            let argument = if let Some(Type::Optional(expected)) = expected
+                && !matches!(actual, Type::Optional(_))
+            {
+                self.materialize_jsx_optional(
+                    Type::Optional(expected.clone()),
+                    argument,
+                    argument_start,
+                )?
+            } else {
+                self.reborrow_argument(argument, &actual, expected, argument_start)
+            };
+            arguments.push(argument);
             argument_types.push(actual);
         }
         Some((arguments, argument_types))
@@ -5570,40 +5904,20 @@ impl OwnershipMirLowerer<'_> {
         let mut arguments = Vec::new();
         for (index, (argument, actual, argument_start)) in lowered_arguments.into_iter().enumerate()
         {
-            let argument = self.reborrow_argument(
-                argument,
-                &actual,
-                signature.parameters.get(index),
-                argument_start,
-            );
-            if let Some(parameter @ Type::Optional(inner)) = signature.parameters.get(index)
-                && &actual == inner.as_ref()
+            let argument = if let Some(parameter @ Type::Optional(_)) =
+                signature.parameters.get(index)
+                && !matches!(actual, Type::Optional(_))
             {
-                let optional = self.temporary(parameter.clone(), self.span(self.tokens[start]));
-                self.statement(
-                    StatementKind::StorageLive(optional),
-                    self.span(self.tokens[start]),
-                );
-                self.statement(
-                    StatementKind::Assign(
-                        Place::local(optional),
-                        Box::new(Rvalue::Aggregate {
-                            ty: parameter.clone(),
-                            variant: Some(1),
-                            fields: vec![argument],
-                            field_types: vec![actual],
-                        }),
-                    ),
-                    self.span(self.tokens[start]),
-                );
-                self.statement(
-                    StatementKind::SetDiscriminant(Place::local(optional), 1),
-                    self.span(self.tokens[start]),
-                );
-                arguments.push(Operand::Move(Place::local(optional)));
+                self.materialize_jsx_optional(parameter.clone(), argument, argument_start)?
             } else {
-                arguments.push(argument);
-            }
+                self.reborrow_argument(
+                    argument,
+                    &actual,
+                    signature.parameters.get(index),
+                    argument_start,
+                )
+            };
+            arguments.push(argument);
         }
         for parameter in signature.parameters.iter().skip(arguments.len()) {
             if matches!(parameter, Type::Optional(_)) {

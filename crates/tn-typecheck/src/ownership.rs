@@ -11,6 +11,11 @@ use tn_mir::{
 pub struct OwnershipFacts {
     pub copy: BTreeSet<DeclarationId>,
     pub drop: BTreeSet<DeclarationId>,
+    /// Nominal values with an explicit `[Symbol.dispose]` implementation. These values cannot be
+    /// partially moved because user code may observe every field during destruction.
+    pub explicit_drop: BTreeSet<DeclarationId>,
+    /// Class values have identity and are never split into independently owned field values.
+    pub classes: BTreeSet<DeclarationId>,
     pub send: BTreeSet<DeclarationId>,
     pub sync: BTreeSet<DeclarationId>,
 }
@@ -240,6 +245,7 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
     for definition in &program.definitions {
         if matches!(definition.data, DefinitionData::Class { .. }) {
             facts.drop.insert(definition.declaration);
+            facts.classes.insert(definition.declaration);
         }
         let has_destructor = match &definition.data {
             DefinitionData::Struct { methods, .. }
@@ -251,6 +257,7 @@ pub fn derive_ownership_facts(program: &Program) -> OwnershipFacts {
         };
         if has_destructor {
             facts.drop.insert(definition.declaration);
+            facts.explicit_drop.insert(definition.declaration);
         }
     }
 
@@ -1043,6 +1050,7 @@ fn visit_operand(
         {
             if !place.projection.is_empty()
                 && facts.has_drop(ty)
+                && facts.requires_whole_value_move(ty)
                 && !is_optional_payload_move(body, place)
             {
                 diagnostics.push(diagnostic(
@@ -1057,6 +1065,25 @@ fn visit_operand(
         }
     } else {
         check_read(place, loans, span, diagnostics);
+    }
+}
+
+impl OwnershipFacts {
+    /// Returns whether moving a projection would invalidate the value's destruction contract.
+    ///
+    /// Structs and enums whose destruction is derived from their fields are split-safe: MIR keeps
+    /// per-field initialization state and drops only the fields that remain initialized. Explicit
+    /// destructors and class identity are different because their implementation owns the whole
+    /// value and may inspect or release it as one unit.
+    fn requires_whole_value_move(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Nominal(id, _) => self.explicit_drop.contains(id) || self.classes.contains(id),
+            Type::Optional(inner) | Type::Array(inner, _) => self.requires_whole_value_move(inner),
+            Type::Tuple(elements) | Type::Template(elements) => elements
+                .iter()
+                .any(|element| self.requires_whole_value_move(element)),
+            _ => false,
+        }
     }
 }
 

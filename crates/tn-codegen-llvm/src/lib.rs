@@ -6170,7 +6170,8 @@ impl<'ctx> Generator<'ctx> {
             builder,
             blocks: Vec::new(),
             locals: Vec::new(),
-            drop_flags: Vec::new(),
+            drop_flags: BTreeMap::new(),
+            constructor_initializer: false,
         };
         for (index, capture) in target.captures.iter().enumerate() {
             let address = lightweight.builder.build_struct_gep(
@@ -6180,7 +6181,7 @@ impl<'ctx> Generator<'ctx> {
                     .map_err(|_| CodegenError::Unsupported("closure capture limit".into()))?,
                 "closure.drop.capture",
             )?;
-            lightweight.lower_drop_value_at_pointer(address, capture)?;
+            lightweight.lower_drop_value_at_pointer(address, capture, None)?;
         }
         lightweight.builder.build_unconditional_branch(free_block)?;
         lightweight.builder.position_at_end(free_block);
@@ -8187,8 +8188,15 @@ impl<'ctx> Generator<'ctx> {
 
     fn callable_type(&self) -> StructType<'ctx> {
         let pointer = self.context.ptr_type(AddressSpace::default());
-        self.context
-            .struct_type(&[pointer.into(), pointer.into(), pointer.into()], false)
+        self.context.struct_type(
+            &[
+                pointer.into(),
+                pointer.into(),
+                pointer.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        )
     }
 
     fn basic_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
@@ -8599,6 +8607,20 @@ impl<'ctx> Generator<'ctx> {
         )
     }
 
+    fn is_constructor_initializer(&self, instance: &Instance) -> bool {
+        let Some(layout) = self.layouts.nominals.get(&instance.callable.declaration) else {
+            return false;
+        };
+        let NominalKind::Class {
+            constructor: Some(constructor),
+            ..
+        } = &layout.kind
+        else {
+            return false;
+        };
+        instance.callable.member == Some(constructor.member)
+    }
+
     fn descriptor_for_type(&self, ty: &Type) -> Option<PointerValue<'ctx>> {
         let Type::Nominal(declaration, arguments) = ty else {
             return None;
@@ -8695,7 +8717,14 @@ struct FunctionGenerator<'a, 'ctx> {
     builder: Builder<'ctx>,
     blocks: Vec<LlvmBlock<'ctx>>,
     locals: Vec<PointerValue<'ctx>>,
-    drop_flags: Vec<PointerValue<'ctx>>,
+    /// Initialization state is tracked per ownership path, not just per local. A destructured
+    /// field may be moved while its containing aggregate remains live, so a root-only flag would
+    /// call a destructor on storage that no longer contains a valid field value.
+    drop_flags: BTreeMap<Place, PointerValue<'ctx>>,
+    /// Constructor wrappers allocate zeroed class storage and then invoke the initializer.  The
+    /// initializer must not release those zeroed slots, while ordinary methods may replace live
+    /// class fields even though their receiver-owned paths do not have local drop flags.
+    constructor_initializer: bool,
 }
 
 impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
@@ -8719,7 +8748,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             builder.set_current_debug_location(location);
         }
         let mut locals = Vec::new();
-        let mut drop_flags = Vec::new();
+        let mut drop_flags = BTreeMap::new();
         for (index, local) in body.locals.iter().enumerate() {
             locals.push(
                 builder
@@ -8728,7 +8757,31 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             let flag = builder
                 .build_alloca(generator.context.bool_type(), &format!("dropflag.{index}"))?;
             builder.build_store(flag, generator.context.bool_type().const_zero())?;
-            drop_flags.push(flag);
+            drop_flags.insert(
+                Place::local(tn_mir::LocalId(u32::try_from(index).map_err(|_| {
+                    CodegenError::Unsupported("local index overflow".into())
+                })?)),
+                flag,
+            );
+        }
+        let projection_flags = body
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match &statement.kind {
+                StatementKind::SetDropFlag(place, _) if !place.projection.is_empty() => {
+                    Some(place.clone())
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for place in projection_flags {
+            let flag = builder.build_alloca(
+                generator.context.bool_type(),
+                &format!("dropflag.path.{}", drop_flags.len()),
+            )?;
+            builder.build_store(flag, generator.context.bool_type().const_zero())?;
+            drop_flags.insert(place, flag);
         }
         for (argument_index, (parameter, (local_index, _))) in function
             .get_param_iter()
@@ -8769,6 +8822,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             })
             .collect::<Vec<_>>();
         builder.build_unconditional_branch(blocks[0])?;
+        let constructor_initializer = generator.is_constructor_initializer(instance);
         Ok(Self {
             generator,
             instance,
@@ -8778,6 +8832,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             blocks,
             locals,
             drop_flags,
+            constructor_initializer,
         })
     }
 
@@ -8805,24 +8860,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     fn lower_statement(&self, statement: &StatementKind) -> Result<(), CodegenError> {
         match statement {
             StatementKind::Assign(destination, value) => {
-                let value = self.lower_rvalue(value)?;
-                self.builder
-                    .build_store(self.place_pointer(destination)?, value)?;
+                self.lower_assignment(destination, value)?;
             }
             StatementKind::SetDropFlag(place, value) => {
                 if self.is_borrowed_class_receiver(place) {
                     return Ok(());
                 }
-                let flag = self.drop_flags[usize::try_from(place.local.0).map_err(|_| {
-                    CodegenError::Unsupported("drop flag local index overflow".into())
-                })?];
-                self.builder.build_store(
-                    flag,
-                    self.generator
-                        .context
-                        .bool_type()
-                        .const_int(u64::from(*value), false),
-                )?;
+                self.set_drop_flag_value(place, *value)?;
             }
             StatementKind::StorageLive(_)
             | StatementKind::StorageDead(_)
@@ -8892,6 +8936,135 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             }
         }
         Ok(())
+    }
+
+    /// Store a value into a place after releasing the value currently occupying that place.
+    ///
+    /// MIR assignments are allowed to target already-initialized locals and projections (for
+    /// example `this.render = undefined`).  A plain LLVM store would overwrite the owner without
+    /// running its destructor, leaking strings, closures, arrays, or class objects.  The drop
+    /// flag is initialized to false for fresh storage and is set by drop elaboration after each
+    /// successful assignment, so this conditional release is both idempotent and valid for
+    /// constructor fields.
+    fn lower_assignment(&self, destination: &Place, rvalue: &Rvalue) -> Result<(), CodegenError> {
+        let value = self.lower_rvalue(rvalue)?;
+        let pointer = self.place_pointer(destination)?;
+        let destination_type = self.place_type(destination)?;
+        if !self.type_needs_drop(&destination_type) {
+            self.builder.build_store(pointer, value)?;
+            return Ok(());
+        }
+        if self.is_class_field_place(destination) {
+            if !self.constructor_initializer {
+                self.lower_drop_value_at_pointer(pointer, &destination_type, Some(destination))?;
+            }
+            self.builder.build_store(pointer, value)?;
+            return Ok(());
+        }
+        let Some(flag) = self.drop_flags.get(destination).copied() else {
+            self.builder.build_store(pointer, value)?;
+            return Ok(());
+        };
+        if self.is_borrowed_class_receiver(destination) {
+            self.builder.build_store(pointer, value)?;
+            return Ok(());
+        }
+
+        let initialized = self
+            .builder
+            .build_load(
+                self.generator.context.bool_type(),
+                flag,
+                "assign.destination.initialized",
+            )?
+            .into_int_value();
+        let drop_block = self
+            .generator
+            .context
+            .append_basic_block(self.function, "assign.destination.drop");
+        let store_block = self
+            .generator
+            .context
+            .append_basic_block(self.function, "assign.destination.store");
+        self.builder
+            .build_conditional_branch(initialized, drop_block, store_block)?;
+
+        self.builder.position_at_end(drop_block);
+        self.lower_drop_value_at_pointer(pointer, &destination_type, Some(destination))?;
+        self.set_drop_flag_value(destination, false)?;
+        self.builder.build_unconditional_branch(store_block)?;
+
+        self.builder.position_at_end(store_block);
+        self.builder.build_store(pointer, value)?;
+        Ok(())
+    }
+
+    fn is_class_field_place(&self, place: &Place) -> bool {
+        if place.projection.is_empty() {
+            return false;
+        }
+        let Ok(local_type) = self.local_type(place.local.0) else {
+            return false;
+        };
+        self.generator.is_class_type(&local_type)
+            && matches!(place.projection.first(), Some(Projection::Field { .. }))
+    }
+
+    fn type_needs_drop(&self, ty: &Type) -> bool {
+        let resolved = self.generator.resolve_alias(ty);
+        if resolved != *ty {
+            return self.type_needs_drop(&resolved);
+        }
+        match ty {
+            Type::String
+            | Type::Function(_)
+            | Type::Promise { .. }
+            | Type::DynamicInterface(_, _) => true,
+            Type::Optional(inner) | Type::Array(inner, _) => self.type_needs_drop(inner),
+            Type::Tuple(elements) | Type::Template(elements) => {
+                elements.iter().any(|element| self.type_needs_drop(element))
+            }
+            Type::Nominal(declaration, _) => {
+                let Some(layout) = self.generator.layouts.nominals.get(declaration) else {
+                    return false;
+                };
+                match &layout.kind {
+                    NominalKind::Struct { fields } => {
+                        fields.iter().any(|field| self.type_needs_drop(field))
+                    }
+                    NominalKind::Enum { variants, .. } => variants
+                        .iter()
+                        .flatten()
+                        .any(|field| self.type_needs_drop(field)),
+                    NominalKind::Class { .. } => true,
+                }
+            }
+            Type::ErrorUnion(effects) => effects.iter().any(|effect| {
+                self.generator
+                    .layouts
+                    .nominals
+                    .get(effect)
+                    .is_some_and(|layout| match &layout.kind {
+                        NominalKind::Struct { fields } => {
+                            fields.iter().any(|field| self.type_needs_drop(field))
+                        }
+                        NominalKind::Enum { variants, .. } => variants
+                            .iter()
+                            .flatten()
+                            .any(|field| self.type_needs_drop(field)),
+                        NominalKind::Class { .. } => true,
+                    })
+            }),
+            Type::Primitive(_)
+            | Type::Str
+            | Type::Slice(_)
+            | Type::Reference { .. }
+            | Type::RawPointer { .. }
+            | Type::Generic(_)
+            | Type::Lifetime(_)
+            | Type::Error
+            | Type::Unknown => false,
+        }
     }
 
     fn lower_borrow_statement(
@@ -9253,9 +9426,21 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .builder
                     .build_insert_value(callable, environment, 1, "closure.environment")?
                     .into_struct_value();
-                Ok(self
+                callable = self
                     .builder
                     .build_insert_value(callable, drop, 2, "closure.drop")?
+                    .into_struct_value();
+                Ok(self
+                    .builder
+                    .build_insert_value(
+                        callable,
+                        self.generator.context.i64_type().const_int(
+                            stable_hash(&format!("closure:{:?}:{:?}", self.instance, id)),
+                            false,
+                        ),
+                        3,
+                        "closure.identity",
+                    )?
                     .into_struct_value()
                     .into())
             }
@@ -9416,6 +9601,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     function.as_global_value().as_pointer_value(),
                     receiver,
                     pointer,
+                    self.generator.context.i64_type().const_int(
+                        stable_hash(&format!("method:{implementation:?}:{member:?}")),
+                        false,
+                    ),
                 )
                 .map(Into::into)
             }
@@ -9427,7 +9616,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .context
                     .ptr_type(AddressSpace::default())
                     .const_null();
-                self.callable_value(code, receiver, null).map(Into::into)
+                self.callable_value(
+                    code,
+                    receiver,
+                    null,
+                    self.generator.context.i64_type().const_zero(),
+                )
+                .map(Into::into)
             }
             Rvalue::WitnessLookup { object, slot, .. } => {
                 let code = self.lower_witness_lookup(object, *slot)?;
@@ -9439,7 +9634,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .context
                     .ptr_type(AddressSpace::default())
                     .const_null();
-                self.callable_value(code, receiver, null).map(Into::into)
+                self.callable_value(
+                    code,
+                    receiver,
+                    null,
+                    self.generator.context.i64_type().const_zero(),
+                )
+                .map(Into::into)
             }
             Rvalue::TypeTest { operand, target } => {
                 let Type::Nominal(_, _) = target else {
@@ -9626,6 +9827,30 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     )?
                     .into())
             }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "component_identity" => {
+                let callable = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "component_identity operation lacks a callable".into(),
+                        )
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_struct_value();
+                let code = self
+                    .builder
+                    .build_extract_value(callable, 3, "callable.identity")?
+                    .into_int_value();
+                let result = self.generator.basic_type(ty)?.into_int_type();
+                Ok(self
+                    .builder
+                    .build_int_cast(code, result, "callable.identity.cast")?
+                    .into())
+            }
             Rvalue::RawOperation { operation, ty, .. } if operation == "null_pointer" => {
                 if !matches!(ty, Type::RawPointer { .. }) {
                     return Err(CodegenError::Unsupported(
@@ -9762,7 +9987,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             "global declaration {declaration:?} has no layout"
                         ))
                     })?;
-                self.lower_drop_value_at_pointer(pointer, &layout.ty)?;
+                self.lower_drop_value_at_pointer(pointer, &layout.ty, None)?;
                 self.builder.build_unconditional_branch(store_block)?;
                 self.builder.position_at_end(store_block);
                 self.builder
@@ -9990,7 +10215,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 self.builder
                     .build_conditional_branch(occupied, drop_block, store_block)?;
                 self.builder.position_at_end(drop_block);
-                self.lower_drop_value_at_pointer(element_pointer, &element_type)?;
+                self.lower_drop_value_at_pointer(element_pointer, &element_type, None)?;
                 self.builder.build_unconditional_branch(store_block)?;
                 self.builder.position_at_end(store_block);
                 self.builder.build_store(element_pointer, value)?;
@@ -10085,7 +10310,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 self.builder
                     .build_conditional_branch(occupied, drop_block, skip_block)?;
                 self.builder.position_at_end(drop_block);
-                self.lower_drop_value_at_pointer(element_pointer, &element_type)?;
+                self.lower_drop_value_at_pointer(element_pointer, &element_type, None)?;
                 self.builder.build_store(
                     initialized_address,
                     self.generator.context.i8_type().const_zero(),
@@ -10372,7 +10597,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         "drop_value pointer is not a raw pointer".into(),
                     ));
                 };
-                self.lower_drop_value_at_pointer(pointer, pointee.as_ref())?;
+                self.lower_drop_value_at_pointer(pointer, pointee.as_ref(), None)?;
                 Ok(self.generator.context.bool_type().const_all_ones().into())
             }
             Rvalue::RawOperation {
@@ -10389,6 +10614,42 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .into_int_value();
                 let target = self.generator.basic_type(ty)?;
                 Ok(self.lower_cast(value.into(), target)?)
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "usize_to_f32" => {
+                let value = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("usize_to_f32 operation lacks a value".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_int_value();
+                let target = self.generator.basic_type(ty)?.into_float_type();
+                Ok(self
+                    .builder
+                    .build_unsigned_int_to_float(value, target, "usize.to.f32")?
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "f64_to_usize" => {
+                let value = operands
+                    .first()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported("f64_to_usize operation lacks a value".into())
+                    })
+                    .and_then(|operand| self.lower_operand(operand))?
+                    .into_float_value();
+                let target = self.generator.basic_type(ty)?.into_int_type();
+                Ok(self
+                    .builder
+                    .build_float_to_unsigned_int(value, target, "f64.to.usize")?
+                    .into())
             }
             Rvalue::RawOperation {
                 operation,
@@ -10518,7 +10779,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     )?
                 };
                 if !self.is_copy_type(&element_type) {
-                    self.lower_drop_value_at_pointer(element_pointer, &element_type)?;
+                    self.lower_drop_value_at_pointer(element_pointer, &element_type, None)?;
                 }
                 self.builder.build_store(
                     initialized_address,
@@ -10961,6 +11222,39 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     self.generator.context.bool_type().const_int(1, false),
                 )?;
                 Ok(object.into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "borrow_callable" => {
+                let source_operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("borrow_callable operation lacks a pointer".into())
+                })?;
+                let Type::Function(_) = ty else {
+                    return Err(CodegenError::Unsupported(
+                        "borrow_callable result must be a function".into(),
+                    ));
+                };
+                let pointer = self.lower_operand(source_operand)?.into_pointer_value();
+                let callable = self
+                    .builder
+                    .build_load(
+                        self.generator.basic_type(ty)?.into_struct_type(),
+                        pointer,
+                        "borrow.callable",
+                    )?
+                    .into_struct_value();
+                let null = self
+                    .generator
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .const_null();
+                Ok(self
+                    .builder
+                    .build_insert_value(callable, null, 2, "borrow.callable.drop")?
+                    .into_struct_value()
+                    .into())
             }
             _ => Err(CodegenError::Unsupported(format!(
                 "rvalue has not reached a codegen-ready form: {value:?}"
@@ -12125,12 +12419,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 .build_unconditional_branch(self.block(success))?;
             return Ok(());
         }
-        let local = usize::try_from(place.local.0)
-            .map_err(|_| CodegenError::Unsupported("drop local index overflow".into()))?;
         let flag = *self
             .drop_flags
-            .get(local)
-            .ok_or_else(|| CodegenError::Unsupported("drop flag local is missing".into()))?;
+            .get(place)
+            .ok_or_else(|| CodegenError::Unsupported("drop flag place is missing".into()))?;
         let initialized = self
             .builder
             .build_load(self.generator.context.bool_type(), flag, "drop.initialized")?
@@ -12157,10 +12449,91 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         Ok(())
     }
 
+    fn set_drop_flag_value(&self, place: &Place, value: bool) -> Result<(), CodegenError> {
+        let mut paths = self
+            .drop_flags
+            .iter()
+            .filter(|(candidate, _)| place_is_prefix(place, candidate))
+            .map(|(_, flag)| *flag)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Err(CodegenError::Unsupported(
+                "drop flag place is missing".into(),
+            ));
+        }
+        let value = self
+            .generator
+            .context
+            .bool_type()
+            .const_int(u64::from(value), false);
+        for flag in paths.drain(..) {
+            self.builder.build_store(flag, value)?;
+        }
+        Ok(())
+    }
+
     fn lower_drop_value(&self, place: &Place) -> Result<(), CodegenError> {
         let ty = self.place_type(place)?;
         let pointer = self.place_pointer(place)?;
-        self.lower_drop_value_at_pointer(pointer, &ty)
+        self.lower_drop_value_at_pointer(pointer, &ty, Some(place))
+    }
+
+    /// Drops an aggregate while honoring initialization state for every statically addressable
+    /// child path. The root path has already been checked by `lower_drop`; recursive children are
+    /// guarded here before their destructor or field traversal runs.
+    fn lower_drop_value_at_path(
+        &self,
+        pointer: PointerValue<'ctx>,
+        ty: &Type,
+        place: &Place,
+    ) -> Result<(), CodegenError> {
+        let Some(flag) = self.drop_flags.get(place).copied() else {
+            return self.lower_drop_value_at_pointer(pointer, ty, Some(place));
+        };
+        let initialized = self
+            .builder
+            .build_load(
+                self.generator.context.bool_type(),
+                flag,
+                "drop.path.initialized",
+            )?
+            .into_int_value();
+        let drop_block = self
+            .generator
+            .context
+            .append_basic_block(self.function, "drop.path.value");
+        let skip_block = self
+            .generator
+            .context
+            .append_basic_block(self.function, "drop.path.skip");
+        let merge_block = self
+            .generator
+            .context
+            .append_basic_block(self.function, "drop.path.merge");
+        self.builder
+            .build_conditional_branch(initialized, drop_block, skip_block)?;
+        self.builder.position_at_end(drop_block);
+        self.lower_drop_value_at_pointer(pointer, ty, Some(place))?;
+        self.set_drop_flag_value(place, false)?;
+        self.builder.build_unconditional_branch(merge_block)?;
+        self.builder.position_at_end(skip_block);
+        self.builder.build_unconditional_branch(merge_block)?;
+        self.builder.position_at_end(merge_block);
+        Ok(())
+    }
+
+    fn lower_drop_child(
+        &self,
+        pointer: PointerValue<'ctx>,
+        ty: &Type,
+        parent: Option<&Place>,
+        projection: Projection,
+    ) -> Result<(), CodegenError> {
+        let Some(parent) = parent else {
+            return self.lower_drop_value_at_pointer(pointer, ty, None);
+        };
+        let child = place_with_projection(parent, projection);
+        self.lower_drop_value_at_path(pointer, ty, &child)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -12168,7 +12541,12 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         &self,
         pointer: PointerValue<'ctx>,
         ty: &Type,
+        path: Option<&Place>,
     ) -> Result<(), CodegenError> {
+        let resolved = self.generator.resolve_alias(ty);
+        if resolved != *ty {
+            return self.lower_drop_value_at_pointer(pointer, &resolved, path);
+        }
         match ty {
             Type::String => {
                 let value = self
@@ -12278,7 +12656,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     1,
                     "drop.optional.payload.address",
                 )?;
-                self.lower_drop_value_at_pointer(payload, inner)?;
+                self.lower_drop_child(payload, inner, path, Projection::Downcast(1))?;
                 self.builder.build_unconditional_branch(merge_block)?;
                 self.builder.position_at_end(merge_block);
             }
@@ -12292,7 +12670,17 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             .map_err(|_| CodegenError::Unsupported("tuple field limit".into()))?,
                         "drop.tuple.field",
                     )?;
-                    self.lower_drop_value_at_pointer(field, element)?;
+                    self.lower_drop_child(
+                        field,
+                        element,
+                        path,
+                        Projection::Field {
+                            index: u32::try_from(index).map_err(|_| {
+                                CodegenError::Unsupported("tuple field limit".into())
+                            })?,
+                            ty: element.clone(),
+                        },
+                    )?;
                 }
             }
             Type::Array(element, length) => {
@@ -12310,7 +12698,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                             "drop.array.element",
                         )?
                     };
-                    self.lower_drop_value_at_pointer(field, element)?;
+                    self.lower_drop_value_at_pointer(field, element, None)?;
                 }
             }
             Type::Nominal(declaration, arguments) => {
@@ -12358,7 +12746,17 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                                 })?,
                                 "drop.struct.field",
                             )?;
-                            self.lower_drop_value_at_pointer(field_pointer, &field)?;
+                            self.lower_drop_child(
+                                field_pointer,
+                                &field,
+                                path,
+                                Projection::Field {
+                                    index: u32::try_from(index).map_err(|_| {
+                                        CodegenError::Unsupported("struct field limit".into())
+                                    })?,
+                                    ty: field.clone(),
+                                },
+                            )?;
                         }
                     }
                     NominalKind::Enum {
@@ -12419,7 +12817,34 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                                     })?,
                                     "drop.enum.field",
                                 )?;
-                                self.lower_drop_value_at_pointer(field_pointer, &field)?;
+                                if let Some(path) = path {
+                                    let variant_path = place_with_projection(
+                                        path,
+                                        Projection::Downcast(u32::try_from(variant).map_err(
+                                            |_| {
+                                                CodegenError::Unsupported(
+                                                    "enum variant limit".into(),
+                                                )
+                                            },
+                                        )?),
+                                    );
+                                    let field_path = place_with_projection(
+                                        &variant_path,
+                                        Projection::Field {
+                                            index: u32::try_from(field_index).map_err(|_| {
+                                                CodegenError::Unsupported("enum field limit".into())
+                                            })?,
+                                            ty: field.clone(),
+                                        },
+                                    );
+                                    self.lower_drop_value_at_path(
+                                        field_pointer,
+                                        &field,
+                                        &field_path,
+                                    )?;
+                                } else {
+                                    self.lower_drop_value_at_pointer(field_pointer, &field, None)?;
+                                }
                             }
                             self.builder.build_unconditional_branch(merge_block)?;
                         }
@@ -12447,7 +12872,17 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                                 })?,
                                 "drop.class.field",
                             )?;
-                            self.lower_drop_value_at_pointer(field_pointer, field)?;
+                            self.lower_drop_child(
+                                field_pointer,
+                                field,
+                                path,
+                                Projection::Field {
+                                    index: u32::try_from(index).map_err(|_| {
+                                        CodegenError::Unsupported("class field limit".into())
+                                    })?,
+                                    ty: field.clone(),
+                                },
+                            )?;
                         }
                         self.builder.build_call(
                             self.generator.runtime_free(),
@@ -12543,9 +12978,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     "drop.error.pointer.value",
                 )?;
                 self.builder.build_store(payload_value, payload)?;
-                self.lower_drop_value_at_pointer(payload_value, &payload_type)?;
+                self.lower_drop_value_at_pointer(payload_value, &payload_type, None)?;
             } else {
-                self.lower_drop_value_at_pointer(payload, &payload_type)?;
+                self.lower_drop_value_at_pointer(payload, &payload_type, None)?;
                 self.builder.build_call(
                     self.generator.runtime_free(),
                     &[payload.into()],
@@ -12585,8 +13020,15 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             })
             .map(|(_, signature)| signature.clone())
             .ok_or_else(|| {
+                let candidates = self
+                    .generator
+                    .signatures
+                    .iter()
+                    .filter(|(instance, _)| instance.callable == callable)
+                    .map(|(instance, signature)| format!("{instance:?}: {signature:?}"))
+                    .collect::<Vec<_>>();
                 CodegenError::Unsupported(format!(
-                    "drop method signature is missing for {ty:?} ({callable:?})"
+                    "drop method signature is missing for {ty:?} ({callable:?}); candidates: {candidates:?}"
                 ))
             })?;
         let function = self
@@ -12903,15 +13345,27 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         callable: Callable,
         function_type: &FunctionType,
     ) -> Result<FunctionValue<'ctx>, CodegenError> {
-        let mut matches = self
+        let candidates = self
             .generator
             .signatures
             .iter()
             .filter(|(instance, signature)| {
                 instance.callable == callable && signature_matches(signature, function_type)
             })
+            .collect::<Vec<_>>();
+        let exact = candidates
+            .iter()
+            .filter(|(_, signature)| signature_exact_match(signature, function_type))
             .map(|(instance, _)| self.generator.functions[instance])
             .collect::<Vec<_>>();
+        let mut matches = if exact.is_empty() {
+            candidates
+                .iter()
+                .map(|(instance, _)| self.generator.functions[instance])
+                .collect()
+        } else {
+            exact
+        };
         if matches.is_empty()
             && let Some(external_name) = self
                 .generator
@@ -13079,6 +13533,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             adapter.as_global_value().as_pointer_value(),
             initial_environment,
             null,
+            self.generator.context.i64_type().const_int(
+                stable_hash(&format!("decorated:{callable:?}:{requested:?}")),
+                false,
+            ),
         )?;
 
         for (index, decorator) in decorators.iter().enumerate().rev() {
@@ -13156,6 +13614,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         code: PointerValue<'ctx>,
         environment: PointerValue<'ctx>,
         drop: PointerValue<'ctx>,
+        identity: IntValue<'ctx>,
     ) -> Result<StructValue<'ctx>, CodegenError> {
         let mut value = self.generator.callable_type().const_zero();
         value = builder
@@ -13164,8 +13623,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         value = builder
             .build_insert_value(value, environment, 1, "decorator.callable.environment")?
             .into_struct_value();
-        Ok(builder
+        let value = builder
             .build_insert_value(value, drop, 2, "decorator.callable.drop")?
+            .into_struct_value();
+        Ok(builder
+            .build_insert_value(value, identity, 3, "decorator.callable.identity")?
             .into_struct_value())
     }
 
@@ -14011,6 +14473,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         code: PointerValue<'ctx>,
         environment: PointerValue<'ctx>,
         drop: PointerValue<'ctx>,
+        identity: IntValue<'ctx>,
     ) -> Result<StructValue<'ctx>, CodegenError> {
         let mut value = self.generator.callable_type().const_zero();
         value = self
@@ -14021,9 +14484,13 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             .builder
             .build_insert_value(value, environment, 1, "callable.environment")?
             .into_struct_value();
-        Ok(self
+        let value = self
             .builder
             .build_insert_value(value, drop, 2, "callable.drop")?
+            .into_struct_value();
+        Ok(self
+            .builder
+            .build_insert_value(value, identity, 3, "callable.identity")?
             .into_struct_value())
     }
 
@@ -14549,6 +15016,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .context
                         .ptr_type(AddressSpace::default())
                         .const_null(),
+                    self.generator
+                        .context
+                        .i64_type()
+                        .const_int(stable_hash(&format!("function:{declaration:?}")), false),
                 )?
                 .into()
             }
@@ -14580,6 +15051,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .context
                         .ptr_type(AddressSpace::default())
                         .const_null(),
+                    self.generator.context.i64_type().const_int(
+                        stable_hash(&format!("external:{symbol}:{function_type:?}")),
+                        false,
+                    ),
                 )?
                 .into()
             }
@@ -14605,6 +15080,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .context
                         .ptr_type(AddressSpace::default())
                         .const_null(),
+                    self.generator
+                        .context
+                        .i64_type()
+                        .const_int(stable_hash(&format!("method:{callable:?}")), false),
                 )?
                 .into()
             }
@@ -14645,6 +15124,10 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         .context
                         .ptr_type(AddressSpace::default())
                         .const_null(),
+                    self.generator
+                        .context
+                        .i64_type()
+                        .const_int(stable_hash(&format!("constructor:{callable:?}")), false),
                 )?
                 .into()
             }
@@ -15334,6 +15817,14 @@ fn signature_matches(emitted: &FunctionType, requested: &FunctionType) -> bool {
         && emitted.effects == requested.effects
 }
 
+fn signature_exact_match(emitted: &FunctionType, requested: &FunctionType) -> bool {
+    emitted.parameters.len() >= requested.parameters.len()
+        && emitted.parameters[emitted.parameters.len() - requested.parameters.len()..]
+            == requested.parameters
+        && emitted.result.as_ref() == requested.result.as_ref()
+        && emitted.effects == requested.effects
+}
+
 fn abi_type_matches(left: &Type, right: &Type) -> bool {
     match (left, right) {
         (
@@ -15537,6 +16028,22 @@ fn u128_words(value: u128) -> [u64; 2] {
     let low = u64::from_le_bytes(bytes[..8].try_into().expect("fixed low word"));
     let high = u64::from_le_bytes(bytes[8..].try_into().expect("fixed high word"));
     [low, high]
+}
+
+fn place_is_prefix(parent: &Place, child: &Place) -> bool {
+    parent.local == child.local
+        && parent.projection.len() <= child.projection.len()
+        && parent
+            .projection
+            .iter()
+            .zip(&child.projection)
+            .all(|(left, right)| left == right)
+}
+
+fn place_with_projection(parent: &Place, projection: Projection) -> Place {
+    let mut child = parent.clone();
+    child.projection.push(projection);
+    child
 }
 
 fn instantiate_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {

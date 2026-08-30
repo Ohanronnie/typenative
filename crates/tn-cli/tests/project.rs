@@ -251,7 +251,8 @@ fn jsx_runtime_diagnostic_conditions_for(
     assert_eq!(
         output.status.code(),
         Some(1),
-        "{}",
+        "configuration={project_configuration}; entry={entry_source}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout)

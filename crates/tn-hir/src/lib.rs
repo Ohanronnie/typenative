@@ -930,6 +930,7 @@ fn runtime_intrinsic(name: &str) -> Option<&'static str> {
         "atomicFence" => Some("atomic_fence"),
         "byteAddress" => Some("byte_address"),
         "byteAddressI32" => Some("byte_address_i32"),
+        "componentIdentity" => Some("component_identity"),
         _ => None,
     }
 }
@@ -991,6 +992,11 @@ fn alloc_intrinsic(name: &str) -> Option<&'static str> {
         "dropValue" => Some("drop_value"),
         "u64ToUsize" => Some("u64_to_usize"),
         "usizeToU64" => Some("usize_to_u64"),
+        "usizeToF32" => Some("usize_to_f32"),
+        "f64ToUsize" => Some("f64_to_usize"),
+        "byteAddress" => Some("byte_address"),
+        "componentIdentity" => Some("component_identity"),
+        "borrowCallable" => Some("borrow_callable"),
         "arcClone" => Some("arc_clone"),
         "weakUpgrade" => Some("weak_upgrade"),
         "borrowMut" => Some("borrow_mut_storage"),
