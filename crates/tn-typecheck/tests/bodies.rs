@@ -441,6 +441,46 @@ function App(): Element {
 }
 
 #[test]
+fn typechecks_jsx_comments_as_trivia_children() {
+    let (program, result) = checked_tnx(
+        r#"
+struct TextProps {
+  public value: &str;
+}
+struct ViewProps {
+  public children: Element;
+}
+struct Element {}
+function Text(props: TextProps): Element { return new Element(); }
+function View(props: ViewProps): Element { return new Element(); }
+function App(): Element {
+  return <View>{/* keep this child boundary */}<Text value="Hello" />{/* keep this closing boundary */}</View>;
+}
+"#,
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let app = program
+        .graph
+        .modules
+        .iter()
+        .flat_map(|module| &module.declarations)
+        .find(|declaration| declaration.name.as_deref() == Some("App"))
+        .expect("App declaration")
+        .id;
+    let body = result
+        .bodies
+        .iter()
+        .find(|body| body.owner == tn_hir::BodyOwner::Declaration(app))
+        .expect("App body");
+    assert_eq!(body.jsx_elements.len(), 2);
+    assert!(
+        body.jsx_elements
+            .iter()
+            .any(|element| element.children.len() == 1)
+    );
+}
+
+#[test]
 fn validates_jsx_ref_targets_against_the_produced_element_type() {
     let valid = conditions_tnx(
         r#"

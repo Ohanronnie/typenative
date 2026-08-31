@@ -2140,6 +2140,29 @@ function main(): void {
     }
 
     #[test]
+    fn preserves_jsx_comments_without_treating_them_as_expressions() {
+        let source = r"function App(): Element {
+  return <View>{/* before */}<Text>Hello</Text>{/* after */}</View>;
+}
+";
+        let parsed = parse("test.tnx", source.as_bytes());
+        assert!(
+            parsed.is_success(),
+            "diagnostics: {:#?}",
+            parsed.diagnostics()
+        );
+        assert_eq!(parsed.syntax().to_string(), source);
+        assert_eq!(
+            parsed
+                .syntax()
+                .descendants()
+                .filter(|node| node.kind() == SyntaxKind::JSX_EXPRESSION_CONTAINER)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn parses_tnx_fragments_and_reports_mismatched_tags() {
         let source = "function App(): Element { return <><Text>Hello</Text></>; }\n";
         let parsed = parse("test.tnx", source.as_bytes());
