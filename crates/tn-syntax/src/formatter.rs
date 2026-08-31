@@ -64,7 +64,7 @@ pub fn format(file: &str, bytes: &[u8]) -> FormatResult {
             text,
             previous,
             next,
-            jsx_format_context(&jsx_ranges, token),
+            jsx_format_context(&jsx_ranges, &significant, token),
         );
     }
     writer.finish_file();
@@ -499,6 +499,8 @@ impl Writer {
                             | TokenKind::Move
                             | TokenKind::Unsafe
                             | TokenKind::Async
+                            | TokenKind::Const
+                            | TokenKind::Let
                     )
                 ) || previous == Some(TokenKind::Colon)
                 {
@@ -699,16 +701,14 @@ impl Writer {
                     self.trim_space();
                     self.write(">");
                     if context.opening && previous != Some(TokenKind::Slash) {
-                        let multiline =
-                            matches!(next, Some(TokenKind::Less | TokenKind::LeftBrace));
+                        let multiline = next == Some(TokenKind::Less);
                         self.jsx_indent_stack.push(multiline);
                         if multiline {
                             self.indent += 1;
                             self.newline();
                         }
                     } else if context.fragment && previous == Some(TokenKind::Less) {
-                        let multiline =
-                            matches!(next, Some(TokenKind::Less | TokenKind::LeftBrace));
+                        let multiline = next == Some(TokenKind::Less);
                         self.jsx_indent_stack.push(multiline);
                         if multiline {
                             self.indent += 1;
@@ -799,25 +799,57 @@ fn syntax_range(node: &SyntaxNode) -> Range<usize> {
     usize::from(node.text_range().start())..usize::from(node.text_range().end())
 }
 
-fn jsx_format_context(ranges: &[(SyntaxKind, Range<usize>)], token: &Token) -> FormatContext {
+fn jsx_format_context(
+    ranges: &[(SyntaxKind, Range<usize>)],
+    tokens: &[&Token],
+    token: &Token,
+) -> FormatContext {
     let contains = |kind| {
         ranges.iter().any(|(candidate, range)| {
             *candidate == kind && range.start <= token.range.start && range.end >= token.range.end
         })
     };
-    let expression_range = ranges.iter().find_map(|(kind, range)| {
-        (*kind == SyntaxKind::JSX_EXPRESSION_CONTAINER
-            && range.start <= token.range.start
-            && range.end >= token.range.end)
-            .then_some(range)
+    let expression_range = ranges
+        .iter()
+        .filter_map(|(kind, range)| {
+            (*kind == SyntaxKind::JSX_EXPRESSION_CONTAINER
+                && range.start <= token.range.start
+                && range.end >= token.range.end)
+                .then_some(range)
+        })
+        .min_by_key(|range| range.end.saturating_sub(range.start));
+    let expression_opening = expression_range.is_some_and(|range| {
+        token.kind == TokenKind::LeftBrace
+            && tokens
+                .iter()
+                .find(|candidate| {
+                    candidate.range.start >= range.start && candidate.range.end <= range.end
+                })
+                .is_some_and(|candidate| {
+                    candidate.range.start == token.range.start
+                        && candidate.range.end == token.range.end
+                })
+    });
+    let expression_closing = expression_range.is_some_and(|range| {
+        token.kind == TokenKind::RightBrace
+            && tokens
+                .iter()
+                .rev()
+                .find(|candidate| {
+                    candidate.range.start >= range.start && candidate.range.end <= range.end
+                })
+                .is_some_and(|candidate| {
+                    candidate.range.start == token.range.start
+                        && candidate.range.end == token.range.end
+                })
     });
     FormatContext {
         jsx: contains(SyntaxKind::JSX_ELEMENT) || contains(SyntaxKind::JSX_FRAGMENT),
         opening: contains(SyntaxKind::JSX_OPENING_ELEMENT),
         closing: contains(SyntaxKind::JSX_CLOSING_ELEMENT),
         expression: expression_range.is_some(),
-        expression_opening: expression_range.is_some_and(|range| range.start == token.range.start),
-        expression_closing: expression_range.is_some_and(|range| range.end == token.range.end),
+        expression_opening,
+        expression_closing,
         text: contains(SyntaxKind::JSX_TEXT),
         fragment: contains(SyntaxKind::JSX_FRAGMENT),
     }
@@ -1037,6 +1069,19 @@ mod tests {
         let first = format("app.tnx", source);
         assert!(first.is_success(), "{:?}", first.diagnostics);
         assert!(first.output.contains("<View {...props} enabled />"));
+        assert_eq!(
+            first.output,
+            format("app.tnx", first.output.as_bytes()).output
+        );
+    }
+
+    #[test]
+    fn formats_tnx_expression_children_and_binding_patterns() {
+        let source = b"function App(): Element { const [value, setValue] = useState<i32>(0i32); return <Text> { value }</Text>; }\n";
+        let first = format("app.tnx", source);
+        assert!(first.is_success(), "{:?}", first.diagnostics);
+        assert!(first.output.contains("const [value, setValue]"));
+        assert!(first.output.contains("<Text>{value}</Text>"));
         assert_eq!(
             first.output,
             format("app.tnx", first.output.as_bytes()).output
