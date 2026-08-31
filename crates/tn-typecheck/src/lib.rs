@@ -75,6 +75,9 @@ fn type_may_need_drop(ty: &Type, semantics: &DropSemantics) -> bool {
         || match ty {
             Type::Generic(_) => true,
             Type::Optional(inner) | Type::Array(inner, _) => type_may_need_drop(inner, semantics),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .any(|alternative| type_may_need_drop(alternative, semantics)),
             Type::Tuple(elements) | Type::Template(elements) => elements
                 .iter()
                 .any(|element| type_may_need_drop(element, semantics)),

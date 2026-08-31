@@ -14,7 +14,7 @@ use tn_hir::{
 };
 use tn_mir::{Callable, GenericBody, Instance, MonomorphizedBody};
 
-const BUILD_CACHE_VERSION: u32 = 1;
+const BUILD_CACHE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct CachedFile {
@@ -26,7 +26,7 @@ struct CachedFile {
 struct BuildCache {
     version: u32,
     configuration: String,
-    compiler_sha256: String,
+    compiler_identity: String,
     sources: Vec<CachedFile>,
     product: CachedFile,
     companions: Vec<CachedFile>,
@@ -124,12 +124,36 @@ fn cached_file(path: PathBuf) -> std::io::Result<CachedFile> {
     Ok(CachedFile { path, sha256 })
 }
 
+fn cached_metadata_file(path: PathBuf) -> std::io::Result<CachedFile> {
+    let sha256 = file_metadata_fingerprint(&path)?;
+    Ok(CachedFile { path, sha256 })
+}
+
 fn cached_file_is_current(file: &CachedFile) -> bool {
     file_sha256(&file.path).is_ok_and(|digest| digest == file.sha256)
 }
 
-fn compiler_sha256() -> std::io::Result<String> {
-    file_sha256(&std::env::current_exe()?)
+fn cached_metadata_file_is_current(file: &CachedFile) -> bool {
+    file_metadata_fingerprint(&file.path).is_ok_and(|fingerprint| fingerprint == file.sha256)
+}
+
+fn file_metadata_fingerprint(path: &Path) -> std::io::Result<String> {
+    let metadata = std::fs::metadata(path)?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok());
+    Ok(format!(
+        "{}:{}:{}:{}",
+        path.display(),
+        metadata.len(),
+        modified.map_or(0, |value| value.as_secs()),
+        modified.map_or(0, |value| value.subsec_nanos()),
+    ))
+}
+
+fn compiler_identity() -> std::io::Result<String> {
+    file_metadata_fingerprint(&std::env::current_exe()?)
 }
 
 fn build_cache_is_current(project: &Project, product: &Path) -> bool {
@@ -141,8 +165,8 @@ fn build_cache_is_current(project: &Project, product: &Path) -> bool {
     };
     cache.version == BUILD_CACHE_VERSION
         && configuration_fingerprint(project).as_deref() == Some(&cache.configuration)
-        && compiler_sha256().is_ok_and(|digest| digest == cache.compiler_sha256.as_str())
-        && cached_file_is_current(&cache.product)
+        && compiler_identity().is_ok_and(|identity| identity == cache.compiler_identity)
+        && cached_metadata_file_is_current(&cache.product)
         && cache.sources.iter().all(cached_file_is_current)
         && cache.companions.iter().all(cached_file_is_current)
 }
@@ -182,9 +206,9 @@ fn write_build_cache(
         version: BUILD_CACHE_VERSION,
         configuration: configuration_fingerprint(project)
             .ok_or_else(|| BuildError::Message("build configuration is not serializable".into()))?,
-        compiler_sha256: compiler_sha256()?,
+        compiler_identity: compiler_identity()?,
         sources,
-        product: cached_file(product.to_path_buf())?,
+        product: cached_metadata_file(product.to_path_buf())?,
         companions,
     };
     let path = cache_path(product);
@@ -742,6 +766,11 @@ fn push_node_drop_roots(
         | Type::RawPointer {
             pointee: result, ..
         } => push_node_drop_roots(program, drops, result, roots),
+        Type::Union(alternatives) => {
+            for alternative in alternatives {
+                push_node_drop_roots(program, drops, alternative, roots);
+            }
+        }
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {
                 push_node_drop_roots(program, drops, element, roots);
@@ -764,6 +793,7 @@ fn push_node_drop_roots(
 /// directly-owned nominal value, but a non-disposable aggregate such as `MountedNode` may contain
 /// a generic disposable field such as `Array<i32>`.  Codegen must have that specialized drop
 /// method available when it recursively destroys the aggregate.
+#[allow(clippy::too_many_lines)]
 fn push_nested_drop_roots(
     program: &Program,
     drops: &BTreeMap<DeclarationId, Callable>,
@@ -838,6 +868,11 @@ fn push_nested_drop_roots(
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             push_nested_drop_roots(program, drops, inner, roots, visited);
         }
+        Type::Union(alternatives) => {
+            for alternative in alternatives {
+                push_nested_drop_roots(program, drops, alternative, roots, visited);
+            }
+        }
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {
                 push_nested_drop_roots(program, drops, element, roots, visited);
@@ -888,6 +923,7 @@ fn type_contains_generic(ty: &Type) -> bool {
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             type_contains_generic(inner)
         }
+        Type::Union(alternatives) => alternatives.iter().any(type_contains_generic),
         Type::Tuple(elements) | Type::Template(elements) => {
             elements.iter().any(type_contains_generic)
         }
@@ -940,6 +976,12 @@ fn substitute_drop_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Ty
         Type::Optional(inner) => {
             Type::Optional(Box::new(substitute_drop_type(inner, substitutions)))
         }
+        Type::Union(alternatives) => Type::Union(
+            alternatives
+                .iter()
+                .map(|alternative| substitute_drop_type(alternative, substitutions))
+                .collect(),
+        ),
         Type::Array(inner, length) => Type::Array(
             Box::new(substitute_drop_type(inner, substitutions)),
             *length,

@@ -824,20 +824,33 @@ fn parse_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     let primary = parse_primary_type(cursor, resolver, diagnostics);
-    if cursor.eat(TokenKind::Pipe) {
+    if !cursor.eat(TokenKind::Pipe) {
+        return primary;
+    }
+
+    let mut alternatives = vec![primary];
+    let mut has_undefined = false;
+    loop {
         if cursor.eat(TokenKind::Undefined) {
-            Type::Optional(Box::new(primary))
+            has_undefined = true;
         } else {
-            diagnostics.push(diag(
-                "TYPE_GENERAL_UNION_EXCLUDED",
-                "general union value types are not supported",
-                &cursor.span(),
-                "only `T | undefined` is an optional type",
-            ));
-            Type::Error
+            alternatives.push(parse_primary_type(cursor, resolver, diagnostics));
         }
+        if !cursor.eat(TokenKind::Pipe) {
+            break;
+        }
+    }
+    alternatives.sort();
+    alternatives.dedup();
+    let value = if alternatives.len() == 1 {
+        alternatives.pop().unwrap_or(Type::Error)
     } else {
-        primary
+        Type::Union(alternatives)
+    };
+    if has_undefined {
+        Type::Optional(Box::new(value))
+    } else {
+        value
     }
 }
 

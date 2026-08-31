@@ -551,6 +551,7 @@ fn valid_switch_type(ty: &Type) -> bool {
                 | PrimitiveType::Char
         ) | Type::Nominal(_, _)
             | Type::Optional(_)
+            | Type::Union(_)
             | Type::ErrorUnion(_)
     )
 }
@@ -588,6 +589,19 @@ fn types_compatible(actual: &Type, expected: &Type) -> bool {
                 result: expected, ..
             },
         ) => types_compatible(actual, expected),
+        (Type::Union(actual), Type::Union(expected)) => {
+            actual.len() == expected.len()
+                && actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| types_compatible(actual, expected))
+        }
+        (actual, Type::Union(expected)) => expected
+            .iter()
+            .any(|expected| types_compatible(actual, expected)),
+        (Type::Union(actual), expected) => actual
+            .iter()
+            .all(|actual| types_compatible(actual, expected)),
         _ => false,
     }
 }
@@ -959,6 +973,13 @@ fn place_type(
                 Type::Nominal(id, arguments)
             }
             (Projection::Downcast(1), Type::Optional(inner)) => *inner,
+            (Projection::Downcast(index), Type::Union(alternatives)) => alternatives
+                .get(usize::try_from(*index).unwrap_or(usize::MAX))
+                .cloned()
+                .unwrap_or_else(|| {
+                    errors.push(MirValidationError::InvalidProjection { block });
+                    Type::Error
+                }),
             (Projection::Field { ty, .. }, _) => ty.clone(),
             _ => {
                 errors.push(MirValidationError::InvalidProjection { block });

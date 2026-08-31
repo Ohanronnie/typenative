@@ -2156,6 +2156,12 @@ impl BodyChecker<'_> {
         let token = self.token().cloned()?;
         let expected_function = match expected {
             Some(Type::Function(function)) => Some(function),
+            Some(Type::Union(alternatives)) => alternatives.iter().find_map(|alternative| {
+                let Type::Function(function) = alternative else {
+                    return None;
+                };
+                Some(function)
+            }),
             _ => None,
         };
         self.eat(TokenKind::LeftParen);
@@ -4870,15 +4876,34 @@ impl BodyChecker<'_> {
     }
 
     fn parse_local_type(&mut self) -> Option<Type> {
-        let mut ty = self.parse_local_primary_type()?;
-        if self.eat(TokenKind::Pipe) {
+        let first = self.parse_local_primary_type()?;
+        if !self.eat(TokenKind::Pipe) {
+            return Some(first);
+        }
+        let mut alternatives = vec![first];
+        let mut has_undefined = false;
+        loop {
             if self.eat(TokenKind::Undefined) {
-                ty = Type::Optional(Box::new(ty));
+                has_undefined = true;
             } else {
-                return Some(Type::Error);
+                alternatives.push(self.parse_local_primary_type()?);
+            }
+            if !self.eat(TokenKind::Pipe) {
+                break;
             }
         }
-        Some(ty)
+        alternatives.sort();
+        alternatives.dedup();
+        let value = if alternatives.len() == 1 {
+            alternatives.pop().unwrap_or(Type::Error)
+        } else {
+            Type::Union(alternatives)
+        };
+        Some(if has_undefined {
+            Type::Optional(Box::new(value))
+        } else {
+            value
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4954,6 +4979,23 @@ impl BodyChecker<'_> {
                         error: Box::new(error),
                         effects,
                     }
+                } else if let Some(alias_id) = self.resolve_type_declaration_id(&name)
+                    && let Some(DefinitionData::TypeAlias(alias)) = self
+                        .program
+                        .definition(alias_id)
+                        .map(|definition| &definition.data)
+                {
+                    let arguments = self.parse_local_generic_arguments();
+                    let substitutions = self
+                        .program
+                        .definition(alias_id)
+                        .into_iter()
+                        .flat_map(|definition| definition.generics.iter())
+                        .filter(|generic| generic.namespace == tn_hir::Namespace::Type)
+                        .map(|generic| generic.name.clone())
+                        .zip(arguments)
+                        .collect::<BTreeMap<_, _>>();
+                    substitute_type(alias, &substitutions)
                 } else if let Some(namespace) = self.generic_namespace(&name) {
                     match namespace {
                         tn_hir::Namespace::Lifetime => Type::Lifetime(name),
@@ -5001,7 +5043,11 @@ impl BodyChecker<'_> {
         }
         self.eat(TokenKind::RightParen);
         if !self.eat(TokenKind::FatArrow) {
-            return Some(Type::Tuple(elements));
+            return Some(if elements.len() == 1 {
+                elements.into_iter().next().unwrap_or(Type::Error)
+            } else {
+                Type::Tuple(elements)
+            });
         }
         Some(Type::Function(tn_hir::FunctionType {
             parameters: elements,
@@ -5342,6 +5388,18 @@ impl BodyChecker<'_> {
         if let Some(ty) = primitive(name) {
             return Some(ty);
         }
+        let declaration = self.resolve_type_declaration_id(name)?;
+        let declaration = self.program.graph.declaration(declaration)?;
+        match &self.program.definition(declaration.id)?.data {
+            DefinitionData::TypeAlias(ty) => Some(ty.clone()),
+            DefinitionData::Interface { .. } => {
+                Some(Type::DynamicInterface(declaration.id, Vec::new()))
+            }
+            _ => Some(Type::Nominal(declaration.id, Vec::new())),
+        }
+    }
+
+    fn resolve_type_declaration_id(&self, name: &str) -> Option<DeclarationId> {
         let local = self.module.declarations.iter().find(|declaration| {
             declaration.name.as_deref() == Some(name)
                 && declaration.kind.namespace() == Some(tn_hir::Namespace::Type)
@@ -5362,14 +5420,7 @@ impl BodyChecker<'_> {
                         && declaration.kind.namespace() == Some(tn_hir::Namespace::Type)
                 })
         });
-        let declaration = local.or(imported)?;
-        match &self.program.definition(declaration.id)?.data {
-            DefinitionData::TypeAlias(ty) => Some(ty.clone()),
-            DefinitionData::Interface { .. } => {
-                Some(Type::DynamicInterface(declaration.id, Vec::new()))
-            }
-            _ => Some(Type::Nominal(declaration.id, Vec::new())),
-        }
+        local.or(imported).map(|declaration| declaration.id)
     }
 
     fn resolve_global_value(&self, name: &str) -> Option<(DeclarationId, Type, bool)> {
@@ -5637,6 +5688,12 @@ fn normalize_alias_deep(program: &Program, ty: &Type) -> Type {
             }
         }
         Type::Optional(inner) => Type::Optional(Box::new(normalize_alias_deep(program, &inner))),
+        Type::Union(alternatives) => Type::Union(
+            alternatives
+                .iter()
+                .map(|alternative| normalize_alias_deep(program, alternative))
+                .collect(),
+        ),
         Type::Array(inner, length) => {
             Type::Array(Box::new(normalize_alias_deep(program, &inner)), length)
         }
@@ -6012,6 +6069,7 @@ fn type_contains_generic(ty: &Type) -> bool {
         | Type::Array(inner, _)
         | Type::Slice(inner)
         | Type::RawPointer { pointee: inner, .. } => type_contains_generic(inner),
+        Type::Union(alternatives) => alternatives.iter().any(type_contains_generic),
         Type::Tuple(elements) | Type::Template(elements) => {
             elements.iter().any(type_contains_generic)
         }
@@ -6269,13 +6327,24 @@ fn maximal_expression_ids(
         .collect()
 }
 
-fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
+pub(crate) fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
     let actual = normalize_alias(program, actual);
     let expected = normalize_alias(program, expected);
     if actual == expected || matches!(actual, Type::Error | Type::Primitive(PrimitiveType::Never)) {
         return true;
     }
     match (&actual, &expected) {
+        (Type::Union(actuals), Type::Union(expecteds)) => actuals.iter().all(|actual| {
+            expecteds
+                .iter()
+                .any(|expected| compatible(program, actual, expected))
+        }),
+        (Type::Union(actuals), expected) => actuals
+            .iter()
+            .all(|actual| compatible(program, actual, expected)),
+        (actual, Type::Union(expecteds)) => expecteds
+            .iter()
+            .any(|expected| compatible(program, actual, expected)),
         (actual, Type::Optional(expected)) if compatible(program, actual, expected) => true,
         (Type::Array(actual, _), Type::Slice(expected))
         | (Type::Optional(actual), Type::Optional(expected)) => {
@@ -6296,6 +6365,18 @@ fn compatible(program: &Program, actual: &Type, expected: &Type) -> bool {
             (!expected_mutable || *actual_mutable)
                 && (actual_lifetime == expected_lifetime || actual_lifetime == "static")
                 && compatible(program, actual, expected)
+        }
+        (Type::Function(actual), Type::Function(expected)) => {
+            actual.parameters.len() == expected.parameters.len()
+                && actual
+                    .parameters
+                    .iter()
+                    .zip(&expected.parameters)
+                    .all(|(actual, expected)| compatible(program, actual, expected))
+                && compatible(program, &actual.result, &expected.result)
+                && actual.effects == expected.effects
+                && actual.is_async == expected.is_async
+                && actual.is_unsafe == expected.is_unsafe
         }
         (Type::Nominal(actual, actual_arguments), Type::Nominal(expected, expected_arguments))
             if actual_arguments.is_empty() && expected_arguments.is_empty() =>
@@ -6488,6 +6569,12 @@ fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
                 .collect(),
         ),
         Type::Optional(inner) => Type::Optional(Box::new(substitute_type(inner, substitutions))),
+        Type::Union(alternatives) => Type::Union(
+            alternatives
+                .iter()
+                .map(|alternative| substitute_type(alternative, substitutions))
+                .collect(),
+        ),
         Type::Array(inner, length) => {
             Type::Array(Box::new(substitute_type(inner, substitutions)), *length)
         }
@@ -6750,6 +6837,11 @@ fn integer_literal_type(text: &str, expected: Option<&Type>) -> Type {
     match expected {
         Some(ty) if is_integer(ty) => ty.clone(),
         Some(Type::Optional(inner)) if is_integer(inner) => inner.as_ref().clone(),
+        Some(Type::Union(alternatives)) => alternatives
+            .iter()
+            .find(|alternative| is_integer(alternative))
+            .cloned()
+            .unwrap_or(Type::Primitive(PrimitiveType::Isize)),
         _ => Type::Primitive(PrimitiveType::Isize),
     }
 }
@@ -6846,6 +6938,12 @@ fn relate_elided_lifetime(ty: &Type, receiver_lifetime: &str) -> Type {
         Type::Optional(inner) => {
             Type::Optional(Box::new(relate_elided_lifetime(inner, receiver_lifetime)))
         }
+        Type::Union(alternatives) => Type::Union(
+            alternatives
+                .iter()
+                .map(|alternative| relate_elided_lifetime(alternative, receiver_lifetime))
+                .collect(),
+        ),
         Type::Promise {
             result,
             error,
@@ -6868,6 +6966,7 @@ fn template_displayable(program: &Program, function: &Function, ty: &Type) -> bo
         | Type::ErrorUnion(_)
         | Type::Error
         | Type::Optional(_)
+        | Type::Union(_)
         | Type::Array(_, _)
         | Type::Slice(_)
         | Type::Tuple(_)

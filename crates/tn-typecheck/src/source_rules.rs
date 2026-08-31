@@ -329,6 +329,7 @@ fn contains_raw_pointer(ty: &Type) -> bool {
         Type::Nominal(_, arguments) | Type::DynamicInterface(_, arguments) => {
             arguments.iter().any(contains_raw_pointer)
         }
+        Type::Union(alternatives) => alternatives.iter().any(contains_raw_pointer),
         Type::Promise { result, error, .. } => {
             contains_raw_pointer(result) || contains_raw_pointer(error)
         }

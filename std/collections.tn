@@ -55,7 +55,7 @@ function borrowElementMut<T>(pointer: *mut T, index: usize): &mut T {
 }
 function sliceFromRawParts<T>(pointer: *const T, length: usize): &[T] {
   unsafe {
-    return & *(pointer as *const[T]);
+    return & *(pointer as *const [T]);
   }
 }
 function allocationError(): AllocError {

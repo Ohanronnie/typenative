@@ -5520,6 +5520,11 @@ fn collect_class_specializations(
         | Type::RawPointer { pointee: inner, .. } => {
             collect_class_specializations(inner, layouts, specializations);
         }
+        Type::Union(alternatives) => {
+            for alternative in alternatives {
+                collect_class_specializations(alternative, layouts, specializations);
+            }
+        }
         Type::Promise { result, .. } => {
             collect_class_specializations(result, layouts, specializations);
         }
@@ -5658,6 +5663,85 @@ struct ClosureTarget<'ctx> {
     captures: Vec<Type>,
     function: FunctionType,
     consumes_environment: bool,
+}
+
+fn operand_moves_local(operand: &Operand, local: tn_mir::LocalId) -> bool {
+    matches!(
+        operand,
+        Operand::Move(place) if place.local == local
+    )
+}
+
+fn rvalue_moves_local(value: &Rvalue, local: tn_mir::LocalId) -> bool {
+    match value {
+        Rvalue::Use(operand)
+        | Rvalue::Unary { operand, .. }
+        | Rvalue::TypeTest { operand, .. }
+        | Rvalue::Cast { operand, .. } => operand_moves_local(operand, local),
+        Rvalue::CheckedBinary { left, right, .. } => {
+            operand_moves_local(left, local) || operand_moves_local(right, local)
+        }
+        Rvalue::Aggregate { fields, .. }
+        | Rvalue::Template {
+            captures: fields, ..
+        } => fields
+            .iter()
+            .any(|operand| operand_moves_local(operand, local)),
+        Rvalue::RawOperation { operands, .. } => operands
+            .iter()
+            .any(|operand| operand_moves_local(operand, local)),
+        Rvalue::Closure { captures, body, .. } => {
+            captures
+                .iter()
+                .any(|operand| operand_moves_local(operand, local))
+                || body_moves_local(body, local)
+        }
+        Rvalue::CheckedIndex { .. }
+        | Rvalue::Length(_)
+        | Rvalue::VtableLookup { .. }
+        | Rvalue::WitnessLookup { .. }
+        | Rvalue::DirectMethod { .. } => false,
+    }
+}
+
+fn body_moves_local(body: &Body, local: tn_mir::LocalId) -> bool {
+    body.blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, value) if rvalue_moves_local(value, local)
+            )
+        }) || match &block.terminator.kind {
+            TerminatorKind::Switch { value, .. }
+            | TerminatorKind::Throw(value)
+            | TerminatorKind::Return(Some(value)) => operand_moves_local(value, local),
+            TerminatorKind::Call {
+                function,
+                receiver,
+                arguments,
+                ..
+            } => {
+                operand_moves_local(function, local)
+                    || receiver
+                        .as_ref()
+                        .is_some_and(|operand| operand_moves_local(operand, local))
+                    || arguments
+                        .iter()
+                        .any(|operand| operand_moves_local(operand, local))
+            }
+            TerminatorKind::Suspend { value, .. } => operand_moves_local(value, local),
+            TerminatorKind::Return(None)
+            | TerminatorKind::TaggedReturn { payload: None, .. }
+            | TerminatorKind::Goto(_)
+            | TerminatorKind::Drop { .. }
+            | TerminatorKind::Abort(_)
+            | TerminatorKind::Unreachable => false,
+            TerminatorKind::TaggedReturn {
+                payload: Some(payload),
+                ..
+            } => operand_moves_local(payload, local),
+        }
+    })
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -5952,6 +6036,14 @@ impl<'ctx> Generator<'ctx> {
                         .iter()
                         .map(|capture| closure_operand_type(body, capture))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let consumes_environment =
+                        capture_types.iter().enumerate().any(|(index, capture)| {
+                            !self.is_copy_type(capture)
+                                && body_moves_local(
+                                    closure_body,
+                                    tn_mir::LocalId(u32::try_from(index).unwrap_or(u32::MAX)),
+                                )
+                        });
                     let body_type = self.body_function_type(closure_body)?;
                     let body_function = self.module.add_function(
                         &format!("tn_closure_{}_body", id.0),
@@ -6006,9 +6098,7 @@ impl<'ctx> Generator<'ctx> {
                             environment,
                             captures: capture_types.clone(),
                             function: function.clone(),
-                            consumes_environment: capture_types
-                                .iter()
-                                .any(|capture| !self.is_copy_type(capture)),
+                            consumes_environment,
                         },
                     );
                     self.declare_closures_in_body(instance, closure_body)?;
@@ -6047,8 +6137,25 @@ impl<'ctx> Generator<'ctx> {
                         id: *id,
                     })
                     .ok_or_else(|| CodegenError::Unsupported("closure target is missing".into()))?;
-                FunctionGenerator::new(self, instance, closure_body, target.body)
-                    .and_then(|generator| generator.lower())?;
+                let reusable_capture_locals = if target.consumes_environment {
+                    BTreeSet::new()
+                } else {
+                    target
+                        .captures
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, capture)| !self.is_copy_type(capture))
+                        .filter_map(|(index, _)| Some(tn_mir::LocalId(u32::try_from(index).ok()?)))
+                        .collect()
+                };
+                FunctionGenerator::with_borrowed_captures(
+                    self,
+                    instance,
+                    closure_body,
+                    target.body,
+                    reusable_capture_locals,
+                )
+                .and_then(|generator| generator.lower())?;
                 self.lower_closure_trampoline(target, closure_body)?;
                 if let Some(drop) = target.drop {
                     self.lower_closure_drop(target, drop, closure_body, instance)?;
@@ -6171,6 +6278,7 @@ impl<'ctx> Generator<'ctx> {
             blocks: Vec::new(),
             locals: Vec::new(),
             drop_flags: BTreeMap::new(),
+            borrowed_capture_locals: BTreeSet::new(),
             constructor_initializer: false,
         };
         for (index, capture) in target.captures.iter().enumerate() {
@@ -8263,6 +8371,19 @@ impl<'ctx> Generator<'ctx> {
                     false,
                 )
                 .into(),
+            Type::Union(alternatives) => {
+                if alternatives.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "union types must contain at least one alternative".into(),
+                    ));
+                }
+                let mut fields = Vec::with_capacity(alternatives.len() + 1);
+                fields.push(self.context.i8_type().into());
+                for alternative in alternatives {
+                    fields.push(self.basic_type(alternative)?.into());
+                }
+                self.context.struct_type(&fields, false).into()
+            }
             Type::Array(element, length) => self
                 .basic_type(element)?
                 .array_type(u32::try_from(*length).map_err(|_| {
@@ -8296,6 +8417,9 @@ impl<'ctx> Generator<'ctx> {
             Type::Primitive(_) | Type::RawPointer { .. } => true,
             Type::Reference { mutable, .. } => !mutable,
             Type::Optional(inner) | Type::Array(inner, _) => self.is_copy_type(inner),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .all(|alternative| self.is_copy_type(alternative)),
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_copy_type(element))
             }
@@ -8423,6 +8547,12 @@ impl<'ctx> Generator<'ctx> {
                 effects,
             },
             Type::Optional(inner) => Type::Optional(Box::new(self.normalize_alias_deep(&inner))),
+            Type::Union(alternatives) => Type::Union(
+                alternatives
+                    .iter()
+                    .map(|alternative| self.normalize_alias_deep(alternative))
+                    .collect(),
+            ),
             Type::Array(inner, length) => {
                 Type::Array(Box::new(self.normalize_alias_deep(&inner)), length)
             }
@@ -8721,6 +8851,9 @@ struct FunctionGenerator<'a, 'ctx> {
     /// field may be moved while its containing aggregate remains live, so a root-only flag would
     /// call a destructor on storage that no longer contains a valid field value.
     drop_flags: BTreeMap<Place, PointerValue<'ctx>>,
+    /// Reusable move closures keep ownership of captures in their environment. The body still
+    /// receives the existing value ABI, but must not release those environment-owned values.
+    borrowed_capture_locals: BTreeSet<tn_mir::LocalId>,
     /// Constructor wrappers allocate zeroed class storage and then invoke the initializer.  The
     /// initializer must not release those zeroed slots, while ordinary methods may replace live
     /// class fields even though their receiver-owned paths do not have local drop flags.
@@ -8733,6 +8866,16 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         instance: &'a Instance,
         body: &'a Body,
         function: FunctionValue<'ctx>,
+    ) -> Result<Self, CodegenError> {
+        Self::with_borrowed_captures(generator, instance, body, function, BTreeSet::new())
+    }
+
+    fn with_borrowed_captures(
+        generator: &'a Generator<'ctx>,
+        instance: &'a Instance,
+        body: &'a Body,
+        function: FunctionValue<'ctx>,
+        borrowed_capture_locals: BTreeSet<tn_mir::LocalId>,
     ) -> Result<Self, CodegenError> {
         let builder = generator.context.create_builder();
         let entry = generator.context.append_basic_block(function, "allocas");
@@ -8832,6 +8975,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             blocks,
             locals,
             drop_flags,
+            borrowed_capture_locals,
             constructor_initializer,
         })
     }
@@ -8917,6 +9061,17 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                                 .context
                                 .bool_type()
                                 .const_int(u64::from(*discriminant != 0), false),
+                            Type::Union(alternatives) => {
+                                if (*discriminant as usize) >= alternatives.len() {
+                                    return Err(CodegenError::Unsupported(
+                                        "union discriminant is out of range".into(),
+                                    ));
+                                }
+                                self.generator
+                                    .context
+                                    .i8_type()
+                                    .const_int(u64::from(*discriminant), false)
+                            }
                             Type::Nominal(declaration, _)
                                 if self.generator.is_enum(*declaration) =>
                             {
@@ -9057,6 +9212,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             | Type::Promise { .. }
             | Type::DynamicInterface(_, _) => true,
             Type::Optional(inner) | Type::Array(inner, _) => self.type_needs_drop(inner),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .any(|alternative| self.type_needs_drop(alternative)),
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().any(|element| self.type_needs_drop(element))
             }
@@ -9886,6 +10044,72 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     .builder
                     .build_int_cast(code, result, "callable.identity.cast")?
                     .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "union_tag" => {
+                let operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("union_tag operation lacks a union reference".into())
+                })?;
+                let Type::Reference { referent, .. } = self.operand_type(operand)? else {
+                    return Err(CodegenError::Unsupported(
+                        "union_tag operation requires a reference to a union".into(),
+                    ));
+                };
+                let Type::Union(_) = referent.as_ref() else {
+                    return Err(CodegenError::Unsupported(
+                        "union_tag operation requires a reference to a union".into(),
+                    ));
+                };
+                let pointer = self.lower_operand(operand)?.into_pointer_value();
+                let structure = self
+                    .generator
+                    .basic_type(referent.as_ref())?
+                    .into_struct_type();
+                let tag_address =
+                    self.builder
+                        .build_struct_gep(structure, pointer, 0, "union.tag.address")?;
+                let tag = self
+                    .builder
+                    .build_load(self.generator.context.i8_type(), tag_address, "union.tag")?
+                    .into_int_value();
+                let result = self.generator.basic_type(ty)?.into_int_type();
+                Ok(self
+                    .builder
+                    .build_int_cast(tag, result, "union.tag.cast")?
+                    .into())
+            }
+            Rvalue::RawOperation {
+                operation,
+                operands,
+                ty,
+            } if operation == "union_take" => {
+                let operand = operands.first().ok_or_else(|| {
+                    CodegenError::Unsupported("union_take operation lacks a union value".into())
+                })?;
+                let Type::Union(alternatives) = self.operand_type(operand)? else {
+                    return Err(CodegenError::Unsupported(
+                        "union_take operation requires a union value".into(),
+                    ));
+                };
+                let variant = alternatives
+                    .iter()
+                    .position(|alternative| abi_type_matches(alternative, ty))
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "union_take result is not an alternative of the union".into(),
+                        )
+                    })?;
+                let value = self.lower_operand(operand)?.into_struct_value();
+                let value = self.builder.build_extract_value(
+                    value,
+                    u32::try_from(variant + 1)
+                        .map_err(|_| CodegenError::Unsupported("union field limit".into()))?,
+                    "union.payload",
+                )?;
+                self.lower_cast(value, self.generator.basic_type(ty)?)
             }
             Rvalue::RawOperation { operation, ty, .. } if operation == "null_pointer" => {
                 if !matches!(ty, Type::RawPointer { .. }) {
@@ -11358,6 +11582,49 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 }
                 Ok(value.into())
             }
+            Type::Union(alternatives) => {
+                let variant = variant.ok_or_else(|| {
+                    CodegenError::Unsupported("union aggregate lacks a variant".into())
+                })?;
+                if variant as usize >= alternatives.len() {
+                    return Err(CodegenError::Unsupported(
+                        "union aggregate variant is out of range".into(),
+                    ));
+                }
+                let structure = self.generator.basic_type(ty)?.into_struct_type();
+                let mut value = structure.const_zero();
+                value = self
+                    .builder
+                    .build_insert_value(
+                        value,
+                        self.generator
+                            .context
+                            .i8_type()
+                            .const_int(u64::from(variant), false),
+                        0,
+                        "union.tag",
+                    )?
+                    .into_struct_value();
+                for (index, field) in fields.iter().enumerate() {
+                    value = self
+                        .builder
+                        .build_insert_value(
+                            value,
+                            self.lower_operand(field)?,
+                            u32::try_from(variant as usize + 1).map_err(|_| {
+                                CodegenError::Unsupported("union field limit".into())
+                            })?,
+                            "union.field",
+                        )?
+                        .into_struct_value();
+                    if index > 0 {
+                        return Err(CodegenError::Unsupported(
+                            "union aggregate accepts one payload field".into(),
+                        ));
+                    }
+                }
+                Ok(value.into())
+            }
             Type::Array(_, _) => {
                 let array = self.generator.basic_type(ty)?.into_array_type();
                 let mut value = array.const_zero();
@@ -12183,6 +12450,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
             Type::Primitive(_) | Type::RawPointer { .. } => true,
             Type::Reference { mutable, .. } => !mutable,
             Type::Optional(inner) | Type::Array(inner, _) => self.is_copy_type(inner),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .all(|alternative| self.is_copy_type(alternative)),
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_copy_type(element))
             }
@@ -12454,7 +12724,9 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
     }
 
     fn lower_drop(&self, place: &Place, success: BasicBlockId) -> Result<(), CodegenError> {
-        if self.is_borrowed_class_receiver(place) {
+        if self.is_borrowed_class_receiver(place)
+            || (place.projection.is_empty() && self.borrowed_capture_locals.contains(&place.local))
+        {
             self.builder
                 .build_unconditional_branch(self.block(success))?;
             return Ok(());
@@ -12698,6 +12970,71 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 )?;
                 self.lower_drop_child(payload, inner, path, Projection::Downcast(1))?;
                 self.builder.build_unconditional_branch(merge_block)?;
+                self.builder.position_at_end(merge_block);
+            }
+            Type::Union(alternatives) => {
+                let structure = self.generator.basic_type(ty)?.into_struct_type();
+                let tag_address = self.builder.build_struct_gep(
+                    structure,
+                    pointer,
+                    0,
+                    "drop.union.tag.address",
+                )?;
+                let tag = self
+                    .builder
+                    .build_load(
+                        self.generator.context.i8_type(),
+                        tag_address,
+                        "drop.union.tag",
+                    )?
+                    .into_int_value();
+                let merge_block = self
+                    .generator
+                    .context
+                    .append_basic_block(self.function, "drop.union.merge");
+                let mut cases = Vec::with_capacity(alternatives.len());
+                let mut variant_blocks = Vec::with_capacity(alternatives.len());
+                for index in 0..alternatives.len() {
+                    let block = self
+                        .generator
+                        .context
+                        .append_basic_block(self.function, "drop.union.variant");
+                    cases.push((
+                        self.generator.context.i8_type().const_int(
+                            u64::try_from(index).map_err(|_| {
+                                CodegenError::Unsupported("union variant limit".into())
+                            })?,
+                            false,
+                        ),
+                        block,
+                    ));
+                    variant_blocks.push(block);
+                }
+                self.builder.build_switch(tag, merge_block, &cases)?;
+                for (index, (alternative, block)) in
+                    alternatives.iter().zip(variant_blocks).enumerate()
+                {
+                    self.builder.position_at_end(block);
+                    let field = self.builder.build_struct_gep(
+                        structure,
+                        pointer,
+                        u32::try_from(index + 1)
+                            .map_err(|_| CodegenError::Unsupported("union field limit".into()))?,
+                        "drop.union.payload",
+                    )?;
+                    if let Some(path) = path {
+                        let variant_path = place_with_projection(
+                            path,
+                            Projection::Downcast(u32::try_from(index).map_err(|_| {
+                                CodegenError::Unsupported("union variant limit".into())
+                            })?),
+                        );
+                        self.lower_drop_value_at_path(field, alternative, &variant_path)?;
+                    } else {
+                        self.lower_drop_value_at_pointer(field, alternative, None)?;
+                    }
+                    self.builder.build_unconditional_branch(merge_block)?;
+                }
                 self.builder.position_at_end(merge_block);
             }
             Type::Tuple(elements) => {
@@ -14900,6 +15237,7 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         let ty = self.place_type(place)?;
         let tag_type = match &ty {
             Type::Optional(_) => Some(self.generator.context.bool_type()),
+            Type::Union(_) => Some(self.generator.context.i8_type()),
             Type::Nominal(declaration, _) if self.generator.is_enum(*declaration) => {
                 let c_repr = self
                     .generator
@@ -15458,6 +15796,24 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                         )?;
                         ty = inner.as_ref().clone();
                         class_object_pointer = false;
+                    } else if let Type::Union(alternatives) = &ty {
+                        let index = usize::try_from(*selected).map_err(|_| {
+                            CodegenError::Unsupported("union variant index overflow".into())
+                        })?;
+                        let inner = alternatives.get(index).ok_or_else(|| {
+                            CodegenError::Unsupported("union variant index is out of range".into())
+                        })?;
+                        let structure = self.generator.basic_type(&ty)?.into_struct_type();
+                        pointer = self.builder.build_struct_gep(
+                            structure,
+                            pointer,
+                            u32::try_from(index + 1).map_err(|_| {
+                                CodegenError::Unsupported("union payload field limit".into())
+                            })?,
+                            "union.payload.address",
+                        )?;
+                        ty = inner.clone();
+                        class_object_pointer = false;
                     } else if matches!(ty, Type::Nominal(declaration, _) if self.generator.is_enum(declaration))
                     {
                         variant = Some(*selected);
@@ -15495,13 +15851,18 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     Type::Array(element, _) | Type::Slice(element) => *element,
                     _ => return Err(CodegenError::Unsupported("invalid index type".into())),
                 },
-                Projection::Downcast(1) => match ty {
-                    Type::Optional(inner) => *inner,
+                Projection::Downcast(selected) => match ty {
+                    Type::Optional(inner) if *selected == 1 => *inner,
+                    Type::Union(alternatives) => alternatives
+                        .get(*selected as usize)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported("invalid union downcast type".into())
+                        })?,
                     Type::Nominal(_, _) => ty,
                     _ => return Err(CodegenError::Unsupported("invalid downcast type".into())),
                 },
                 Projection::BaseClass(base) => Type::Nominal(*base, Vec::new()),
-                Projection::Downcast(_) => ty,
             };
         }
         Ok(ty)
@@ -15915,6 +16276,13 @@ fn abi_type_matches(left: &Type, right: &Type) -> bool {
         (Type::Optional(left), Type::Optional(right)) | (Type::Slice(left), Type::Slice(right)) => {
             abi_type_matches(left, right)
         }
+        (Type::Union(left), Type::Union(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| abi_type_matches(left, right))
+        }
         (
             Type::RawPointer {
                 mutable: left_mutable,
@@ -16117,6 +16485,12 @@ fn instantiate_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
                 .collect(),
         ),
         Type::Optional(inner) => Type::Optional(Box::new(instantiate_type(inner, substitutions))),
+        Type::Union(alternatives) => Type::Union(
+            alternatives
+                .iter()
+                .map(|alternative| instantiate_type(alternative, substitutions))
+                .collect(),
+        ),
         Type::Array(inner, length) => {
             Type::Array(Box::new(instantiate_type(inner, substitutions)), *length)
         }

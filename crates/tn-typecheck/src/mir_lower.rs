@@ -228,7 +228,8 @@ fn lower_one(
         lowerer.hir_local_ids.insert(hir_local.id, local);
     }
     lowerer.lower();
-    bodies.push(lowerer.finish(declaration, member, function.effects.clone()));
+    let body = lowerer.finish(declaration, member, function.effects.clone());
+    bodies.push(body);
 }
 
 fn specialize_owner_result(program: &Program, declaration: DeclarationId, result: &Type) -> Type {
@@ -2312,6 +2313,7 @@ impl OwnershipMirLowerer<'_> {
         self.index += 2;
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn constant(&self, token: &Token, ty: &Type) -> Option<tn_mir::Constant> {
         Some(match token.kind {
             TokenKind::True => tn_mir::Constant::Bool(true),
@@ -2381,14 +2383,8 @@ impl OwnershipMirLowerer<'_> {
                             operand_type: binary_operand_type(&left_type, &source_type),
                             result_type: destination_type.clone(),
                         }
-                    } else if source_type == destination_type {
-                        Rvalue::Use(operand)
                     } else {
-                        Rvalue::Cast {
-                            operand,
-                            ty: destination_type.clone(),
-                            kind: mir_cast_kind(&source_type, &destination_type),
-                        }
+                        self.coerce_rvalue(operand, &source_type, &destination_type, assignment + 1)
                     };
                     let value_local = self.temporary(destination_type.clone(), self.span(token));
                     self.statement(StatementKind::StorageLive(value_local), self.span(token));
@@ -2425,14 +2421,13 @@ impl OwnershipMirLowerer<'_> {
                                 operand_type: destination_type.clone(),
                                 result_type: destination_type.clone(),
                             }
-                        } else if source_type == destination_type {
-                            Rvalue::Use(operand)
                         } else {
-                            Rvalue::Cast {
+                            self.coerce_rvalue(
                                 operand,
-                                ty: destination_type.clone(),
-                                kind: mir_cast_kind(&source_type, &destination_type),
-                            }
+                                &source_type,
+                                &destination_type,
+                                assignment + 1,
+                            )
                         };
                         self.statement(
                             StatementKind::Assign(destination, Box::new(value)),
@@ -2554,6 +2549,7 @@ impl OwnershipMirLowerer<'_> {
         self.index = end + usize::from(end < self.tokens.len());
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_jsx(&mut self, id: tn_hir::HirJsxId, start: usize) -> Option<(Operand, Type)> {
         let element = self.hir.jsx_elements.get(id.0 as usize)?.clone();
         if element.fragment {
@@ -2574,7 +2570,7 @@ impl OwnershipMirLowerer<'_> {
                 .first()
                 .is_some_and(|parameter| self.is_dynamic_array_type(parameter))
             {
-                self.materialize_jsx_dynamic_array(children, child_type, start)?
+                self.materialize_jsx_dynamic_array(children, &child_type, start)?
             } else {
                 let array_type =
                     Type::Array(Box::new(child_type.clone()), element.children.len() as u64);
@@ -2675,12 +2671,12 @@ impl OwnershipMirLowerer<'_> {
             expected => expected,
         };
         let (value, value_type) = if self.is_jsx_key_object_type(expected_inner) {
-            self.lower_jsx_runtime_key(value, value_type, start)?
+            self.lower_jsx_runtime_key(value, &value_type, start)?
         } else {
             (value, value_type)
         };
         if matches!(expected, Type::Optional(_)) && !matches!(value_type, Type::Optional(_)) {
-            let value = self.materialize_jsx_optional(expected.clone(), value, start)?;
+            let value = self.materialize_jsx_optional(expected, value, start)?;
             Some((value, expected.clone()))
         } else {
             Some((value, value_type))
@@ -2690,15 +2686,15 @@ impl OwnershipMirLowerer<'_> {
     fn lower_jsx_runtime_key(
         &mut self,
         value: Operand,
-        value_type: Type,
+        value_type: &Type,
         start: usize,
     ) -> Option<(Operand, Type)> {
-        let operation = if is_integer_type(&value_type) {
+        let operation = if is_integer_type(value_type) {
             "keyInteger"
-        } else if value_type == Type::String {
+        } else if value_type == &Type::String {
             "keyText"
         } else if matches!(
-            &value_type,
+            value_type,
             Type::Reference { referent, .. }
                 if matches!(referent.as_ref(), Type::String | Type::Str)
         ) {
@@ -2708,9 +2704,9 @@ impl OwnershipMirLowerer<'_> {
         };
         let (runtime, signature) = self.jsx_runtime_function(operation)?;
         let parameter = signature.parameters.first()?.clone();
-        let value = if value_type == parameter {
+        let value = if value_type == &parameter {
             value
-        } else if is_integer_type(&value_type) && is_integer_type(&parameter) {
+        } else if is_integer_type(value_type) && is_integer_type(&parameter) {
             let destination = self.temporary(parameter.clone(), self.span(self.tokens[start]));
             self.statement(
                 StatementKind::StorageLive(destination),
@@ -2722,14 +2718,14 @@ impl OwnershipMirLowerer<'_> {
                     Box::new(Rvalue::Cast {
                         operand: value,
                         ty: parameter.clone(),
-                        kind: mir_cast_kind(&value_type, &parameter),
+                        kind: mir_cast_kind(value_type, &parameter),
                     }),
                 ),
                 self.span(self.tokens[start]),
             );
             Operand::Move(Place::local(destination))
         } else {
-            self.reborrow_argument(value, &value_type, Some(&parameter), start)
+            self.reborrow_argument(value, value_type, Some(&parameter), start)
         };
         self.emit_call(
             Operand::Constant(tn_mir::Constant::Function(
@@ -2887,7 +2883,7 @@ impl OwnershipMirLowerer<'_> {
     ) -> Option<Operand> {
         if let Type::Optional(inner) = expected {
             let value = self.lower_jsx_value(value, inner.as_ref(), start)?;
-            return self.materialize_jsx_optional(expected.clone(), value, start);
+            return self.materialize_jsx_optional(expected, value, start);
         }
         self.lower_jsx_value(value, expected, start)
     }
@@ -2994,7 +2990,7 @@ impl OwnershipMirLowerer<'_> {
             is_unsafe: false,
         };
         let children = if self.is_dynamic_array_type(&children_type) {
-            self.materialize_jsx_dynamic_array(values, element_type, start)?
+            self.materialize_jsx_dynamic_array(values, &element_type, start)?
         } else {
             self.materialize_jsx_aggregate(children_type.clone(), values, element_type, start)?
         };
@@ -3028,10 +3024,11 @@ impl OwnershipMirLowerer<'_> {
         methods.iter().find(|method| method.name == name).cloned()
     }
 
+    #[allow(clippy::too_many_lines)]
     fn materialize_jsx_dynamic_array(
         &mut self,
         values: Vec<Operand>,
-        element_type: Type,
+        element_type: &Type,
         start: usize,
     ) -> Option<Operand> {
         let array = self.nominal_named("Array")?;
@@ -3279,11 +3276,11 @@ impl OwnershipMirLowerer<'_> {
 
     fn materialize_jsx_optional(
         &mut self,
-        ty: Type,
+        ty: &Type,
         value: Operand,
         start: usize,
     ) -> Option<Operand> {
-        let Type::Optional(inner) = &ty else {
+        let Type::Optional(inner) = ty else {
             return None;
         };
         let inner = inner.as_ref().clone();
@@ -3309,6 +3306,75 @@ impl OwnershipMirLowerer<'_> {
             self.span(self.tokens[start]),
         );
         Some(Operand::Move(Place::local(destination)))
+    }
+
+    fn materialize_union(
+        &mut self,
+        ty: &Type,
+        value: Operand,
+        actual: &Type,
+        start: usize,
+    ) -> Option<Operand> {
+        let Type::Union(alternatives) = ty else {
+            return None;
+        };
+        let (variant, alternative) = alternatives.iter().enumerate().find(|(_, alternative)| {
+            crate::bodies::compatible(self.program, actual, alternative)
+        })?;
+        let variant = u32::try_from(variant).ok()?;
+        let destination = self.temporary(ty.clone(), self.span(self.tokens[start]));
+        self.statement(
+            StatementKind::StorageLive(destination),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::Assign(
+                Place::local(destination),
+                Box::new(Rvalue::Aggregate {
+                    ty: ty.clone(),
+                    variant: Some(variant),
+                    fields: vec![value],
+                    field_types: vec![alternative.clone()],
+                }),
+            ),
+            self.span(self.tokens[start]),
+        );
+        self.statement(
+            StatementKind::SetDiscriminant(Place::local(destination), variant),
+            self.span(self.tokens[start]),
+        );
+        Some(Operand::Move(Place::local(destination)))
+    }
+
+    fn coerce_rvalue(
+        &mut self,
+        operand: Operand,
+        source_type: &Type,
+        destination_type: &Type,
+        start: usize,
+    ) -> Rvalue {
+        if source_type == destination_type {
+            return Rvalue::Use(operand);
+        }
+        if matches!(destination_type, Type::Union(_))
+            && !matches!(source_type, Type::Union(_))
+            && let Some(value) =
+                self.materialize_union(destination_type, operand.clone(), source_type, start)
+        {
+            return Rvalue::Use(value);
+        }
+        if matches!(destination_type, Type::Optional(_))
+            && !matches!(source_type, Type::Optional(_))
+            && let Some(value) =
+                self.materialize_jsx_optional(destination_type, operand.clone(), start)
+        {
+            return Rvalue::Use(value);
+        }
+        Rvalue::Cast {
+            operand,
+            ty: destination_type.clone(),
+            kind: mir_cast_kind(source_type, destination_type),
+        }
     }
 
     fn token_range_for_bytes(&self, start: usize, end: usize) -> Option<(usize, usize)> {
@@ -3460,7 +3526,7 @@ impl OwnershipMirLowerer<'_> {
         if let Some(question_dot) = self.find_top_level(start, end, TokenKind::QuestionDot) {
             return self.lower_optional_chain(start, question_dot, end);
         }
-        if let Some(open) = self.find_top_level(start, end, TokenKind::LeftParen)
+        if let Some(open) = self.find_call_open(start, end)
             && open > start
             && !matches!(
                 self.tokens[start].kind,
@@ -4530,6 +4596,30 @@ impl OwnershipMirLowerer<'_> {
         None
     }
 
+    fn find_call_open(&self, start: usize, end: usize) -> Option<usize> {
+        let mut delimiter_depth = 0_u32;
+        let mut generic_depth = 0_u32;
+        for index in start..end {
+            let kind = self.tokens[index].kind;
+            if kind == TokenKind::LeftParen && delimiter_depth == 0 && generic_depth == 0 {
+                return Some(index);
+            }
+            match kind {
+                TokenKind::Less => generic_depth = generic_depth.saturating_add(1),
+                TokenKind::Greater => generic_depth = generic_depth.saturating_sub(1),
+                TokenKind::ShiftRight => generic_depth = generic_depth.saturating_sub(2),
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn statement_end(&self, start: usize) -> usize {
         if self
             .tokens
@@ -5192,6 +5282,47 @@ impl OwnershipMirLowerer<'_> {
             );
             return Some((Operand::Move(Place::local(destination)), result_type));
         }
+        let union_operation = ["union_tag", "union_take"]
+            .into_iter()
+            .find(|operation| self.is_intrinsic_operation(start, callee_end, operation));
+        if let Some(union_operation) = union_operation {
+            let borrowed_temporaries = if union_operation == "union_tag" {
+                arguments
+                    .iter()
+                    .filter_map(operand_place_ref)
+                    .filter(|place| {
+                        place.projection.is_empty() && self.temporary_locals.contains(&place.local)
+                    })
+                    .map(|place| place.local)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: union_operation.into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            for local in borrowed_temporaries {
+                self.statement(
+                    StatementKind::StorageDead(local),
+                    self.span(self.tokens[start]),
+                );
+            }
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
         if self.is_intrinsic_operation(start, callee_end, "null_pointer") {
             let result_type = concrete.result.as_ref().clone();
             let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
@@ -5795,19 +5926,33 @@ impl OwnershipMirLowerer<'_> {
             let expected = signature.parameters.get(index);
             let (argument, actual) =
                 self.lower_expression_range(argument_start, argument_end, expected)?;
-            let argument = if let Some(Type::Optional(expected)) = expected
+            let (argument, argument_type) = if let Some(expected) = expected
+                && let Type::Union(_) = expected
+                && !matches!(actual, Type::Union(_))
+            {
+                (
+                    self.materialize_union(expected, argument, &actual, argument_start)?,
+                    expected.clone(),
+                )
+            } else if let Some(Type::Optional(expected)) = expected
                 && !matches!(actual, Type::Optional(_))
             {
-                self.materialize_jsx_optional(
+                (
+                    self.materialize_jsx_optional(
+                        &Type::Optional(expected.clone()),
+                        argument,
+                        argument_start,
+                    )?,
                     Type::Optional(expected.clone()),
-                    argument,
-                    argument_start,
-                )?
+                )
             } else {
-                self.reborrow_argument(argument, &actual, expected, argument_start)
+                (
+                    self.reborrow_argument(argument, &actual, expected, argument_start),
+                    actual.clone(),
+                )
             };
             arguments.push(argument);
-            argument_types.push(actual);
+            argument_types.push(argument_type);
         }
         Some((arguments, argument_types))
     }
@@ -6041,7 +6186,7 @@ impl OwnershipMirLowerer<'_> {
                 signature.parameters.get(index)
                 && !matches!(actual, Type::Optional(_))
             {
-                self.materialize_jsx_optional(parameter.clone(), argument, argument_start)?
+                self.materialize_jsx_optional(parameter, argument, argument_start)?
             } else {
                 self.reborrow_argument(
                     argument,
@@ -7009,8 +7154,24 @@ impl OwnershipMirLowerer<'_> {
                 .or_else(|| aggregate_field_type(&ty, index));
             let (field, actual_type) =
                 self.lower_expression_range(field_start, field_end, field_type.as_ref())?;
-            fields.push(field);
-            field_types.push(field_type.unwrap_or(actual_type));
+            if let Some(expected) = field_type {
+                let field = if matches!(&expected, Type::Union(_))
+                    && !matches!(&actual_type, Type::Union(_))
+                {
+                    self.materialize_union(&expected, field, &actual_type, field_start)?
+                } else if matches!(&expected, Type::Optional(_))
+                    && !matches!(&actual_type, Type::Optional(_))
+                {
+                    self.materialize_jsx_optional(&expected, field, field_start)?
+                } else {
+                    field
+                };
+                fields.push(field);
+                field_types.push(expected);
+            } else {
+                fields.push(field);
+                field_types.push(actual_type);
+            }
         }
         let temporary = self.temporary(ty.clone(), self.span(self.tokens[start]));
         self.statement(
@@ -7955,6 +8116,12 @@ fn substitute_mir_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Typ
         Type::Optional(inner) => {
             Type::Optional(Box::new(substitute_mir_type(inner, substitutions)))
         }
+        Type::Union(alternatives) => Type::Union(
+            alternatives
+                .iter()
+                .map(|alternative| substitute_mir_type(alternative, substitutions))
+                .collect(),
+        ),
         Type::Array(inner, length) => {
             Type::Array(Box::new(substitute_mir_type(inner, substitutions)), *length)
         }
@@ -8077,6 +8244,7 @@ fn infer_mir_substitutions(
         (Type::Tuple(left), Type::Tuple(right))
         | (Type::Template(left), Type::Template(right))
         | (Type::Nominal(_, left), Type::Nominal(_, right))
+        | (Type::Union(left), Type::Union(right))
         | (Type::DynamicInterface(_, left), Type::DynamicInterface(_, right)) => {
             for (left, right) in left.iter().zip(right) {
                 infer_mir_substitutions(left, right, substitutions);
@@ -8404,16 +8572,37 @@ impl MirTypeParser<'_> {
     }
 
     fn parse_type(&mut self) -> Option<Type> {
-        let mut ty = self.parse_primary()?;
-        if self.eat(TokenKind::Pipe) {
-            if !self.eat(TokenKind::Undefined) {
-                return Some(Type::Error);
-            }
-            ty = Type::Optional(Box::new(ty));
+        let first = self.parse_primary()?;
+        if !self.eat(TokenKind::Pipe) {
+            return Some(first);
         }
-        Some(ty)
+        let mut alternatives = vec![first];
+        let mut has_undefined = false;
+        loop {
+            if self.eat(TokenKind::Undefined) {
+                has_undefined = true;
+            } else {
+                alternatives.push(self.parse_primary()?);
+            }
+            if !self.eat(TokenKind::Pipe) {
+                break;
+            }
+        }
+        alternatives.sort();
+        alternatives.dedup();
+        let value = if alternatives.len() == 1 {
+            alternatives.pop().unwrap_or(Type::Error)
+        } else {
+            Type::Union(alternatives)
+        };
+        Some(if has_undefined {
+            Type::Optional(Box::new(value))
+        } else {
+            value
+        })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_primary(&mut self) -> Option<Type> {
         match self.kind()? {
             TokenKind::Amp => {
@@ -8508,7 +8697,19 @@ impl MirTypeParser<'_> {
                     });
                 }
                 let id = self.resolve_type(&name)?;
-                Some(Type::Nominal(id, self.parse_arguments()))
+                let arguments = self.parse_arguments();
+                let definition = self.program.definition(id)?;
+                if let tn_hir::DefinitionData::TypeAlias(alias) = &definition.data {
+                    let substitutions = definition
+                        .generics
+                        .iter()
+                        .zip(&arguments)
+                        .map(|(generic, argument)| (generic.name.clone(), argument.clone()))
+                        .collect::<BTreeMap<_, _>>();
+                    Some(substitute_mir_type(alias, &substitutions))
+                } else {
+                    Some(Type::Nominal(id, arguments))
+                }
             }
             _ => None,
         }

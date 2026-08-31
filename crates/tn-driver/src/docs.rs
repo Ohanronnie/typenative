@@ -354,6 +354,11 @@ fn type_display(program: &Program, ty: &Type) -> String {
         ),
         Type::Nominal(declaration, arguments) => render_nominal(program, *declaration, arguments),
         Type::Optional(inner) => format!("{}?", type_display(program, inner)),
+        Type::Union(alternatives) => alternatives
+            .iter()
+            .map(|alternative| type_display(program, alternative))
+            .collect::<Vec<_>>()
+            .join(" | "),
         Type::Array(inner, length) => format!("[{}; {length}]", type_display(program, inner)),
         Type::Slice(inner) => format!("[{}]", type_display(program, inner)),
         Type::Tuple(elements) => format!(

@@ -296,6 +296,11 @@ fn check_type(
         | Type::RawPointer { pointee: inner, .. } => {
             check_type(inner, span, definitions, diagnostics);
         }
+        Type::Union(alternatives) => {
+            for alternative in alternatives {
+                check_type(alternative, span, definitions, diagnostics);
+            }
+        }
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {
                 check_type(element, span, definitions, diagnostics);
@@ -1481,6 +1486,11 @@ fn collect_reference_lifetimes<'a>(ty: &'a Type, lifetimes: &mut Vec<&'a str>) {
         Type::Lifetime(lifetime) => lifetimes.push(lifetime),
         Type::Optional(inner) | Type::Slice(inner) | Type::Array(inner, _) => {
             collect_reference_lifetimes(inner, lifetimes);
+        }
+        Type::Union(alternatives) => {
+            for alternative in alternatives {
+                collect_reference_lifetimes(alternative, lifetimes);
+            }
         }
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {

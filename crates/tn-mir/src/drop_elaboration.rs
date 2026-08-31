@@ -14,13 +14,20 @@ pub struct DropSemantics {
 impl DropSemantics {
     pub fn needs_drop(&self, ty: &Type) -> bool {
         match ty {
+            // A generic parameter may be instantiated with a move-only value. Keep its
+            // ownership path live until monomorphization can substitute the concrete type;
+            // primitive instantiations simply lower this conditional drop to a no-op.
             Type::String
             | Type::Function(_)
             | Type::Promise { .. }
-            | Type::DynamicInterface(_, _) => true,
+            | Type::DynamicInterface(_, _)
+            | Type::Generic(_) => true,
             Type::Nominal(declaration, _) => self.nominal.contains(declaration),
             Type::ErrorUnion(effects) => effects.iter().any(|effect| self.nominal.contains(effect)),
             Type::Optional(inner) | Type::Array(inner, _) => self.needs_drop(inner),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .any(|alternative| self.needs_drop(alternative)),
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().any(|element| self.needs_drop(element))
             }
@@ -32,10 +39,6 @@ impl DropSemantics {
             | Type::Lifetime(_)
             | Type::Error
             | Type::Unknown => false,
-            // A generic parameter may be instantiated with a move-only value. Keep its
-            // ownership path live until monomorphization can substitute the concrete type;
-            // primitive instantiations simply lower this conditional drop to a no-op.
-            Type::Generic(_) => true,
         }
     }
 }

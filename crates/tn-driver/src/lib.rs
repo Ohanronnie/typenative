@@ -7,6 +7,8 @@ mod lsp;
 mod project;
 mod test;
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::Instant;
 use tn_diagnostics::{ConditionId, Diagnostic, Label, SourceSpan};
@@ -46,12 +48,33 @@ pub fn check_project(project: &Project) -> CheckOutput {
 }
 
 pub fn check_project_with_timings(project: &Project, timings_enabled: bool) -> CheckOutput {
-    let started = Instant::now();
     let standard_library = standard_library_path();
+    let fingerprint = check_cache_fingerprint(project, &standard_library).ok();
+    if let Some(fingerprint) = fingerprint.as_deref()
+        && let Some(diagnostics) = read_check_cache(project, fingerprint)
+    {
+        if timings_enabled {
+            eprintln!("tn-timing phase=cache-hit micros=0");
+        }
+        return CheckOutput { diagnostics };
+    }
+    let output = check_project_uncached(project, timings_enabled, &standard_library);
+    if let Some(fingerprint) = fingerprint.as_deref() {
+        write_check_cache(project, fingerprint, &output.diagnostics);
+    }
+    output
+}
+
+fn check_project_uncached(
+    project: &Project,
+    timings_enabled: bool,
+    standard_library: &Path,
+) -> CheckOutput {
+    let started = Instant::now();
     let graph = match tn_hir::load_module_graph_with_jsx_runtime(
         &project.root,
         &project.entry,
-        &standard_library,
+        standard_library,
         project.config.jsx.as_ref().map(|jsx| jsx.runtime.clone()),
     ) {
         Ok(graph) => graph,
@@ -133,6 +156,151 @@ pub fn check_project_with_timings(project: &Project, timings_enabled: bool) -> C
         left.condition == right.condition && left.primary.span == right.primary.span
     });
     CheckOutput { diagnostics }
+}
+
+const CHECK_CACHE_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CheckCache {
+    version: u32,
+    fingerprint: String,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn check_cache_path(project: &Project) -> std::path::PathBuf {
+    let directory = if project.config.out_dir.is_absolute() {
+        project.config.out_dir.clone()
+    } else {
+        project.root.join(&project.config.out_dir)
+    };
+    directory.join(".tn-check-cache.json")
+}
+
+fn read_check_cache(project: &Project, fingerprint: &str) -> Option<Vec<Diagnostic>> {
+    let bytes = std::fs::read(check_cache_path(project)).ok()?;
+    let cache = serde_json::from_slice::<CheckCache>(&bytes).ok()?;
+    (cache.version == CHECK_CACHE_VERSION && cache.fingerprint == fingerprint)
+        .then_some(cache.diagnostics)
+}
+
+fn write_check_cache(project: &Project, fingerprint: &str, diagnostics: &[Diagnostic]) {
+    let path = check_cache_path(project);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let cache = CheckCache {
+        version: CHECK_CACHE_VERSION,
+        fingerprint: fingerprint.to_owned(),
+        diagnostics: diagnostics.to_vec(),
+    };
+    let Ok(bytes) = serde_json::to_vec(&cache) else {
+        return;
+    };
+    let temporary = parent.join(".tn-check-cache.json.tmp");
+    if std::fs::write(&temporary, bytes).is_ok() {
+        let _ = std::fs::rename(temporary, path);
+    }
+}
+
+fn check_cache_fingerprint(project: &Project, standard_library: &Path) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(CHECK_CACHE_VERSION.to_le_bytes());
+    hasher.update(project.root.to_string_lossy().as_bytes());
+    hasher.update(project.entry.to_string_lossy().as_bytes());
+    hasher.update(serde_json::to_vec(&project.config).map_err(std::io::Error::other)?);
+    hash_file_metadata(&mut hasher, &std::env::current_exe()?)?;
+    hash_source_tree(&mut hasher, check_source_root(&project.root))?;
+    hash_source_tree(&mut hasher, standard_library)?;
+    let digest = hasher.finalize();
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut fingerprint, "{byte:02x}").expect("writing a String cannot fail");
+    }
+    Ok(fingerprint)
+}
+
+fn hash_source_tree(hasher: &mut Sha256, root: &Path) -> std::io::Result<()> {
+    let mut paths = Vec::new();
+    collect_source_paths(root, &mut paths)?;
+    paths.sort();
+    for path in paths {
+        hash_file_if_present(hasher, &path)?;
+    }
+    Ok(())
+}
+
+fn check_source_root(root: &Path) -> &Path {
+    let original = root;
+    let mut current = root;
+    loop {
+        if current.join(".git").exists() {
+            return current;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    original
+}
+
+fn collect_source_paths(root: &Path, paths: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir()
+            && !matches!(
+                entry.file_name().to_str(),
+                Some(".git" | "build" | "target" | ".cache" | "node_modules")
+            )
+        {
+            collect_source_paths(&path, paths)?;
+        } else if file_type.is_file()
+            && !matches!(
+                entry.file_name().to_str(),
+                Some(".tn-check-cache.json" | ".tn-check-cache.json.tmp")
+            )
+            && path
+                .extension()
+                .is_some_and(|extension| matches!(extension.to_str(), Some("tn" | "tnx" | "json")))
+        {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn hash_file_if_present(hasher: &mut Sha256, path: &Path) -> std::io::Result<()> {
+    let bytes = std::fs::read(path)?;
+    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+    Ok(())
+}
+
+fn hash_file_metadata(hasher: &mut Sha256, path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(path)?;
+    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(metadata.len().to_le_bytes());
+    if let Ok(modified) = metadata.modified()
+        && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+    {
+        hasher.update(duration.as_secs().to_le_bytes());
+        hasher.update(duration.subsec_nanos().to_le_bytes());
+    }
+    Ok(())
 }
 
 fn standard_library_path() -> std::path::PathBuf {
@@ -433,6 +601,9 @@ fn type_contains_generic(ty: &Type, name: &str) -> bool {
             referent: inner, ..
         }
         | Type::RawPointer { pointee: inner, .. } => type_contains_generic(inner, name),
+        Type::Union(alternatives) => alternatives
+            .iter()
+            .any(|alternative| type_contains_generic(alternative, name)),
         Type::Function(function) => {
             function
                 .parameters

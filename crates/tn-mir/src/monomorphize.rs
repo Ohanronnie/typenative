@@ -318,6 +318,7 @@ fn contains_generic(ty: &Type) -> bool {
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             contains_generic(inner)
         }
+        Type::Union(alternatives) => alternatives.iter().any(contains_generic),
         Type::Promise { result, error, .. } => contains_generic(result) || contains_generic(error),
         Type::Reference {
             referent: result, ..
@@ -571,6 +572,13 @@ fn matches_target(template: &Type, concrete: &Type, inferred: &mut BTreeMap<Stri
                     .zip(concrete)
                     .all(|(template, concrete)| matches_target(template, concrete, inferred))
         }
+        (Type::Union(template), Type::Union(concrete)) => {
+            template.len() == concrete.len()
+                && template
+                    .iter()
+                    .zip(concrete)
+                    .all(|(template, concrete)| matches_target(template, concrete, inferred))
+        }
         (template, concrete) => template == concrete,
     }
 }
@@ -639,7 +647,8 @@ fn infer_type(template: &Type, concrete: &Type, inferred: &mut BTreeMap<String, 
         (Type::Optional(left), Type::Optional(right))
         | (Type::Slice(left), Type::Slice(right))
         | (Type::Array(left, _), Type::Array(right, _)) => infer_type(left, right, inferred),
-        (Type::Tuple(left), Type::Tuple(right))
+        (Type::Union(left), Type::Union(right))
+        | (Type::Tuple(left), Type::Tuple(right))
         | (Type::Template(left), Type::Template(right))
         | (Type::Nominal(_, left), Type::Nominal(_, right))
         | (Type::DynamicInterface(_, left), Type::DynamicInterface(_, right)) => {
@@ -886,6 +895,11 @@ fn substitute_type(ty: &mut Type, substitutions: &BTreeMap<String, Type>) {
         }
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             substitute_type(inner, substitutions);
+        }
+        Type::Union(alternatives) => {
+            for alternative in alternatives {
+                substitute_type(alternative, substitutions);
+            }
         }
         Type::Tuple(elements) | Type::Template(elements) => {
             for element in elements {

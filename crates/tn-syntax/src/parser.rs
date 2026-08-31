@@ -983,8 +983,10 @@ impl Parser<'_, '_> {
                 ],
             ),
         }
-        if self.eat(TokenKind::Pipe) {
-            self.expect(TokenKind::Undefined);
+        while self.eat(TokenKind::Pipe) {
+            if !self.eat(TokenKind::Undefined) {
+                self.ty();
+            }
         }
         self.throws_clause();
         self.leave_recursion();

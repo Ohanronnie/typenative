@@ -1,2 +1,0 @@
-type Value = Left | Right;
-

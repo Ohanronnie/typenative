@@ -700,14 +700,9 @@ impl Writer {
                 TokenKind::Greater => {
                     self.trim_space();
                     self.write(">");
-                    if context.opening && previous != Some(TokenKind::Slash) {
-                        let multiline = next == Some(TokenKind::Less);
-                        self.jsx_indent_stack.push(multiline);
-                        if multiline {
-                            self.indent += 1;
-                            self.newline();
-                        }
-                    } else if context.fragment && previous == Some(TokenKind::Less) {
+                    if (context.opening && previous != Some(TokenKind::Slash))
+                        || (context.fragment && previous == Some(TokenKind::Less))
+                    {
                         let multiline = next == Some(TokenKind::Less);
                         self.jsx_indent_stack.push(multiline);
                         if multiline {

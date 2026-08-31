@@ -108,6 +108,9 @@ impl OwnershipFacts {
             Type::Primitive(_) | Type::RawPointer { .. } => true,
             Type::Reference { mutable, .. } => !mutable,
             Type::Optional(inner) | Type::Array(inner, _) => self.is_copy(inner),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .all(|alternative| self.is_copy(alternative)),
             Type::Tuple(elements) | Type::Template(elements) => {
                 elements.iter().all(|element| self.is_copy(element))
             }
@@ -131,6 +134,9 @@ impl OwnershipFacts {
             Type::String | Type::Function(_) => true,
             Type::Nominal(id, _) => self.drop.contains(id),
             Type::Optional(inner) | Type::Array(inner, _) => self.has_drop(inner),
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .any(|alternative| self.has_drop(alternative)),
             Type::Promise {
                 result,
                 error,
@@ -170,6 +176,9 @@ impl OwnershipFacts {
             Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
                 self.is_send(inner)
             }
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .all(|alternative| self.is_send(alternative)),
             Type::Promise {
                 result,
                 error,
@@ -202,6 +211,9 @@ impl OwnershipFacts {
             Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
                 self.is_sync(inner)
             }
+            Type::Union(alternatives) => alternatives
+                .iter()
+                .all(|alternative| self.is_sync(alternative)),
             Type::Promise {
                 result,
                 error,
@@ -390,6 +402,9 @@ fn structurally_thread_safe(ty: &Type, sync: bool, facts: &OwnershipFacts) -> bo
         Type::Optional(inner) | Type::Array(inner, _) | Type::Slice(inner) => {
             structurally_thread_safe(inner, sync, facts)
         }
+        Type::Union(alternatives) => alternatives
+            .iter()
+            .all(|alternative| structurally_thread_safe(alternative, sync, facts)),
         Type::Promise {
             result,
             error,
@@ -684,6 +699,7 @@ fn contains_non_static_borrow(ty: &Type) -> bool {
         | Type::Array(inner, _)
         | Type::Slice(inner)
         | Type::RawPointer { pointee: inner, .. } => contains_non_static_borrow(inner),
+        Type::Union(alternatives) => alternatives.iter().any(contains_non_static_borrow),
         Type::Promise { result, error, .. } => {
             contains_non_static_borrow(result) || contains_non_static_borrow(error)
         }

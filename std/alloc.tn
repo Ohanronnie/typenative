@@ -110,10 +110,10 @@ export function usizeToU64(value: usize): u64 {
   return 0;
 }
 export function usizeToF32(value: usize): f32 {
-  return 0.0f32;
+  return 0.0;
 }
 export function f64ToUsize(value: f64): usize {
-  return 0usize;
+  return 0;
 }
 // The compiler lowers this to the stable compiler identity of a callable. It
 // is intentionally independent of the callable's captured environment, so a
@@ -121,9 +121,17 @@ export function f64ToUsize(value: f64): usize {
 export function componentIdentity<T>(value: T): u64 {
   return 0;
 }
+export function unionTag<T>(value: &T): usize {
+  return 0;
+}
+export unsafe function unionTake<Union, Value>(value: Union): Value {
+  unsafe {
+    return *(nullPointer<u8>()as *const Value);
+  }
+}
 export unsafe function borrowCallable<T>(pointer: *const T): T {
   unsafe {
-    return *pointer;
+    return * pointer;
   }
 }
 function arcClone<T>(value: &mut Arc<T >): Arc<T> {

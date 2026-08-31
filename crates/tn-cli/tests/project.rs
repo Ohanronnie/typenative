@@ -755,6 +755,51 @@ fn check_timings_report_reused_analysis_phases() {
 }
 
 #[test]
+fn unchanged_checks_reuse_the_structured_diagnostic_cache() {
+    let directory = tempfile::tempdir().expect("temporary cached check project");
+    let source = directory.path().join("main.tn");
+    std::fs::write(&source, "function main(): i32 { return 7; }\n")
+        .expect("cached check source fixture");
+    std::fs::write(
+        directory.path().join("typenative.json"),
+        r#"{"entry":"main.tn"}"#,
+    )
+    .expect("cached check project configuration");
+    let check = || {
+        Command::new(env!("CARGO_BIN_EXE_tn"))
+            .args([
+                "check",
+                directory.path().to_str().expect("UTF-8 path"),
+                "--timings",
+            ])
+            .output()
+            .expect("cached tn check runs")
+    };
+
+    let first = check();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(first_stderr.contains("phase=module-check"));
+    assert!(!first_stderr.contains("phase=cache-hit"));
+
+    let second = check();
+    assert!(second.status.success());
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(second_stderr.contains("phase=cache-hit"));
+    assert!(!second_stderr.contains("phase=module-check"));
+
+    std::fs::write(&source, "function main(): i32 { return 8; }\n")
+        .expect("invalidate cached check source");
+    let third = check();
+    assert!(third.status.success());
+    assert!(!String::from_utf8_lossy(&third.stderr).contains("phase=cache-hit"));
+}
+
+#[test]
 fn native_reachability_prunes_unreferenced_non_exports() {
     let directory = tempfile::tempdir().expect("temporary reachability project");
     let source = directory.path().join("main.tn");
