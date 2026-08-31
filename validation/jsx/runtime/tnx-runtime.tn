@@ -1,0 +1,16 @@
+import { Array } from "std/collections";
+
+export struct Element {
+  public marker: i32;
+}
+export function createElement<P>(component: (P) => Element, properties: P, key: &str | undefined): Element {
+  return component(properties);
+}
+export function createElements<P>(component: (P) => Element, properties: P, key: &str | undefined): Element {
+  return component(properties);
+}
+export function createFragment(children: Array<Element>): Element {
+  return new Element({
+    marker: 0
+  });
+}

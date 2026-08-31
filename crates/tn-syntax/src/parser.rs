@@ -351,7 +351,7 @@ impl Parser<'_, '_> {
     fn const_declaration(&mut self) {
         self.start(SyntaxKind::CONST_DECLARATION);
         self.expect(TokenKind::Const);
-        self.expect(TokenKind::Identifier);
+        self.binding_pattern();
         if self.eat(TokenKind::Colon) {
             self.ty();
         }

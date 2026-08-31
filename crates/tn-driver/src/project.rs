@@ -306,7 +306,7 @@ mod tests {
             &config_path,
             r#"{
   "entry": "src/main.tnx",
-  "jsx": { "runtime": "@typenative/ui/jsx-runtime" }
+  "jsx": { "runtime": "@typenative/ui/tnx-runtime" }
 }"#,
         )
         .expect("project configuration");
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(
             project.config.jsx,
             Some(JsxConfig {
-                runtime: "@typenative/ui/jsx-runtime".into()
+                runtime: "@typenative/ui/tnx-runtime".into()
             })
         );
     }

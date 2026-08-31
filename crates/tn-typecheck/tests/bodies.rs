@@ -19,15 +19,15 @@ fn checked_tnx(source: &str) -> (tn_hir::Program, tn_typecheck::BodyCheckResult)
     std::fs::create_dir(&standard_library).expect("create empty standard library fixture");
     std::fs::write(&path, source).expect("write JSX fixture");
     std::fs::write(
-        directory.path().join("jsx-runtime.tn"),
-        "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        directory.path().join("tnx-runtime.tn"),
+        "export struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
     )
     .expect("write JSX runtime fixture");
     let graph = tn_hir::load_module_graph_with_jsx_runtime(
         directory.path(),
         &path,
         &standard_library,
-        Some("./jsx-runtime".into()),
+        Some("./tnx-runtime".into()),
     )
     .expect("load JSX fixture graph");
     let program = tn_hir::lower_program(graph).expect("lower JSX fixture declarations");
@@ -772,7 +772,7 @@ function App(): Element {
         matches!(
             &statement.kind,
             tn_mir::StatementKind::Assign(_, value)
-                if matches!(value.as_ref(), tn_mir::Rvalue::RawOperation { operation, .. } if operation.contains("jsx"))
+                if matches!(value.as_ref(), tn_mir::Rvalue::RawOperation { operation, .. } if operation.contains("createElement"))
         )
     }));
     tn_mir::validate(body).expect("JSX lowers to valid ordinary MIR");
@@ -833,7 +833,7 @@ function App(): Element {
         .expect("App declaration")
         .id;
     let jsx = program
-        .jsx_runtime_declaration("jsx")
+        .jsx_runtime_declaration("createElement")
         .expect("configured jsx runtime declaration");
     let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
         .into_iter()
@@ -871,7 +871,7 @@ function App(): Element {
 fn lowers_distinct_jsx_property_shapes_to_ordinary_runtime_calls() {
     let (program, result) = checked_tnx(
         r#"
-import { Element } from "./jsx-runtime";
+import { Element } from "./tnx-runtime";
 struct TextProps {
   public value: &str;
 }
@@ -896,7 +896,7 @@ function App(): Element {
         .expect("App declaration")
         .id;
     let jsx = program
-        .jsx_runtime_declaration("jsx")
+        .jsx_runtime_declaration("createElement")
         .expect("configured jsx runtime declaration");
     let lowered = tn_typecheck::lower_mir(&program, &result.bodies)
         .into_iter()

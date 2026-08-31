@@ -194,7 +194,11 @@ pub(crate) fn validate_jsx_runtime(program: &tn_hir::Program) -> Vec<Diagnostic>
         )];
     };
     let mut diagnostics = Vec::new();
-    for (operation, arity) in [("jsx", 3_usize), ("jsxs", 3), ("fragment", 1)] {
+    for (operation, arity) in [
+        ("createElement", 3_usize),
+        ("createElements", 3),
+        ("createFragment", 1),
+    ] {
         let Some(declaration) = runtime_module
             .declarations
             .iter()
@@ -204,7 +208,7 @@ pub(crate) fn validate_jsx_runtime(program: &tn_hir::Program) -> Vec<Diagnostic>
                 "DRIVER_JSX_RUNTIME_MISSING_EXPORT",
                 format!("configured JSX runtime does not export `{operation}`"),
                 &module_start_span(module),
-                "export jsx, jsxs, and fragment from the configured runtime module",
+                "export createElement, createElements, and createFragment from the configured runtime module",
             ));
             continue;
         };
@@ -323,7 +327,7 @@ fn validate_jsx_runtime_function(
             "implement the runtime operation in TypeNative source",
         ));
     }
-    if operation != "fragment"
+    if operation != "createFragment"
         && function
             .parameters
             .first()
@@ -336,7 +340,7 @@ fn validate_jsx_runtime_function(
             "make the first parameter a component function or an inferred generic component value",
         ));
     }
-    if operation == "fragment"
+    if operation == "createFragment"
         && function.parameters.first().is_some_and(|parameter| {
             !matches!(
                 parameter.ty,
@@ -346,7 +350,7 @@ fn validate_jsx_runtime_function(
     {
         diagnostics.push(jsx_runtime_diagnostic(
             "DRIVER_JSX_RUNTIME_CHILDREN_PARAMETER",
-            "JSX runtime `fragment` must accept an array, slice, or inferred children value",
+            "JSX runtime `createFragment` must accept an array, slice, or inferred children value",
             span,
             "declare the fragment children parameter as a child collection",
         ));

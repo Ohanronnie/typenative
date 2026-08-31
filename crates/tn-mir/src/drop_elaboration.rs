@@ -29,10 +29,13 @@ impl DropSemantics {
             | Type::Slice(_)
             | Type::Reference { .. }
             | Type::RawPointer { .. }
-            | Type::Generic(_)
             | Type::Lifetime(_)
             | Type::Error
             | Type::Unknown => false,
+            // A generic parameter may be instantiated with a move-only value. Keep its
+            // ownership path live until monomorphization can substitute the concrete type;
+            // primitive instantiations simply lower this conditional drop to a no-op.
+            Type::Generic(_) => true,
         }
     }
 }

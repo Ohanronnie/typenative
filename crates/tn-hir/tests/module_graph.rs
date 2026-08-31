@@ -48,18 +48,18 @@ fn loads_tnx_modules_and_retains_the_configured_jsx_runtime() {
         "export function helper(): void {}\n",
     );
     write(
-        &root.join("jsx-runtime.tn"),
-        "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        &root.join("tnx-runtime.tn"),
+        "export struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
     );
 
     let graph = load_module_graph_with_jsx_runtime(
         root,
         &root.join("main.tnx"),
         &standard_library,
-        Some("./jsx-runtime".into()),
+        Some("./tnx-runtime".into()),
     )
     .expect(".tnx module graph");
-    assert_eq!(graph.jsx_runtime.as_deref(), Some("./jsx-runtime"));
+    assert_eq!(graph.jsx_runtime.as_deref(), Some("./tnx-runtime"));
     assert!(graph.jsx_runtime_module.is_some());
     assert!(
         graph
@@ -83,15 +83,15 @@ fn resolves_an_installed_jsx_runtime_as_a_normal_package_module() {
     std::fs::create_dir(&standard_library).expect("standard-library directory");
     write(&root.join("main.tnx"), "function main(): void {}\n");
     write(
-        &root.join("node_modules/@typenative/ui/jsx-runtime.tn"),
-        "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        &root.join("node_modules/@typenative/ui/tnx-runtime.tn"),
+        "export struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
     );
 
     let graph = load_module_graph_with_jsx_runtime(
         root,
         &root.join("main.tnx"),
         &standard_library,
-        Some("@typenative/ui/jsx-runtime".into()),
+        Some("@typenative/ui/tnx-runtime".into()),
     )
     .expect("installed JSX runtime resolves");
     assert!(
@@ -99,7 +99,7 @@ fn resolves_an_installed_jsx_runtime_as_a_normal_package_module() {
             .module(graph.jsx_runtime_module.expect("runtime module"))
             .expect("runtime graph node")
             .path
-            .ends_with(Path::new("node_modules/@typenative/ui/jsx-runtime.tn"))
+            .ends_with(Path::new("node_modules/@typenative/ui/tnx-runtime.tn"))
     );
 }
 
@@ -111,19 +111,19 @@ fn rejects_cycles_reachable_from_the_configured_jsx_runtime() {
     std::fs::create_dir(&standard_library).expect("standard-library directory");
     write(&root.join("main.tnx"), "function main(): void {}\n");
     write(
-        &root.join("jsx-runtime.tn"),
-        "import { helper } from \"./helper\";\nexport struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+        &root.join("tnx-runtime.tn"),
+        "import { helper } from \"./helper\";\nexport struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
     );
     write(
         &root.join("helper.tn"),
-        "import { jsx } from \"./jsx-runtime\";\nexport function helper(): void {}\n",
+        "import { createElement } from \"./tnx-runtime\";\nexport function helper(): void {}\n",
     );
 
     let error = load_module_graph_with_jsx_runtime(
         root,
         &root.join("main.tnx"),
         &standard_library,
-        Some("./jsx-runtime".into()),
+        Some("./tnx-runtime".into()),
     )
     .expect_err("runtime import cycle must be rejected");
     assert!(

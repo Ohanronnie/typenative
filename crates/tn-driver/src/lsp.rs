@@ -163,8 +163,8 @@ fn semantic_diagnostics(file: &str, source: &str) -> Vec<LspDiagnostic> {
     }
     if is_tnx
         && std::fs::write(
-            directory.path().join("jsx-runtime.tn"),
-            "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+            directory.path().join("tnx-runtime.tn"),
+            "export struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
         )
         .is_err()
     {
@@ -182,7 +182,7 @@ fn semantic_diagnostics(file: &str, source: &str) -> Vec<LspDiagnostic> {
             sanitizers: Vec::new(),
             link: crate::LinkConfig::default(),
             jsx: is_tnx.then(|| crate::JsxConfig {
-                runtime: "./jsx-runtime".into(),
+                runtime: "./tnx-runtime".into(),
             }),
             support_mode: super::project::SupportMode::None,
         },

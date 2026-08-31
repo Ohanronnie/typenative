@@ -595,6 +595,41 @@ fn drop_elaboration_drops_before_storage_dead() {
 }
 
 #[test]
+fn drop_elaboration_retains_generic_argument_ownership_until_monomorphization() {
+    let body = Body {
+        declaration: DeclarationId(12),
+        member: None,
+        locals: vec![Local {
+            name: Some("value".into()),
+            ty: Type::Generic("T".into()),
+            mutable: false,
+            argument: true,
+            span: span(),
+        }],
+        blocks: vec![BasicBlock {
+            statements: Vec::new(),
+            terminator: Terminator {
+                kind: TerminatorKind::Return(None),
+                span: span(),
+            },
+        }],
+        return_type: Type::Primitive(PrimitiveType::Void),
+        effects: Vec::new(),
+    };
+
+    let elaborated = elaborate_drops(&body, &DropSemantics::default());
+    validate(&elaborated).unwrap_or_else(|errors| panic!("{errors:?}\n{elaborated}"));
+    assert!(matches!(
+        &elaborated.blocks[0].statements[0].kind,
+        StatementKind::SetDropFlag(place, true) if *place == Place::local(LocalId(0))
+    ));
+    assert!(elaborated.blocks.iter().any(|block| matches!(
+        &block.terminator.kind,
+        TerminatorKind::Drop { place, .. } if *place == Place::local(LocalId(0))
+    )));
+}
+
+#[test]
 fn typed_error_lowering_rewrites_returns_without_native_unwinding() {
     let error = DeclarationId(91);
     let body = Body {

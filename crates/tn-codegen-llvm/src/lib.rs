@@ -9003,11 +9003,47 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
         if place.projection.is_empty() {
             return false;
         }
-        let Ok(local_type) = self.local_type(place.local.0) else {
+        let Ok(mut ty) = self.local_type(place.local.0) else {
             return false;
         };
-        self.generator.is_class_type(&local_type)
-            && matches!(place.projection.first(), Some(Projection::Field { .. }))
+        for projection in &place.projection {
+            match projection {
+                Projection::Field { ty: field, .. } => {
+                    if self
+                        .generator
+                        .is_class_type(&self.generator.resolve_alias(&ty))
+                    {
+                        return true;
+                    }
+                    ty = field.clone();
+                }
+                Projection::Dereference => {
+                    ty = match ty {
+                        Type::Reference { referent, .. } => *referent,
+                        Type::RawPointer { pointee, .. } => *pointee,
+                        _ => return false,
+                    };
+                }
+                Projection::Index(_) => {
+                    ty = match ty {
+                        Type::Array(element, _) | Type::Slice(element) => *element,
+                        _ => return false,
+                    };
+                }
+                Projection::Downcast(1) => {
+                    ty = match ty {
+                        Type::Optional(inner) => *inner,
+                        Type::Nominal(_, _) => ty,
+                        _ => return false,
+                    };
+                }
+                Projection::BaseClass(base) => {
+                    ty = Type::Nominal(*base, Vec::new());
+                }
+                Projection::Downcast(_) => {}
+            }
+        }
+        false
     }
 
     fn type_needs_drop(&self, ty: &Type) -> bool {
@@ -10604,7 +10640,11 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                 operation,
                 operands,
                 ty,
-            } if matches!(operation.as_str(), "u64_to_usize" | "usize_to_u64") => {
+            } if matches!(
+                operation.as_str(),
+                "i32_to_usize" | "u64_to_usize" | "usize_to_u64"
+            ) =>
+            {
                 let value = operands
                     .first()
                     .ok_or_else(|| {
@@ -12762,7 +12802,12 @@ impl<'a, 'ctx> FunctionGenerator<'a, 'ctx> {
                     NominalKind::Enum {
                         variants, c_repr, ..
                     } => {
-                        if c_repr {
+                        // C-represented and fieldless enums are lowered as scalar
+                        // discriminants rather than the tagged struct used by
+                        // payload-carrying enums. They have no owned children to
+                        // drop, so attempting to view their LLVM type as a struct
+                        // would panic in inkwell.
+                        if c_repr || variants.iter().all(Vec::is_empty) {
                             return Ok(());
                         }
                         let structure = self.generator.basic_type(ty)?.into_struct_type();

@@ -3123,7 +3123,7 @@ impl BodyChecker<'_> {
         let Type::Function(signature) = function_type(&runtime_function) else {
             unreachable!("function declarations always have function types");
         };
-        if operation != "fragment"
+        if operation != "createFragment"
             && signature
                 .parameters
                 .get(2)
@@ -3142,7 +3142,7 @@ impl BodyChecker<'_> {
                 "make the runtime key parameter accept a supported key or optional key value",
             );
         }
-        let expected_parameters = if operation == "fragment" {
+        let expected_parameters = if operation == "createFragment" {
             vec![self.jsx_fragment_parameter_type(children, signature.parameters.first())]
         } else {
             let properties_type = if *properties_type == Type::Unknown {
@@ -3165,7 +3165,14 @@ impl BodyChecker<'_> {
                             declared
                         }
                     },
-                    |expression| optional_type(expression.ty.clone()),
+                    |expression| {
+                        let declared = signature.parameters.get(2).filter(|parameter| {
+                            is_jsx_runtime_key_object_parameter(self.program, parameter)
+                        });
+                        declared
+                            .cloned()
+                            .unwrap_or_else(|| optional_type(expression.ty.clone()))
+                    },
                 );
             vec![
                 component_type.cloned().unwrap_or(Type::Error),
@@ -3236,9 +3243,20 @@ impl BodyChecker<'_> {
             .zip(&expected_parameters)
             .enumerate()
         {
-            if *expected == Type::Error || !compatible(self.program, expected, actual) {
+            let key_object_compatible = index == 2
+                && operation != "createFragment"
+                && key.is_some()
+                && signature.parameters.get(2).is_some_and(|parameter| {
+                    is_jsx_runtime_key_object_parameter(self.program, parameter)
+                })
+                && key
+                    .and_then(|id| self.hir_expressions.get(id.0 as usize))
+                    .is_some_and(|expression| is_jsx_key_type(&expression.ty));
+            if *expected == Type::Error
+                || (!key_object_compatible && !compatible(self.program, expected, actual))
+            {
                 let condition = match (operation, index) {
-                    ("fragment", 0) => "TYPE_JSX_RUNTIME_CHILDREN_PARAMETER",
+                    ("createFragment", 0) => "TYPE_JSX_RUNTIME_CHILDREN_PARAMETER",
                     (_, 0) => "TYPE_JSX_RUNTIME_COMPONENT_PARAMETER",
                     (_, 1) => "TYPE_JSX_RUNTIME_PROPERTIES_PARAMETER",
                     _ => "TYPE_JSX_RUNTIME_KEY_PARAMETER",
@@ -3373,11 +3391,11 @@ impl BodyChecker<'_> {
             )
         };
         let operation = if fragment {
-            "fragment"
+            "createFragment"
         } else if children.len() > 1 {
-            "jsxs"
+            "createElements"
         } else {
-            "jsx"
+            "createElement"
         };
         let (runtime, runtime_signature) = self.resolve_jsx_runtime(
             operation,
@@ -5972,6 +5990,15 @@ fn is_jsx_runtime_key_parameter(program: &Program, ty: &Type) -> bool {
             )
         }
         _ => is_jsx_key_type(&ty),
+    }
+}
+
+fn is_jsx_runtime_key_object_parameter(program: &Program, ty: &Type) -> bool {
+    let ty = normalize_alias(program, ty);
+    match ty {
+        Type::Optional(inner) => is_jsx_runtime_key_object_parameter(program, inner.as_ref()),
+        Type::Nominal(declaration, _) => declaration_name(program, declaration) == Some("Key"),
+        _ => false,
     }
 }
 

@@ -103,6 +103,9 @@ export unsafe function dropValue<T>(pointer: *mut T): bool {
 export function u64ToUsize(value: u64): usize {
   return 0;
 }
+export function i32ToUsize(value: i32): usize {
+  return 0;
+}
 export function usizeToU64(value: usize): u64 {
   return 0;
 }

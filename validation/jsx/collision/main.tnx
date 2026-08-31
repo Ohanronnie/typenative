@@ -1,4 +1,4 @@
-import { Element } from "./jsx-runtime";
+import { Element } from "./tnx-runtime";
 struct TextProps {
   public value: &str;
 }

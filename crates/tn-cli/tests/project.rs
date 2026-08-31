@@ -219,7 +219,7 @@ fn jsx_runtime_diagnostic_conditions(runtime_source: &str) -> Vec<String> {
     jsx_runtime_diagnostic_conditions_for(
         "function main(): i32 { return 0; }\n",
         Some(runtime_source),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     )
 }
 
@@ -232,7 +232,7 @@ fn jsx_runtime_diagnostic_conditions_for(
     std::fs::write(directory.path().join("main.tnx"), entry_source)
         .expect("JSX diagnostic entry source");
     if let Some(runtime_source) = runtime_source {
-        std::fs::write(directory.path().join("jsx-runtime.tn"), runtime_source)
+        std::fs::write(directory.path().join("tnx-runtime.tn"), runtime_source)
             .expect("JSX diagnostic runtime source");
     }
     std::fs::write(
@@ -263,7 +263,7 @@ fn jsx_runtime_diagnostic_conditions_for(
 }
 
 fn jsx_entry_source() -> &'static str {
-    r#"import { Element } from "./jsx-runtime";
+    r#"import { Element } from "./tnx-runtime";
 struct Props {
   public enabled: bool;
 }
@@ -275,7 +275,7 @@ function main(): Element { return <Text enabled />; }
 #[test]
 fn jsx_runtime_contract_failures_have_specific_diagnostics() {
     let private_and_missing = jsx_runtime_diagnostic_conditions(
-        "export struct Element {}\nfunction jsx<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\n",
+        "export struct Element {}\nfunction createElement<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\n",
     );
     assert!(private_and_missing.contains(&"DRIVER_JSX_RUNTIME_PRIVATE_EXPORT".into()));
     assert_eq!(
@@ -287,7 +287,7 @@ fn jsx_runtime_contract_failures_have_specific_diagnostics() {
     );
 
     let wrong_shape = jsx_runtime_diagnostic_conditions(
-        "export struct Element {}\nexport struct jsx {}\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C, extra: C): Element { return new Element(); }\n",
+        "export struct Element {}\nexport struct createElement {}\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C, extra: C): Element { return new Element(); }\n",
     );
     assert!(wrong_shape.contains(&"DRIVER_JSX_RUNTIME_NOT_FUNCTION".into()));
     assert!(wrong_shape.contains(&"DRIVER_JSX_RUNTIME_WRONG_ARITY".into()));
@@ -312,9 +312,9 @@ fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
     let missing_exports = jsx_runtime_diagnostic_conditions_for(
         "function main(): i32 { return 0; }\n",
         Some("export struct Element {}\n"),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     );
-    for operation in ["jsx", "jsxs", "fragment"] {
+    for operation in ["createElement", "createElements", "createFragment"] {
         assert!(
             missing_exports.contains(&"DRIVER_JSX_RUNTIME_MISSING_EXPORT".into()),
             "missing {operation}: {missing_exports:?}"
@@ -331,9 +331,9 @@ fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
     let wrong_property = jsx_runtime_diagnostic_conditions_for(
         jsx_entry_source(),
         Some(
-            "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: i32, key: K): E { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+            "export struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: i32, key: K): E { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
         ),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     );
     assert!(
         wrong_property.contains(&"TYPE_JSX_RUNTIME_PROPERTIES_PARAMETER".into()),
@@ -343,9 +343,9 @@ fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
     let wrong_key = jsx_runtime_diagnostic_conditions_for(
         jsx_entry_source(),
         Some(
-            "export struct Element {}\nexport function jsx<P, E>(component: (P) => E, properties: P, key: bool): E { return component(properties); }\nexport function jsxs<P, E>(component: (P) => E, properties: P, key: bool): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+            "export struct Element {}\nexport function createElement<P, E>(component: (P) => E, properties: P, key: bool): E { return component(properties); }\nexport function createElements<P, E>(component: (P) => E, properties: P, key: bool): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
         ),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     );
     assert!(
         wrong_key.contains(&"TYPE_JSX_RUNTIME_KEY_PARAMETER".into()),
@@ -355,9 +355,9 @@ fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
     let wrong_result = jsx_runtime_diagnostic_conditions_for(
         "function main(): i32 { return 0; }\n",
         Some(
-            "export struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): i32 { return 0; }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): i32 { return 0; }\nexport function fragment<C>(children: C): i32 { return 0; }\n",
+            "export struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): i32 { return 0; }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): i32 { return 0; }\nexport function createFragment<C>(children: C): i32 { return 0; }\n",
         ),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     );
     assert!(
         wrong_result.contains(&"DRIVER_JSX_RUNTIME_RESULT_MISMATCH".into()),
@@ -367,9 +367,9 @@ fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
     let non_generic = jsx_runtime_diagnostic_conditions_for(
         jsx_entry_source(),
         Some(
-            "export struct Element {}\nexport function jsx(component: (i32) => Element, properties: i32, key: string): Element { return component(properties); }\nexport function jsxs(component: (i32) => Element, properties: i32, key: string): Element { return component(properties); }\nexport function fragment(children: [Element; 1usize]): Element { return new Element(); }\n",
+            "export struct Element {}\nexport function createElement(component: (i32) => Element, properties: i32, key: string): Element { return component(properties); }\nexport function createElements(component: (i32) => Element, properties: i32, key: string): Element { return component(properties); }\nexport function createFragment(children: [Element; 1usize]): Element { return new Element(); }\n",
         ),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     );
     assert!(
         non_generic.contains(&"TYPE_JSX_RUNTIME_COMPONENT_PARAMETER".into()),
@@ -383,9 +383,9 @@ fn jsx_runtime_configuration_and_type_contract_fail_before_llvm() {
     let effects = jsx_runtime_diagnostic_conditions_for(
         "function main(): i32 { return 0; }\n",
         Some(
-            "struct Failure {}\nexport struct Element {}\nexport function jsx<P, E, K>(component: (P) => E, properties: P, key: K): E throws Failure { return component(properties); }\nexport function jsxs<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function fragment<C>(children: C): Element { return new Element(); }\n",
+            "struct Failure {}\nexport struct Element {}\nexport function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E throws Failure { return component(properties); }\nexport function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E { return component(properties); }\nexport function createFragment<C>(children: C): Element { return new Element(); }\n",
         ),
-        r#"{"entry":"main.tnx","jsx":{"runtime":"./jsx-runtime"}}"#,
+        r#"{"entry":"main.tnx","jsx":{"runtime":"./tnx-runtime"}}"#,
     );
     assert!(
         effects.contains(&"DRIVER_JSX_RUNTIME_EFFECTS".into()),

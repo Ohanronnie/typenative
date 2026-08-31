@@ -1,4 +1,4 @@
-import { Element, jsx } from "./jsx-runtime";
+import { Element, createElement } from "./tnx-runtime";
 struct TextProps {
   public value: string;
 }
@@ -95,7 +95,7 @@ function main(): i32 {
   const direct_props: ViewProps = {
     first: first, second: second, enabled: true, children: [first, second],
   };
-  const direct = jsx(View, direct_props, "direct");
+  const direct = createElement(View, direct_props, "direct");
   const member = <Components.Text value="Hello" />;
   const single = <Single>
     <Text value="Hello" />

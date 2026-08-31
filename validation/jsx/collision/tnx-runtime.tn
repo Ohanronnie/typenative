@@ -1,0 +1,14 @@
+export struct Element {
+  public code: i32;
+}
+export function createElement<P, E, K>(component: (P) => E, properties: P, key: K): E {
+  return component(properties);
+}
+export function createElements<P, E, K>(component: (P) => E, properties: P, key: K): E {
+  return component(properties);
+}
+export function createFragment<C>(children: C): Element {
+  return new Element({
+    code: 0
+  });
+}

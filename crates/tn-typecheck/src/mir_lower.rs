@@ -2639,12 +2639,7 @@ impl OwnershipMirLowerer<'_> {
                 .get(2)
                 .cloned()
                 .unwrap_or_else(|| Type::Optional(Box::new(value_type.clone())));
-            if matches!(key_type, Type::Optional(_)) && !matches!(value_type, Type::Optional(_)) {
-                let value = self.materialize_jsx_optional(key_type.clone(), value, start)?;
-                (value, key_type)
-            } else {
-                (value, value_type)
-            }
+            self.lower_jsx_key(value, value_type, &key_type, start)?
         } else {
             let key_type = signature
                 .parameters
@@ -2666,6 +2661,124 @@ impl OwnershipMirLowerer<'_> {
             vec![component, props, key.0],
             start,
         )
+    }
+
+    fn lower_jsx_key(
+        &mut self,
+        value: Operand,
+        value_type: Type,
+        expected: &Type,
+        start: usize,
+    ) -> Option<(Operand, Type)> {
+        let expected_inner = match expected {
+            Type::Optional(inner) => inner.as_ref(),
+            expected => expected,
+        };
+        let (value, value_type) = if self.is_jsx_key_object_type(expected_inner) {
+            self.lower_jsx_runtime_key(value, value_type, start)?
+        } else {
+            (value, value_type)
+        };
+        if matches!(expected, Type::Optional(_)) && !matches!(value_type, Type::Optional(_)) {
+            let value = self.materialize_jsx_optional(expected.clone(), value, start)?;
+            Some((value, expected.clone()))
+        } else {
+            Some((value, value_type))
+        }
+    }
+
+    fn lower_jsx_runtime_key(
+        &mut self,
+        value: Operand,
+        value_type: Type,
+        start: usize,
+    ) -> Option<(Operand, Type)> {
+        let operation = if is_integer_type(&value_type) {
+            "keyInteger"
+        } else if value_type == Type::String {
+            "keyText"
+        } else if matches!(
+            &value_type,
+            Type::Reference { referent, .. }
+                if matches!(referent.as_ref(), Type::String | Type::Str)
+        ) {
+            "keyTextRef"
+        } else {
+            return None;
+        };
+        let (runtime, signature) = self.jsx_runtime_function(operation)?;
+        let parameter = signature.parameters.first()?.clone();
+        let value = if value_type == parameter {
+            value
+        } else if is_integer_type(&value_type) && is_integer_type(&parameter) {
+            let destination = self.temporary(parameter.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::Cast {
+                        operand: value,
+                        ty: parameter.clone(),
+                        kind: mir_cast_kind(&value_type, &parameter),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            Operand::Move(Place::local(destination))
+        } else {
+            self.reborrow_argument(value, &value_type, Some(&parameter), start)
+        };
+        self.emit_call(
+            Operand::Constant(tn_mir::Constant::Function(
+                runtime,
+                Type::Function(signature.clone()),
+            )),
+            None,
+            &signature,
+            vec![value],
+            start,
+        )
+    }
+
+    fn jsx_runtime_function(
+        &self,
+        operation: &str,
+    ) -> Option<(DeclarationId, tn_hir::FunctionType)> {
+        let declaration = self.program.jsx_runtime_declaration(operation)?;
+        let DefinitionData::Function(function) = &self.program.definition(declaration)?.data else {
+            return None;
+        };
+        if !function.generics.is_empty() {
+            return None;
+        }
+        Some((
+            declaration,
+            tn_hir::FunctionType {
+                parameters: function
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect(),
+                result: Box::new(function.result.clone()),
+                effects: function.effects.clone(),
+                generics: Vec::new(),
+                is_async: function.is_async,
+                is_unsafe: function.is_unsafe,
+            },
+        ))
+    }
+
+    fn is_jsx_key_object_type(&self, ty: &Type) -> bool {
+        let Type::Nominal(declaration, _) = ty else {
+            return false;
+        };
+        self.program
+            .graph
+            .declaration(*declaration)
+            .is_some_and(|declaration| declaration.name.as_deref() == Some("Key"))
     }
 
     fn lower_jsx_properties(
@@ -2855,7 +2968,7 @@ impl OwnershipMirLowerer<'_> {
         result_type: Type,
         start: usize,
     ) -> Option<(Operand, Type)> {
-        let runtime = self.program.jsx_runtime_declaration("fragment")?;
+        let runtime = self.program.jsx_runtime_declaration("createFragment")?;
         let runtime_accepts_dynamic_array = self
             .program
             .definition(runtime)
@@ -5489,6 +5602,26 @@ impl OwnershipMirLowerer<'_> {
                     Place::local(destination),
                     Box::new(Rvalue::RawOperation {
                         operation: "u64_to_usize".into(),
+                        operands: arguments,
+                        ty: result_type.clone(),
+                    }),
+                ),
+                self.span(self.tokens[start]),
+            );
+            return Some((Operand::Move(Place::local(destination)), result_type));
+        }
+        if self.is_intrinsic_operation(start, callee_end, "i32_to_usize") {
+            let result_type = concrete.result.as_ref().clone();
+            let destination = self.temporary(result_type.clone(), self.span(self.tokens[start]));
+            self.statement(
+                StatementKind::StorageLive(destination),
+                self.span(self.tokens[start]),
+            );
+            self.statement(
+                StatementKind::Assign(
+                    Place::local(destination),
+                    Box::new(Rvalue::RawOperation {
+                        operation: "i32_to_usize".into(),
                         operands: arguments,
                         ty: result_type.clone(),
                     }),
